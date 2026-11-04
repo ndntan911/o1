@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"testing"
@@ -92,6 +93,7 @@ func TestConfig(t *testing.T) config.Config {
 		AllowedOrigins: []string{"http://localhost:5173"},
 		SessionTTL:     720 * time.Hour,
 		SecretKey:      make([]byte, 32),
+		EncryptionKey:  bytes.Repeat([]byte{2}, 32),
 		SMTPAddr:       "localhost:1025",
 		EmailFrom:      "no-reply@localhost",
 	}
