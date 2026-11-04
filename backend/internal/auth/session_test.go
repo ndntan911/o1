@@ -29,6 +29,16 @@ func newVerifiedService(t *testing.T, pool *pgxpool.Pool) *auth.Service {
 	return auth.NewService(pool, sqlc.New(pool), testutil.NewFakeSender(), testutil.TestConfig(t))
 }
 
+// lastSentText returns the text body of the most recently recorded message.
+func lastSentText(t *testing.T, fs *testutil.FakeSender) string {
+	t.Helper()
+	msgs := fs.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("no messages sent")
+	}
+	return msgs[len(msgs)-1].Text
+}
+
 func TestLogin_SuccessAndAuthenticate(t *testing.T) {
 	pool, cleanup := testutil.NewPostgres(t)
 	defer cleanup()
@@ -256,18 +266,18 @@ func TestRequestPasswordReset_UnknownOrUnverifiedIsSilent(t *testing.T) {
 	if err := svc.RequestPasswordReset(ctx, "nobody@example.com"); err != nil {
 		t.Fatalf("unknown email err = %v, want nil", err)
 	}
-	if len(fs.Msgs) != 0 {
-		t.Fatalf("unknown email sent %d messages, want 0", len(fs.Msgs))
+	if fs.Len() != 0 {
+		t.Fatalf("unknown email sent %d messages, want 0", fs.Len())
 	}
 
 	if _, err := svc.Register(ctx, "unverified@example.com", testPassword); err != nil {
 		t.Fatal(err)
 	}
-	sentAfterRegister := len(fs.Msgs)
+	sentAfterRegister := fs.Len()
 	if err := svc.RequestPasswordReset(ctx, "unverified@example.com"); err != nil {
 		t.Fatalf("unverified email err = %v, want nil", err)
 	}
-	if len(fs.Msgs) != sentAfterRegister {
+	if fs.Len() != sentAfterRegister {
 		t.Fatal("unverified email received a password reset message")
 	}
 }
@@ -286,7 +296,7 @@ func TestResetPassword_RevokesSessions(t *testing.T) {
 	if err := svc.RequestPasswordReset(ctx, testEmail); err != nil {
 		t.Fatal(err)
 	}
-	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Msgs[len(fs.Msgs)-1].Text)[1]
+	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(lastSentText(t, fs))[1]
 	if err := svc.ResetPassword(ctx, token, "new correct horse battery"); err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +358,7 @@ func TestResetPassword_UnknownTokenAndValidation(t *testing.T) {
 	if err := svc.RequestPasswordReset(ctx, testEmail); err != nil {
 		t.Fatal(err)
 	}
-	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Msgs[len(fs.Msgs)-1].Text)[1]
+	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(lastSentText(t, fs))[1]
 	if err := svc.ResetPassword(ctx, token, "short"); !errors.Is(err, auth.ErrValidation) {
 		t.Fatalf("short password err = %v, want ErrValidation", err)
 	}

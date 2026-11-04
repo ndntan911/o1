@@ -27,10 +27,10 @@ func TestRegister_SendsVerificationAndVerifies(t *testing.T) {
 	if u.Email != "user@example.com" {
 		t.Fatalf("email = %q", u.Email)
 	}
-	if len(fs.Msgs) != 1 {
-		t.Fatalf("sent = %d", len(fs.Msgs))
+	if fs.Len() != 1 {
+		t.Fatalf("sent = %d", fs.Len())
 	}
-	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Msgs[0].Text)[1]
+	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Messages()[0].Text)[1]
 	if err := svc.VerifyEmail(context.Background(), token); err != nil {
 		t.Fatal(err)
 	}

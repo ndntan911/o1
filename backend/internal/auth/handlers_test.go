@@ -98,8 +98,8 @@ func TestRegisterHandler_CreatesUser(t *testing.T) {
 	if created.Email != "handler@example.com" || created.ID == "" {
 		t.Fatalf("body = %s", body)
 	}
-	if len(fs.Msgs) != 1 {
-		t.Fatalf("sent = %d", len(fs.Msgs))
+	if fs.Len() != 1 {
+		t.Fatalf("sent = %d", fs.Len())
 	}
 }
 
@@ -152,7 +152,7 @@ func TestVerifyEmailHandler_ConsumesToken(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("status = %d", status)
 	}
-	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Msgs[0].Text)[1]
+	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Messages()[0].Text)[1]
 
 	status, _, body := postJSON(t, auth.VerifyEmailHandler(svc), `{"token":"`+token+`"}`)
 	if status != http.StatusNoContent {
@@ -318,23 +318,49 @@ func TestForgotPassword_UnknownEmailStill204(t *testing.T) {
 	defer cleanup()
 	fs := testutil.NewFakeSender()
 	svc := auth.NewService(pool, sqlc.New(pool), fs, testutil.TestConfig(t))
+	defer svc.Close()
 	h := auth.ForgotPasswordHandler(svc)
 
 	status, _, body := postJSON(t, h, `{"email":"nobody@example.com"}`)
 	if status != http.StatusNoContent {
 		t.Fatalf("status = %d, body = %s, want 204", status, body)
 	}
-	if len(fs.Msgs) != 0 {
-		t.Fatalf("unknown email sent %d messages", len(fs.Msgs))
+	status, ctype, body := postJSON(t, h, `{not json`)
+	if code := problemCode(t, status, ctype, body); status != http.StatusBadRequest || code != "validation_error" {
+		t.Fatalf("malformed JSON: status = %d, code = %q", status, code)
 	}
+	// Drain accepted work before asserting that no email was sent.
+	svc.Close()
+	if fs.Len() != 0 {
+		t.Fatalf("unknown email sent %d messages", fs.Len())
+	}
+}
 
+func TestForgotPasswordHandler_QueueDeliversExactlyOne(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	fs := testutil.NewFakeSender()
+	svc := auth.NewService(pool, sqlc.New(pool), fs, testutil.TestConfig(t))
+	defer svc.Close()
 	testutil.CreateVerifiedUser(t, pool, testEmail, testPassword)
-	status, _, body = postJSON(t, h, `{"email":"`+testEmail+`"}`)
+
+	status, _, body := postJSON(t, auth.ForgotPasswordHandler(svc), `{"email":"`+testEmail+`"}`)
 	if status != http.StatusNoContent {
-		t.Fatalf("known email status = %d, body = %s", status, body)
+		t.Fatalf("status = %d, body = %s, want 204", status, body)
 	}
-	if len(fs.Msgs) != 1 {
-		t.Fatalf("known email sent %d messages, want 1", len(fs.Msgs))
+	msgs := fs.WaitForMessages(t, 1)
+	if len(msgs) != 1 {
+		t.Fatalf("sent = %d, want 1", len(msgs))
+	}
+	if msgs[0].To != testEmail {
+		t.Fatalf("recipient = %q, want %q", msgs[0].To, testEmail)
+	}
+	if !strings.Contains(msgs[0].Text, "/reset-password?token=") {
+		t.Fatalf("reset link missing from message: %s", msgs[0].Text)
+	}
+	svc.Close()
+	if fs.Len() != 1 {
+		t.Fatalf("sent = %d after drain, want exactly 1", fs.Len())
 	}
 }
 
@@ -349,7 +375,7 @@ func TestResetPasswordHandler_ResetsPassword(t *testing.T) {
 	if err := svc.RequestPasswordReset(context.Background(), testEmail); err != nil {
 		t.Fatal(err)
 	}
-	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Msgs[len(fs.Msgs)-1].Text)[1]
+	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(lastSentText(t, fs))[1]
 
 	status, _, body := postJSON(t, h, `{"token":"`+token+`","new_password":"new correct horse battery"}`)
 	if status != http.StatusNoContent {
@@ -367,7 +393,7 @@ func TestResetPasswordHandler_ResetsPassword(t *testing.T) {
 	if err := svc.RequestPasswordReset(context.Background(), testEmail); err != nil {
 		t.Fatal(err)
 	}
-	shortToken := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Msgs[len(fs.Msgs)-1].Text)[1]
+	shortToken := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(lastSentText(t, fs))[1]
 	status, ctype, body = postJSON(t, h, `{"token":"`+shortToken+`","new_password":"short"}`)
 	if code := problemCode(t, status, ctype, body); status != http.StatusBadRequest || code != "validation_error" {
 		t.Fatalf("short password: status = %d, code = %q", status, code)

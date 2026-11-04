@@ -40,18 +40,21 @@ var (
 // verificationTokenTTL is how long a verification token remains usable.
 const verificationTokenTTL = 24 * time.Hour
 
-// Service implements registration and email verification on top of the
-// auth database schema and an email sender.
+// Service implements registration, login, sessions, and password reset on top
+// of the auth database schema and an email sender.
 type Service struct {
-	pool   *pgxpool.Pool
-	q      *sqlc.Queries
-	sender email.Sender
-	cfg    config.Config
+	pool       *pgxpool.Pool
+	q          *sqlc.Queries
+	sender     email.Sender
+	cfg        config.Config
+	resetQueue *passwordResetQueue
 }
 
 // NewService wires a Service together.
 func NewService(pool *pgxpool.Pool, q *sqlc.Queries, sender email.Sender, cfg config.Config) *Service {
-	return &Service{pool: pool, q: q, sender: sender, cfg: cfg}
+	s := &Service{pool: pool, q: q, sender: sender, cfg: cfg}
+	s.resetQueue = newPasswordResetQueue(passwordResetWorkers, passwordResetQueueCapacity, s.runPasswordResetJob)
+	return s
 }
 
 // NormalizeEmail trims surrounding whitespace and lowercases an address,

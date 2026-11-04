@@ -171,8 +171,9 @@ func (s *Service) RequestPasswordReset(ctx context.Context, emailAddr string) er
 			"<p>The link expires in 1 hour and can be used once.</p>\n", resetURL),
 	}
 	if err := s.sender.Send(ctx, msg); err != nil {
-		// Delivery failed: log only what is safe (never the token).
-		slog.Error("send password reset email failed", "user_id", user.ID, "err", err)
+		// Delivery failed: log only a generic reason and non-sensitive fields.
+		// The raw error may echo message contents, and the token/URL are secret.
+		slog.Error("send password reset email failed", "user_id", user.ID, "error_type", fmt.Sprintf("%T", err))
 	}
 	return nil
 }

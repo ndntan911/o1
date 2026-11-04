@@ -169,8 +169,10 @@ func LogoutHandler(svc *Service, cfg config.Config) http.HandlerFunc {
 	}
 }
 
-// ForgotPasswordHandler requests a reset link and always answers 204 for
-// unknown or unverified emails, preventing account enumeration.
+// ForgotPasswordHandler enqueues a reset email and returns 204 immediately,
+// without waiting for the database lookup, token insert, or SMTP delivery.
+// Unknown and unverified emails are handled identically in the background, so
+// neither response bodies nor request latency reveal whether an account exists.
 func ForgotPasswordHandler(svc *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req forgotPasswordRequest
@@ -180,11 +182,7 @@ func ForgotPasswordHandler(svc *Service) http.HandlerFunc {
 			writeValidationProblem(w)
 			return
 		}
-		if err := svc.RequestPasswordReset(r.Context(), req.Email); err != nil {
-			writeProblem(w, http.StatusInternalServerError, "internal_error",
-				"Internal Server Error")
-			return
-		}
+		svc.QueuePasswordReset(r.Context(), req.Email)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
