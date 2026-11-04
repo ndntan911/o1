@@ -14,7 +14,7 @@ import (
 const createWorkspace = `-- name: CreateWorkspace :one
 INSERT INTO workspaces (id, name, slug, created_by)
 VALUES ($1, $2, $3, $4)
-RETURNING id, name, slug, created_by, created_at
+RETURNING id, name, slug, created_by, created_at, monitor_limit, suspended_at, suspended_by, suspended_reason
 `
 
 type CreateWorkspaceParams struct {
@@ -38,12 +38,16 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		&i.Slug,
 		&i.CreatedBy,
 		&i.CreatedAt,
+		&i.MonitorLimit,
+		&i.SuspendedAt,
+		&i.SuspendedBy,
+		&i.SuspendedReason,
 	)
 	return i, err
 }
 
 const getWorkspaceByID = `-- name: GetWorkspaceByID :one
-SELECT id, name, slug, created_by, created_at FROM workspaces WHERE id = $1
+SELECT id, name, slug, created_by, created_at, monitor_limit, suspended_at, suspended_by, suspended_reason FROM workspaces WHERE id = $1
 `
 
 func (q *Queries) GetWorkspaceByID(ctx context.Context, id uuid.UUID) (Workspace, error) {
@@ -55,12 +59,16 @@ func (q *Queries) GetWorkspaceByID(ctx context.Context, id uuid.UUID) (Workspace
 		&i.Slug,
 		&i.CreatedBy,
 		&i.CreatedAt,
+		&i.MonitorLimit,
+		&i.SuspendedAt,
+		&i.SuspendedBy,
+		&i.SuspendedReason,
 	)
 	return i, err
 }
 
 const getWorkspaceBySlug = `-- name: GetWorkspaceBySlug :one
-SELECT id, name, slug, created_by, created_at FROM workspaces WHERE slug = $1
+SELECT id, name, slug, created_by, created_at, monitor_limit, suspended_at, suspended_by, suspended_reason FROM workspaces WHERE slug = $1
 `
 
 func (q *Queries) GetWorkspaceBySlug(ctx context.Context, slug string) (Workspace, error) {
@@ -72,6 +80,10 @@ func (q *Queries) GetWorkspaceBySlug(ctx context.Context, slug string) (Workspac
 		&i.Slug,
 		&i.CreatedBy,
 		&i.CreatedAt,
+		&i.MonitorLimit,
+		&i.SuspendedAt,
+		&i.SuspendedBy,
+		&i.SuspendedReason,
 	)
 	return i, err
 }

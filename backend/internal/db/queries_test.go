@@ -2,9 +2,12 @@ package db_test
 
 import (
 	"context"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"o1/internal/db/sqlc"
 	"o1/internal/testutil"
@@ -36,5 +39,418 @@ func TestGetUserByEmail_NormalizesCase(t *testing.T) {
 	}
 	if _, err := q.GetUserByEmail(ctx, "User@Example.com"); err != nil {
 		t.Fatalf("expected case-insensitive lookup: %v", err)
+	}
+}
+
+func mustUUIDv7(t *testing.T) uuid.UUID {
+	t.Helper()
+	id, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("generate uuid v7: %v", err)
+	}
+	return id
+}
+
+func TestMonitorQueries_PaginationSummaryAndConflict(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	q := sqlc.New(pool)
+
+	userID := testutil.CreateVerifiedUser(t, pool, "monitor-owner@example.com", "password12345")
+	wsID := mustUUIDv7(t)
+	if _, err := q.CreateWorkspace(ctx, sqlc.CreateWorkspaceParams{
+		ID:        wsID,
+		Name:      "Monitor workspace",
+		Slug:      "monitor-workspace",
+		CreatedBy: userID,
+	}); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	monitors := make([]sqlc.Monitor, 3)
+	for i := range monitors {
+		m, err := q.CreateMonitor(ctx, sqlc.CreateMonitorParams{
+			ID:                    mustUUIDv7(t),
+			WorkspaceID:           wsID,
+			Name:                  "monitor-" + string(rune('a'+i)),
+			Url:                   "https://example.com/health",
+			Method:                "GET",
+			ExpectedStatus:        "2xx",
+			IntervalSeconds:       60,
+			TimeoutSeconds:        10,
+			ConfirmationThreshold: 2,
+			RecoveryThreshold:     2,
+			Paused:                false,
+			CreatedBy:             userID,
+		})
+		if err != nil {
+			t.Fatalf("create monitor %d: %v", i, err)
+		}
+		// Deterministic ordering regardless of clock resolution.
+		if _, err := pool.Exec(ctx, "UPDATE monitors SET created_at = $2 WHERE id = $1", m.ID, base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("set monitor %d created_at: %v", i, err)
+		}
+		if err := q.CreateMonitorState(ctx, m.ID); err != nil {
+			t.Fatalf("create monitor state %d: %v", i, err)
+		}
+		monitors[i] = m
+	}
+
+	// The state rows start due at now(), so all three monitors are selectable.
+	due, err := q.ListDueMonitors(ctx, sqlc.ListDueMonitorsParams{
+		Now:   time.Now().UTC().Add(time.Minute),
+		Batch: 10,
+	})
+	if err != nil {
+		t.Fatalf("list due monitors: %v", err)
+	}
+	if len(due) != 3 {
+		t.Fatalf("due monitors = %d, want 3", len(due))
+	}
+
+	// Keyset pagination: newest first, two per page.
+	page1, err := q.ListMonitors(ctx, sqlc.ListMonitorsParams{
+		WorkspaceID: wsID,
+		AfterID:     uuid.Nil,
+		PageLimit:   2,
+	})
+	if err != nil {
+		t.Fatalf("list monitors page 1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page 1 length = %d, want 2", len(page1))
+	}
+	if page1[0].ID != monitors[2].ID || page1[1].ID != monitors[1].ID {
+		t.Fatalf("page 1 ids = [%s %s], want [%s %s]", page1[0].ID, page1[1].ID, monitors[2].ID, monitors[1].ID)
+	}
+	if page1[0].Status != "unknown" {
+		t.Fatalf("page 1 status = %q, want unknown", page1[0].Status)
+	}
+
+	after := page1[1].CreatedAt
+	page2, err := q.ListMonitors(ctx, sqlc.ListMonitorsParams{
+		WorkspaceID: wsID,
+		AfterTime:   &after,
+		AfterID:     page1[1].ID,
+		PageLimit:   2,
+	})
+	if err != nil {
+		t.Fatalf("list monitors page 2: %v", err)
+	}
+	if len(page2) != 1 || page2[0].ID != monitors[0].ID {
+		t.Fatalf("page 2 = %+v, want only %s", page2, monitors[0].ID)
+	}
+
+	// Two results: 100ms up, 300ms down.
+	now := time.Now().UTC().Truncate(time.Second)
+	scheduled1 := now.Add(-2 * time.Minute)
+	checked1 := scheduled1.Add(time.Second)
+	upCode := int32(200)
+	first := sqlc.InsertProbeResultParams{
+		ID:           mustUUIDv7(t),
+		MonitorID:    monitors[0].ID,
+		WorkspaceID:  wsID,
+		ScheduledFor: scheduled1,
+		CheckedAt:    checked1,
+		Status:       "up",
+		StatusCode:   &upCode,
+		LatencyMs:    100,
+	}
+	if rows, err := q.InsertProbeResult(ctx, first); err != nil {
+		t.Fatalf("insert first result: %v", err)
+	} else if rows != 1 {
+		t.Fatalf("first insert rows = %d, want 1", rows)
+	}
+
+	// Exact duplicate is ignored: this is the worker's replay guard.
+	dupe := first
+	dupe.ID = mustUUIDv7(t)
+	if rows, err := q.InsertProbeResult(ctx, dupe); err != nil {
+		t.Fatalf("insert duplicate result: %v", err)
+	} else if rows != 0 {
+		t.Fatalf("duplicate insert rows = %d, want 0", rows)
+	}
+
+	scheduled2 := now.Add(-1 * time.Minute)
+	downCode := int32(500)
+	latency2 := int32(300)
+	if rows, err := q.InsertProbeResult(ctx, sqlc.InsertProbeResultParams{
+		ID:           mustUUIDv7(t),
+		MonitorID:    monitors[0].ID,
+		WorkspaceID:  wsID,
+		ScheduledFor: scheduled2,
+		CheckedAt:    scheduled2.Add(time.Second),
+		Status:       "down",
+		StatusCode:   &downCode,
+		LatencyMs:    latency2,
+		Error:        ptr("status 500"),
+	}); err != nil {
+		t.Fatalf("insert second result: %v", err)
+	} else if rows != 1 {
+		t.Fatalf("second insert rows = %d, want 1", rows)
+	}
+
+	exists, err := q.ProbeResultExists(ctx, sqlc.ProbeResultExistsParams{
+		MonitorID:    monitors[0].ID,
+		ScheduledFor: scheduled1,
+	})
+	if err != nil {
+		t.Fatalf("probe result exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("ProbeResultExists = false, want true")
+	}
+	missing, err := q.ProbeResultExists(ctx, sqlc.ProbeResultExistsParams{
+		MonitorID:    monitors[0].ID,
+		ScheduledFor: scheduled1.Add(30 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("probe result exists (missing): %v", err)
+	}
+	if missing {
+		t.Fatal("ProbeResultExists for absent result = true, want false")
+	}
+
+	// Probe results are newest first with a keyset cursor.
+	results, err := q.ListProbeResults(ctx, sqlc.ListProbeResultsParams{
+		MonitorID:   monitors[0].ID,
+		WorkspaceID: wsID,
+		Since:       now.Add(-24 * time.Hour),
+		AfterID:     uuid.Nil,
+		PageLimit:   1,
+	})
+	if err != nil {
+		t.Fatalf("list probe results page 1: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != "down" {
+		t.Fatalf("result page 1 = %+v, want the newest (down) result", results)
+	}
+	afterResult := results[0].CheckedAt
+	results, err = q.ListProbeResults(ctx, sqlc.ListProbeResultsParams{
+		MonitorID:   monitors[0].ID,
+		WorkspaceID: wsID,
+		Since:       now.Add(-24 * time.Hour),
+		AfterTime:   &afterResult,
+		AfterID:     results[0].ID,
+		PageLimit:   1,
+	})
+	if err != nil {
+		t.Fatalf("list probe results page 2: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != "up" {
+		t.Fatalf("result page 2 = %+v, want the older (up) result", results)
+	}
+
+	summary, err := q.MonitorSummary(ctx, sqlc.MonitorSummaryParams{
+		MonitorID:   monitors[0].ID,
+		WorkspaceID: wsID,
+		Since:       now.Add(-24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("monitor summary: %v", err)
+	}
+	if summary.Checks != 2 || summary.UpCount != 1 || summary.DownCount != 1 {
+		t.Fatalf("summary counts = %+v, want checks=2 up=1 down=1", summary)
+	}
+	if summary.MinLatencyMs != 100 || summary.MaxLatencyMs != 300 {
+		t.Fatalf("summary min/max = %d/%d, want 100/300", summary.MinLatencyMs, summary.MaxLatencyMs)
+	}
+	if math.Abs(summary.AvgLatencyMs-200) > 0.001 {
+		t.Fatalf("summary avg = %v, want 200", summary.AvgLatencyMs)
+	}
+	if math.Abs(summary.P95LatencyMs-290) > 0.001 {
+		t.Fatalf("summary p95 = %v, want 290", summary.P95LatencyMs)
+	}
+
+	// Empty window still scans (COALESCE) and reports zero checks.
+	empty, err := q.MonitorSummary(ctx, sqlc.MonitorSummaryParams{
+		MonitorID:   monitors[1].ID,
+		WorkspaceID: wsID,
+		Since:       now.Add(-24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("empty monitor summary: %v", err)
+	}
+	if empty.Checks != 0 || empty.AvgLatencyMs != 0 {
+		t.Fatalf("empty summary = %+v, want zero checks and zero latency", empty)
+	}
+
+	summaries, err := q.ListMonitorSummaries(ctx, sqlc.ListMonitorSummariesParams{
+		MonitorIds: []uuid.UUID{monitors[0].ID, monitors[1].ID},
+		Since:      now.Add(-24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("list monitor summaries: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries length = %d, want 1 (only monitors with results)", len(summaries))
+	}
+	if summaries[0].MonitorID != monitors[0].ID || summaries[0].Checks != 2 || summaries[0].UpCount != 1 {
+		t.Fatalf("summary row = %+v, want monitor %s checks=2 up=1", summaries[0], monitors[0].ID)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestAdminQueries_FiltersSuspensionAndEvents(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	q := sqlc.New(pool)
+
+	adminID := testutil.CreateVerifiedUser(t, pool, "admin@example.com", "password12345")
+	isAdmin, err := q.GetUserIsAdmin(ctx, adminID)
+	if err != nil {
+		t.Fatalf("get user is_admin: %v", err)
+	}
+	if isAdmin {
+		t.Fatal("new user is_admin = true, want false")
+	}
+	if _, err := pool.Exec(ctx, "UPDATE users SET is_admin = true WHERE id = $1", adminID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if isAdmin, err = q.GetUserIsAdmin(ctx, adminID); err != nil || !isAdmin {
+		t.Fatalf("promoted is_admin = %v, %v; want true, nil", isAdmin, err)
+	}
+
+	newWorkspace := func(name, slug string) uuid.UUID {
+		t.Helper()
+		id := mustUUIDv7(t)
+		if _, err := q.CreateWorkspace(ctx, sqlc.CreateWorkspaceParams{
+			ID: id, Name: name, Slug: slug, CreatedBy: adminID,
+		}); err != nil {
+			t.Fatalf("create workspace %q: %v", slug, err)
+		}
+		return id
+	}
+	wsID := newWorkspace("Acme Monitoring", "acme-monitoring")
+	newWorkspace("Other Tenant", "other-tenant")
+
+	monitorID := mustUUIDv7(t)
+	if _, err := q.CreateMonitor(ctx, sqlc.CreateMonitorParams{
+		ID:                    monitorID,
+		WorkspaceID:           wsID,
+		Name:                  "Acme API",
+		Url:                   "https://example.com/health",
+		Method:                "GET",
+		ExpectedStatus:        "2xx",
+		IntervalSeconds:       60,
+		TimeoutSeconds:        10,
+		ConfirmationThreshold: 2,
+		RecoveryThreshold:     2,
+		CreatedBy:             adminID,
+	}); err != nil {
+		t.Fatalf("create monitor: %v", err)
+	}
+	if err := q.CreateMonitorState(ctx, monitorID); err != nil {
+		t.Fatalf("create monitor state: %v", err)
+	}
+
+	search := "ACME"
+	workspaces, err := q.ListWorkspacesForAdmin(ctx, sqlc.ListWorkspacesForAdminParams{
+		Query:     &search,
+		AfterID:   uuid.Nil,
+		PageLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("list workspaces filtered: %v", err)
+	}
+	if len(workspaces) != 1 || workspaces[0].ID != wsID {
+		t.Fatalf("filtered workspaces = %+v, want only %s", workspaces, wsID)
+	}
+	if workspaces[0].MonitorCount != 1 || workspaces[0].MonitorLimit != 5 {
+		t.Fatalf("workspace counts = monitor %d limit %d, want 1/5", workspaces[0].MonitorCount, workspaces[0].MonitorLimit)
+	}
+
+	notSuspended := false
+	workspaces, err = q.ListWorkspacesForAdmin(ctx, sqlc.ListWorkspacesForAdminParams{
+		Suspended: &notSuspended,
+		AfterID:   uuid.Nil,
+		PageLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("list workspaces unsuspended: %v", err)
+	}
+	if len(workspaces) != 2 {
+		t.Fatalf("unsuspended workspaces = %d, want 2", len(workspaces))
+	}
+
+	reason := "abuse"
+	if err := q.SuspendWorkspace(ctx, sqlc.SuspendWorkspaceParams{
+		ID:              wsID,
+		SuspendedBy:     pgtype.UUID{Bytes: adminID, Valid: true},
+		SuspendedReason: &reason,
+	}); err != nil {
+		t.Fatalf("suspend workspace: %v", err)
+	}
+	suspended := true
+	workspaces, err = q.ListWorkspacesForAdmin(ctx, sqlc.ListWorkspacesForAdminParams{
+		Suspended: &suspended,
+		AfterID:   uuid.Nil,
+		PageLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("list suspended workspaces: %v", err)
+	}
+	if len(workspaces) != 1 || workspaces[0].SuspendedAt == nil || workspaces[0].SuspendedReason == nil || *workspaces[0].SuspendedReason != reason {
+		t.Fatalf("suspended workspaces = %+v, want %s suspended with reason %q", workspaces, wsID, reason)
+	}
+
+	monitors, err := q.ListMonitorsForAdmin(ctx, sqlc.ListMonitorsForAdminParams{
+		WorkspaceID: pgtype.UUID{Bytes: wsID, Valid: true},
+		AfterID:     uuid.Nil,
+		PageLimit:   10,
+	})
+	if err != nil {
+		t.Fatalf("list monitors for admin: %v", err)
+	}
+	if len(monitors) != 1 || monitors[0].ID != monitorID || monitors[0].WorkspaceName != "Acme Monitoring" {
+		t.Fatalf("admin monitors = %+v, want monitor %s", monitors, monitorID)
+	}
+
+	eventID := mustUUIDv7(t)
+	if err := q.CreateSecurityEvent(ctx, sqlc.CreateSecurityEventParams{
+		ID:          eventID,
+		WorkspaceID: pgtype.UUID{Bytes: wsID, Valid: true},
+		ActorUserID: pgtype.UUID{Bytes: adminID, Valid: true},
+		Kind:        "workspace_suspended",
+		Detail:      []byte(`{"reason":"abuse"}`),
+	}); err != nil {
+		t.Fatalf("create security event: %v", err)
+	}
+	if err := q.CreateSecurityEvent(ctx, sqlc.CreateSecurityEventParams{
+		ID:          mustUUIDv7(t),
+		WorkspaceID: pgtype.UUID{Bytes: wsID, Valid: true},
+		ActorUserID: pgtype.UUID{Bytes: adminID, Valid: true},
+		Kind:        "monitor_created",
+		Detail:      []byte(`{}`),
+	}); err != nil {
+		t.Fatalf("create second security event: %v", err)
+	}
+
+	kind := "workspace_suspended"
+	events, err := q.ListSecurityEvents(ctx, sqlc.ListSecurityEventsParams{
+		Kind:      &kind,
+		AfterID:   uuid.Nil,
+		PageLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("list security events: %v", err)
+	}
+	if len(events) != 1 || events[0].ID != eventID || events[0].Kind != kind {
+		t.Fatalf("filtered events = %+v, want only %s", events, eventID)
+	}
+
+	if err := q.UnsuspendWorkspace(ctx, wsID); err != nil {
+		t.Fatalf("unsuspend workspace: %v", err)
+	}
+	ws, err := q.GetWorkspaceByID(ctx, wsID)
+	if err != nil {
+		t.Fatalf("get workspace after unsuspend: %v", err)
+	}
+	if ws.SuspendedAt != nil || ws.SuspendedReason != nil || ws.SuspendedBy.Valid {
+		t.Fatalf("workspace still suspended after unsuspend: %+v", ws)
 	}
 }

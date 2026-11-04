@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type EmailVerificationToken struct {
@@ -19,6 +20,39 @@ type EmailVerificationToken struct {
 	CreatedAt time.Time
 }
 
+type Monitor struct {
+	ID                    uuid.UUID
+	WorkspaceID           uuid.UUID
+	Name                  string
+	Url                   string
+	Method                string
+	HeadersEnc            *string
+	BodyEnc               *string
+	ContentType           *string
+	ExpectedStatus        string
+	IntervalSeconds       int32
+	TimeoutSeconds        int32
+	ConfirmationThreshold int16
+	RecoveryThreshold     int16
+	Paused                bool
+	CreatedBy             uuid.UUID
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type MonitorState struct {
+	MonitorID            uuid.UUID
+	Status               string
+	ConsecutiveFailures  int32
+	ConsecutiveSuccesses int32
+	LastCheckedAt        *time.Time
+	LastStatusCode       *int32
+	LastLatencyMs        *int32
+	LastError            *string
+	NextCheckAt          time.Time
+	UpdatedAt            time.Time
+}
+
 type PasswordResetToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -26,6 +60,28 @@ type PasswordResetToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type ProbeResult struct {
+	ID           uuid.UUID
+	MonitorID    uuid.UUID
+	WorkspaceID  uuid.UUID
+	ScheduledFor time.Time
+	CheckedAt    time.Time
+	Status       string
+	StatusCode   *int32
+	LatencyMs    int32
+	Error        *string
+	CreatedAt    time.Time
+}
+
+type SecurityEvent struct {
+	ID          uuid.UUID
+	WorkspaceID pgtype.UUID
+	ActorUserID pgtype.UUID
+	Kind        string
+	Detail      []byte
+	CreatedAt   time.Time
 }
 
 type Session struct {
@@ -46,14 +102,19 @@ type User struct {
 	EmailVerifiedAt *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	IsAdmin         bool
 }
 
 type Workspace struct {
-	ID        uuid.UUID
-	Name      string
-	Slug      string
-	CreatedBy uuid.UUID
-	CreatedAt time.Time
+	ID              uuid.UUID
+	Name            string
+	Slug            string
+	CreatedBy       uuid.UUID
+	CreatedAt       time.Time
+	MonitorLimit    int32
+	SuspendedAt     *time.Time
+	SuspendedBy     pgtype.UUID
+	SuspendedReason *string
 }
 
 type WorkspaceMember struct {
