@@ -78,18 +78,38 @@ func (r Role) String() string {
 
 // ParseRole parses a role name. Unknown names return ErrValidation.
 func ParseRole(s string) (Role, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "viewer":
-		return RoleViewer, nil
-	case "member":
-		return RoleMember, nil
-	case "admin":
-		return RoleAdmin, nil
-	case "owner":
-		return RoleOwner, nil
-	default:
+	role, ok := roleByName(s)
+	if !ok {
 		return RoleViewer, fmt.Errorf("%w: invalid role", ErrValidation)
 	}
+	return role, nil
+}
+
+// roleByName parses a known role name without attaching a client-facing
+// validation sentinel. It is used for values read back from the database.
+func roleByName(s string) (Role, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "viewer":
+		return RoleViewer, true
+	case "member":
+		return RoleMember, true
+	case "admin":
+		return RoleAdmin, true
+	case "owner":
+		return RoleOwner, true
+	default:
+		return RoleViewer, false
+	}
+}
+
+// parseStoredRole parses a role read from the database. Corruption is an
+// internal error rather than a client validation error.
+func parseStoredRole(s string) (Role, error) {
+	role, ok := roleByName(s)
+	if !ok {
+		return RoleViewer, fmt.Errorf("invalid stored role %q", s)
+	}
+	return role, nil
 }
 
 // AtLeast reports whether r grants at least as much access as min.
@@ -282,6 +302,29 @@ func (s *Service) AddMember(ctx context.Context, actorID, workspaceID uuid.UUID,
 		}
 		return fmt.Errorf("load user by email: %w", err)
 	}
+
+	// Never let the upsert overwrite a membership at or above the actor's
+	// role. This prevents an admin from demoting the owner (or another admin)
+	// and prevents an owner from demoting themselves.
+	target, err := s.q.GetWorkspaceMember(ctx, sqlc.GetWorkspaceMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      user.ID,
+	})
+	switch {
+	case err == nil:
+		targetRole, err := parseStoredRole(target.Role)
+		if err != nil {
+			return fmt.Errorf("parse target role: %w", err)
+		}
+		if targetRole.AtLeast(actorRole) {
+			return ErrForbidden
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		// New member: nothing to protect.
+	default:
+		return fmt.Errorf("load target membership: %w", err)
+	}
+
 	if err := s.q.UpsertWorkspaceMember(ctx, sqlc.UpsertWorkspaceMemberParams{
 		WorkspaceID: workspaceID,
 		UserID:      user.ID,

@@ -262,6 +262,56 @@ func TestAddMember_CrossTenantIsNotFound(t *testing.T) {
 	}
 }
 
+func TestAddMember_AdminCannotDemoteOwner(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	owner := testutil.CreateVerifiedUser(t, pool, "owner@example.com", "correct horse battery staple")
+	admin := testutil.CreateVerifiedUser(t, pool, "admin@example.com", "correct horse battery staple")
+	svc := workspaces.NewService(pool, sqlc.New(pool))
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, owner, "Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddMember(ctx, owner, ws.ID, "admin@example.com", workspaces.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddMember(ctx, admin, ws.ID, "owner@example.com", workspaces.RoleViewer); !errors.Is(err, workspaces.ErrForbidden) {
+		t.Fatalf("admin demote owner err = %v, want ErrForbidden", err)
+	}
+	role, err := svc.Authorize(ctx, owner, ws.ID, workspaces.RoleOwner)
+	if err != nil {
+		t.Fatalf("owner lost access: %v", err)
+	}
+	if role != workspaces.RoleOwner {
+		t.Fatalf("owner role = %v, want owner", role)
+	}
+}
+
+func TestAddMember_OwnerCannotDemoteSelf(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	owner := testutil.CreateVerifiedUser(t, pool, "owner@example.com", "correct horse battery staple")
+	svc := workspaces.NewService(pool, sqlc.New(pool))
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, owner, "Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AddMember(ctx, owner, ws.ID, "owner@example.com", workspaces.RoleViewer); !errors.Is(err, workspaces.ErrForbidden) {
+		t.Fatalf("owner self-demotion err = %v, want ErrForbidden", err)
+	}
+	role, err := svc.Authorize(ctx, owner, ws.ID, workspaces.RoleOwner)
+	if err != nil {
+		t.Fatalf("owner lost access: %v", err)
+	}
+	if role != workspaces.RoleOwner {
+		t.Fatalf("owner role = %v, want owner", role)
+	}
+}
+
 func TestRole_ParseAndAtLeast(t *testing.T) {
 	for _, want := range []workspaces.Role{
 		workspaces.RoleViewer,

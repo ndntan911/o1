@@ -207,6 +207,45 @@ func TestGetHandler_ReturnsRoleAndHidesOtherTenants(t *testing.T) {
 	}
 }
 
+func TestAddMemberHandler_AdminCannotDemoteOwner(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	wsSvc, authSvc := newWorkspaceService(t, pool)
+	owner := testutil.CreateVerifiedUser(t, pool, "owner@example.com", handlerPassword)
+	testutil.CreateVerifiedUser(t, pool, "admin@example.com", handlerPassword)
+	ws, err := wsSvc.Create(context.Background(), owner, "Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsSvc.AddMember(context.Background(), owner, ws.ID, "admin@example.com", workspaces.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+
+	h := auth.RequireSession(authSvc)(workspaces.AddMemberHandler(wsSvc))
+	path := "/api/v1/workspaces/" + ws.ID.String() + "/members"
+	rec := doRequest(t, h, http.MethodPost, path, `{"email":"owner@example.com","role":"viewer"}`, loginAs(t, authSvc, "admin@example.com"), ws.ID.String())
+	if rec.Code != http.StatusForbidden || problemCode(t, rec) != "forbidden" {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	members, err := wsSvc.ListMembers(context.Background(), owner, ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range members {
+		if m.Email == "owner@example.com" {
+			found = true
+			if m.Role != workspaces.RoleOwner {
+				t.Fatalf("owner role = %v, want owner", m.Role)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("owner membership missing")
+	}
+}
+
 func TestMembersHandler_ListsMembers(t *testing.T) {
 	pool, cleanup := testutil.NewPostgres(t)
 	defer cleanup()
