@@ -23,4 +23,5 @@ lint:
 	cd $(BACKEND) && golangci-lint run
 
 run:
-	cd $(BACKEND) && go run ./cmd/api
+	@test -f .env || { echo "missing .env: copy .env.example to .env" >&2; exit 1; }
+	cd $(BACKEND) && set -a && . ../.env && set +a && go run ./cmd/api
