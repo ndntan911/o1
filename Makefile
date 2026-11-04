@@ -1,3 +1,5 @@
+BACKEND := backend
+
 .PHONY: dev-db dev-db-down test test-integration lint vet run
 
 dev-db:
@@ -6,19 +8,19 @@ dev-db:
 dev-db-down:
 	docker compose down
 
-vet:
-	go vet ./...
-
 # Unit tests; runs without Docker.
 test:
-	go test -short ./...
+	cd $(BACKEND) && go test -short ./...
 
 # All tests; requires `make dev-db` for integration tests.
 test-integration:
-	go test ./...
+	cd $(BACKEND) && go test ./...
+
+vet:
+	cd $(BACKEND) && go vet ./...
 
 lint:
-	golangci-lint run
+	cd $(BACKEND) && golangci-lint run
 
 run:
-	go run ./cmd/api
+	cd $(BACKEND) && go run ./cmd/api
