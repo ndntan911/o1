@@ -4,9 +4,9 @@
 
 **Goal:** Build the backend foundation of the uptime monitor: repo/tooling, Postgres schema, email+password auth, sessions, and multi-tenant workspaces with RBAC.
 
-**Architecture:** Go `net/http` + chi, pgx/sqlc for data access, goose for migrations, PostgreSQL 16. Auth is server-side sessions stored hashed in Postgres, delivered in an HttpOnly cookie. Workspaces own memberships; every workspace-scoped query filters by the authenticated user's membership. This plan is the first executable slice of the spec; monitors/probing and the React app are separate plans.
+**Architecture:** Go `net/http` (ServeMux), pgx/sqlc for data access, goose for migrations, PostgreSQL 16. Auth is server-side sessions stored hashed in Postgres, delivered in an HttpOnly cookie. Workspaces own memberships; every workspace-scoped query filters by the authenticated user's membership. This plan is the first executable slice of the spec; monitors/probing and the React app are separate plans.
 
-**Tech Stack:** Go 1.24, chi v5, pgx v5, sqlc, goose, google/uuid (UUIDv7), x/crypto/argon2, x/time/rate, testcontainers-go, PostgreSQL 16, Mailpit (dev email), GitHub Actions.
+**Tech Stack:** Go 1.26, net/http ServeMux, pgx v5, sqlc, goose, google/uuid (UUIDv7), x/crypto/argon2, x/time/rate, testcontainers-go, PostgreSQL 16, Mailpit (dev email), GitHub Actions.
 
 **Spec:** `docs/superpowers/specs/2026-11-04-uptime-monitor-design.md`
 
@@ -23,7 +23,7 @@ Each plan produces working, testable software on its own.
 
 ## Global Constraints
 
-- Go module name: `o1`. Go 1.24+. All code identifiers and API messages in English.
+- Go module name: `o1`. Go 1.26 (the dependency floor; the original 1.24+ constraint is satisfied). All code identifiers and API messages in English.
 - PostgreSQL 16. Migrations are append-only and run with goose.
 - API prefix `/api/v1`. Errors use `application/problem+json` with `code`, `message`, `fields` (spec §7.9).
 - Primary keys are UUIDv7 generated in Go (`uuid.NewV7()`). All timestamps are `timestamptz`.
@@ -155,7 +155,7 @@ Expected: FAIL because `config.Load`, `api.NewRouter`, and the packages do not e
 - `cmd/api/main.go`: load config, build logger, start `http.Server` on `cfg.HTTPAddr` with 10s read header timeout, handle SIGINT/SIGTERM with 10s graceful shutdown.
 - `Makefile` targets: `dev-db` (compose up -d), `test` (`go test -short ./...`), `test-integration` (`go test ./...`), `lint` (`golangci-lint run`), `run` (`go run ./cmd/api`).
 - `.golangci.yml` in `backend/`: enable `errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`, `gosec`.
-- `.github/workflows/ci.yml`: on push/PR; setup Go 1.24, run `go vet`, `go test -short ./...`, `golangci-lint` (via `golangci/golangci-lint-action@v8` with `version: v2.11.4`), and build all binaries.
+- `.github/workflows/ci.yml`: on push/PR; setup Go 1.26, run `go vet`, `go test -short ./...`, `golangci-lint` (via `golangci/golangci-lint-action@v8` with `version: v2.11.4`), build all binaries, and run `go test -count=1 ./...` in a separate integration job.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -896,6 +896,7 @@ GET    /readyz                      (pings DB)
 
 POST   /auth/register               (rate limited by IP)
 POST   /auth/verify-email
+POST   /auth/verify-email/resend    (rate limited by IP)
 POST   /auth/login                  (rate limited by IP)
 POST   /auth/logout                 (requires session)
 POST   /auth/password/forgot        (rate limited by IP)
@@ -915,7 +916,7 @@ POST   /workspaces/{workspaceID}/members        (requires session + admin)
 - `CSRF`: for `POST/PUT/PATCH/DELETE`, if `Origin` is present it must match one of `AllowedOrigins`; if absent, allow (SameSite=Lax plus non-browser clients).
 - `RateLimit`: token bucket per remote IP with `x/time/rate`; one limiter per IP, mutex-guarded map, 10 req/min with burst 10 for auth routes; return 429 `rate_limited`.
 - `/readyz` runs `pool.Ping(ctx)` with a 2s timeout; 200 or 503.
-- `Dockerfile`: multi-stage `golang:1.24-alpine` builder → `gcr.io/distroless/static-debian12:nonroot`; build `cmd/api`; expose 8080; run as nonroot.
+- `Dockerfile`: multi-stage `golang:1.26-alpine` builder → `gcr.io/distroless/static-debian12:nonroot`; build `cmd/api`; expose 8080; run as nonroot.
 
 - [ ] **Step 4: Run the full test suite**
 
