@@ -14,3 +14,8 @@ sql:
             go_type: "github.com/google/uuid.UUID"
           - db_type: "citext"
             go_type: "string"
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type: { import: "time", type: "Time", pointer: true }

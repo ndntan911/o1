@@ -7,9 +7,9 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createEmailVerificationToken = `-- name: CreateEmailVerificationToken :exec
@@ -21,7 +21,7 @@ type CreateEmailVerificationTokenParams struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	TokenHash []byte
-	ExpiresAt pgtype.Timestamptz
+	ExpiresAt time.Time
 }
 
 func (q *Queries) CreateEmailVerificationToken(ctx context.Context, arg CreateEmailVerificationTokenParams) error {
@@ -43,7 +43,7 @@ type CreatePasswordResetTokenParams struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	TokenHash []byte
-	ExpiresAt pgtype.Timestamptz
+	ExpiresAt time.Time
 }
 
 func (q *Queries) CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) error {
@@ -65,7 +65,7 @@ type CreateSessionParams struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	TokenHash []byte
-	ExpiresAt pgtype.Timestamptz
+	ExpiresAt time.Time
 	Ip        *string
 	UserAgent string
 }
@@ -188,7 +188,7 @@ WHERE id = $1
 
 type TouchSessionParams struct {
 	ID        uuid.UUID
-	ExpiresAt pgtype.Timestamptz
+	ExpiresAt time.Time
 }
 
 func (q *Queries) TouchSession(ctx context.Context, arg TouchSessionParams) error {

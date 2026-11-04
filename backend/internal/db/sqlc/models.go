@@ -5,35 +5,36 @@
 package sqlc
 
 import (
+	"time"
+
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type EmailVerificationToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	TokenHash []byte
-	ExpiresAt pgtype.Timestamptz
-	UsedAt    pgtype.Timestamptz
-	CreatedAt pgtype.Timestamptz
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+	CreatedAt time.Time
 }
 
 type PasswordResetToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
 	TokenHash []byte
-	ExpiresAt pgtype.Timestamptz
-	UsedAt    pgtype.Timestamptz
-	CreatedAt pgtype.Timestamptz
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+	CreatedAt time.Time
 }
 
 type Session struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID
 	TokenHash  []byte
-	CreatedAt  pgtype.Timestamptz
-	LastUsedAt pgtype.Timestamptz
-	ExpiresAt  pgtype.Timestamptz
+	CreatedAt  time.Time
+	LastUsedAt time.Time
+	ExpiresAt  time.Time
 	Ip         *string
 	UserAgent  string
 }
@@ -42,7 +43,7 @@ type User struct {
 	ID              uuid.UUID
 	Email           string
 	PasswordHash    string
-	EmailVerifiedAt pgtype.Timestamptz
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
+	EmailVerifiedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
