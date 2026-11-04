@@ -567,6 +567,7 @@ git commit -m "feat: add SSRF guard and safe HTTP prober"
     - `Delete(ctx, actorID, workspaceID, monitorID uuid.UUID) error`
     - `SetPaused(ctx, actorID, workspaceID, monitorID uuid.UUID, paused bool) (Monitor, error)`
   - `monitors.Input`, `monitors.UpdateInput`, `monitors.Monitor`, `monitors.State`, `monitors.Summary`, `monitors.Cursor`.
+  - `monitors.RedactURL(raw string) string` (parse, clear `RawQuery`/`Fragment`; usable by the admin package).
   - Sentinels: `ErrValidation`, `ErrNotFound` (= `workspaces.ErrNotFound`), `ErrForbidden` (= `workspaces.ErrForbidden`), `ErrSuspended`, `ErrQuotaExceeded`.
   - `*ValidationError{Fields map[string]string}` implementing `Is(ErrValidation)`; `*RateLimitError{RetryAfter time.Duration}`.
 
@@ -838,6 +839,7 @@ Expected: FAIL (cursor and routes undefined).
 - Response: design §10.1; `headers` is a name→`"***"` map or omitted when none; `last_check` and `summary_24h` nullable.
 - Error mapping: `ValidationError` → 400 with fields; `ErrNotFound` → 404; `ErrForbidden` → 403; `ErrSuspended` → 403 workspace_suspended; `ErrQuotaExceeded` → 409; `RateLimitError` → 429 + `Retry-After`; default → 500.
 - `limit` parsing: default 50, clamp 1–100; invalid `limit`/`cursor` → 400 with `fields`.
+- Decode an incoming cursor with `httpx.DecodeCursor` and pass `&monitors.Cursor{Time: c.Time, ID: c.ID}` to the service; encode the last row back with `httpx.EncodeCursor`.
 - Workspace/monitor IDs parsed with `uuid.Parse`; invalid → 400.
 
 Router wiring: mount the seven routes under `requireSession`. Build `box`, `guard`, and `monitors.NewService` when `deps.MonitorService == nil`, `deps.Pool != nil`, and `len(cfg.EncryptionKey) == 32`; otherwise leave the service nil so DB-less router tests that never reach these handlers still construct successfully. Add the new monitor routes to `TestRouter_ProtectedRoutesRequireSession`.
@@ -925,6 +927,7 @@ Expected: FAIL (APIs undefined).
 
 - `Summary`: authorize viewer; map the window; call `MonitorSummary`; `Uptime = up/checks` or nil when checks == 0; include `Window`.
 - `Results`: authorize viewer; map window to `checked_at >= now-window`; clamp limit 1–500 (default 100); use `ListProbeResults` with the cursor.
+- Convert `httpx.PageCursor` from the request into `monitors.Cursor{Time, ID}` before calling the service; encode the returned last row for `next_cursor`.
 - Handlers emit:
 
 ```json
@@ -1318,7 +1321,8 @@ Expected: FAIL.
 - `RequireAdmin`: read principal; missing → 401; `!IsAdmin` → 403 `forbidden`; else next.
 - Admin service validates reason 1–500 characters, authorizes by admin middleware (handler layer), and does not perform workspace membership checks (admin is cross-tenant by design).
 - `Suspend`/`Unsuspend` are idempotent; suspend records `workspace_suspended` with actor/reason, unsuspend records `workspace_unsuspended`.
-- `ListMonitors` uses `redactURL` for URLs (strip query and fragment); `ListWorkspaces` returns counts from the query.
+- `ListMonitors` uses `monitors.RedactURL` for URLs (strip query and fragment); `ListWorkspaces` returns counts from the query.
+- Admin handlers decode `httpx.PageCursor` into `monitors.Cursor` exactly like the workspace monitor handlers.
 - Bootstrap in `app.Start`: if `cfg.BootstrapAdminEmail != ""`, run `UPDATE users SET is_admin = true WHERE email = $1 AND email_verified_at IS NOT NULL`; log whether a row changed. Never error when the user does not exist yet.
 
 - [ ] **Step 5: Wire the admin handlers and run tests**
@@ -1343,7 +1347,7 @@ git commit -m "feat: add admin workspace suspension and security events"
 - Modify: `backend/Dockerfile`
 - Modify: `compose.yaml`
 - Modify: `.github/workflows/ci.yml`
-- Modify: `README.md` (run instructions for scheduler/worker and admin bootstrap)
+- Modify: `README.md` (create it at the repo root; run instructions for scheduler/worker and admin bootstrap)
 - Create: `backend/internal/api/probe_flow_integration_test.go` (end-to-end probe flow through scheduler + worker)
 
 **Interfaces:**
@@ -1409,7 +1413,7 @@ Copy all three into the distroless stage; keep `ENTRYPOINT ["/api"]`.
 
 - [ ] **Step 3: Extend compose**
 
-Add `scheduler` and `worker` services using the same build context/image, `depends_on: postgres: {condition: service_healthy}`, `environment` sharing `O1_DATABASE_URL`, `O1_SECRET_KEY`, `O1_ENV`, and `entrypoint: ["/scheduler"]` / `["/worker"]`. Expose health ports if desired. Do not add a migration-only service; the advisory lock makes concurrent startup safe.
+Add `scheduler` and `worker` services using the same build context/image, `depends_on: postgres: {condition: service_healthy}`, `environment` sharing `O1_DATABASE_URL`, `O1_SECRET_KEY`, `O1_ENV`, and `entrypoint: ["/scheduler"]` / `["/worker"]`. Also add an `api` service for the same image (`entrypoint: ["/api"]`, port 8080) so `docker compose up` runs the full stack; the current compose file only has Postgres and Mailpit. Expose health ports if desired. Do not add a migration-only service; the advisory lock makes concurrent startup safe.
 
 - [ ] **Step 4: Update CI and docs**
 
