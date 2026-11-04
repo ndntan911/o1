@@ -61,8 +61,12 @@ func TestVerifyEmail_ExpiredToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tokenID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := q.CreateEmailVerificationToken(context.Background(), sqlc.CreateEmailVerificationTokenParams{
-		ID:        uuid.New(),
+		ID:        tokenID,
 		UserID:    userID,
 		TokenHash: hash,
 		ExpiresAt: time.Now().Add(-time.Minute),
@@ -116,5 +120,102 @@ func TestRegister_EmailFailureStillCreatesUser(t *testing.T) {
 	}
 	if u.Email != "outboxfails@example.com" {
 		t.Fatalf("email = %q", u.Email)
+	}
+}
+
+func TestRegister_EmailFailureRetiresVerificationToken(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := auth.NewService(pool, sqlc.New(pool), errorSender{err: errors.New("smtp down")},
+		testutil.TestConfig(t))
+	u, err := svc.Register(context.Background(), "retired@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unused int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM email_verification_tokens WHERE user_id=$1 AND used_at IS NULL", u.ID).
+		Scan(&unused); err != nil {
+		t.Fatal(err)
+	}
+	if unused != 0 {
+		t.Fatalf("unused verification tokens = %d, want 0 after failed delivery", unused)
+	}
+}
+
+func TestResendVerification_UnknownOrVerifiedIsSilent(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	fs := testutil.NewFakeSender()
+	svc := auth.NewService(pool, sqlc.New(pool), fs, testutil.TestConfig(t))
+	ctx := context.Background()
+
+	if err := svc.ResendVerification(ctx, "nobody@example.com"); err != nil {
+		t.Fatalf("unknown email err = %v, want nil", err)
+	}
+	if fs.Len() != 0 {
+		t.Fatalf("unknown email sent %d messages, want 0", fs.Len())
+	}
+
+	testutil.CreateVerifiedUser(t, pool, "verified@example.com", testPassword)
+	if err := svc.ResendVerification(ctx, "Verified@Example.com"); err != nil {
+		t.Fatalf("verified email err = %v, want nil", err)
+	}
+	if fs.Len() != 0 {
+		t.Fatalf("verified email sent %d messages, want 0", fs.Len())
+	}
+}
+
+func TestResendVerification_SendsNewAndInvalidatesOldToken(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	fs := testutil.NewFakeSender()
+	svc := auth.NewService(pool, sqlc.New(pool), fs, testutil.TestConfig(t))
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, "resend@example.com", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	if fs.Len() != 1 {
+		t.Fatalf("registration sent %d messages, want 1", fs.Len())
+	}
+	oldToken := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(fs.Messages()[0].Text)[1]
+
+	if err := svc.ResendVerification(ctx, "Resend@Example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if fs.Len() != 2 {
+		t.Fatalf("sent = %d after resend, want 2", fs.Len())
+	}
+	newToken := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(lastSentText(t, fs))[1]
+	if newToken == oldToken {
+		t.Fatal("resend reused the previous token")
+	}
+
+	if err := svc.VerifyEmail(ctx, oldToken); !errors.Is(err, auth.ErrTokenInvalid) {
+		t.Fatalf("old token err = %v, want ErrTokenInvalid", err)
+	}
+	if err := svc.VerifyEmail(ctx, newToken); err != nil {
+		t.Fatalf("new token err = %v, want nil", err)
+	}
+}
+
+func TestRequestPasswordReset_EmailFailureRetiresToken(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := auth.NewService(pool, sqlc.New(pool), errorSender{err: errors.New("smtp down")},
+		testutil.TestConfig(t))
+	userID := testutil.CreateVerifiedUser(t, pool, "resetretired@example.com", testPassword)
+	if err := svc.RequestPasswordReset(context.Background(), "resetretired@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	var unused int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM password_reset_tokens WHERE user_id=$1 AND used_at IS NULL", userID).
+		Scan(&unused); err != nil {
+		t.Fatal(err)
+	}
+	if unused != 0 {
+		t.Fatalf("unused reset tokens = %d, want 0 after failed delivery", unused)
 	}
 }

@@ -46,6 +46,12 @@ func Load() (Config, error) {
 		ResendAPIKey:      os.Getenv("O1_RESEND_API_KEY"),
 	}
 
+	switch cfg.Env {
+	case "development", "test", "production":
+	default:
+		return cfg, fmt.Errorf("invalid O1_ENV %q: must be one of development, test, production", cfg.Env)
+	}
+
 	if cfg.DatabaseURL == "" {
 		return cfg, fmt.Errorf("missing required environment variable O1_DATABASE_URL")
 	}

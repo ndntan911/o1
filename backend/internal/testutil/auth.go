@@ -106,8 +106,12 @@ func CreateVerifiedUser(t *testing.T, pool *pgxpool.Pool, emailAddr, password st
 		t.Fatalf("hash password: %v", err)
 	}
 	q := sqlc.New(pool)
+	userID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("generate user id: %v", err)
+	}
 	user, err := q.CreateUser(context.Background(), sqlc.CreateUserParams{
-		ID:           uuid.New(),
+		ID:           userID,
 		Email:        emailAddr,
 		PasswordHash: hash,
 	})

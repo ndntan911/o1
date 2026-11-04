@@ -15,6 +15,8 @@ const (
 	passwordResetWorkers = 2
 	// passwordResetJobTimeout bounds one background reset attempt.
 	passwordResetJobTimeout = 30 * time.Second
+	// passwordResetDrainTimeout bounds how long Close waits for workers.
+	passwordResetDrainTimeout = 10 * time.Second
 )
 
 // passwordResetJob carries a detached context and the requested email.
@@ -74,8 +76,16 @@ func (q *passwordResetQueue) worker() {
 	}
 }
 
-// close stops accepting jobs, drains accepted work, and waits for workers.
+// close stops accepting jobs, drains accepted work, and waits for workers
+// using the default drain timeout.
 func (q *passwordResetQueue) close() {
+	q.closeWithTimeout(passwordResetDrainTimeout)
+}
+
+// closeWithTimeout stops accepting jobs and waits up to d for workers to
+// finish. If they are still stuck in a send, it logs drain_timeout and returns
+// instead of blocking shutdown. It is safe to call more than once.
+func (q *passwordResetQueue) closeWithTimeout(d time.Duration) {
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
@@ -84,7 +94,23 @@ func (q *passwordResetQueue) close() {
 	q.closed = true
 	close(q.jobs)
 	q.mu.Unlock()
-	q.wg.Wait()
+
+	if d <= 0 {
+		d = passwordResetDrainTimeout
+	}
+	drained := make(chan struct{})
+	go func() {
+		q.wg.Wait()
+		close(drained)
+	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-drained:
+	case <-timer.C:
+		// A stuck sender must not hang process shutdown. No sensitive fields.
+		slog.Warn("password reset queue drain timed out", "event", "drain_timeout")
+	}
 }
 
 // QueuePasswordReset enqueues a password reset without waiting for the

@@ -313,6 +313,28 @@ func TestLogoutHandler_ClearsCookie(t *testing.T) {
 	}
 }
 
+func TestResendVerificationHandler_UnknownIs204AndMalformedIs400(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := auth.NewService(pool, sqlc.New(pool), testutil.NewFakeSender(), testutil.TestConfig(t))
+	h := auth.ResendVerificationHandler(svc)
+
+	status, _, body := postJSON(t, h, `{"email":"nobody@example.com"}`)
+	if status != http.StatusNoContent {
+		t.Fatalf("unknown email status = %d, body = %s, want 204", status, body)
+	}
+
+	status, _, body = postJSON(t, h, `{"email":"not-an-email"}`)
+	if status != http.StatusNoContent {
+		t.Fatalf("invalid email status = %d, body = %s, want 204", status, body)
+	}
+
+	status, ctype, body := postJSON(t, h, `{not json`)
+	if code := problemCode(t, status, ctype, body); status != http.StatusBadRequest || code != "validation_error" {
+		t.Fatalf("malformed JSON status = %d, code = %q", status, code)
+	}
+}
+
 func TestForgotPassword_UnknownEmailStill204(t *testing.T) {
 	pool, cleanup := testutil.NewPostgres(t)
 	defer cleanup()

@@ -42,6 +42,7 @@ func run() error {
 	}
 
 	logger := logging.New(os.Stdout, cfg.Env)
+	slog.SetDefault(logger)
 
 	ctx := context.Background()
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
@@ -80,6 +81,9 @@ func run() error {
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

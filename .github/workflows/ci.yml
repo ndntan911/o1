@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -17,6 +20,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          cache-dependency-path: backend/go.sum
 
       - name: go vet
         run: go vet ./...
@@ -27,8 +31,30 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.1.6
+          # Pinned to a release built with a Go toolchain new enough for this
+          # module's `go 1.26.0` directive; older versions (e.g. v2.1.6) fail
+          # to load the module.
+          version: v2.11.4
           working-directory: backend
 
       - name: Build all binaries
         run: go build ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+
+      # The GitHub-hosted runner provides Docker, so testcontainers can start
+      # Postgres for the integration tests.
+      - name: go test (integration)
+        run: go test -count=1 ./...

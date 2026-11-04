@@ -112,6 +112,11 @@ type forgotPasswordRequest struct {
 	Email string `json:"email"`
 }
 
+// resendVerificationRequest is the JSON body of POST /verify-email/resend.
+type resendVerificationRequest struct {
+	Email string `json:"email"`
+}
+
 // resetPasswordRequest is the JSON body of POST /password/reset.
 type resetPasswordRequest struct {
 	Token       string `json:"token"`
@@ -154,17 +159,46 @@ func LoginHandler(svc *Service, cfg config.Config) http.HandlerFunc {
 }
 
 // LogoutHandler deletes the session and expires the cookie. It returns 204 even
-// when no session cookie was supplied, so callers can always clear state.
+// when no session cookie was supplied, so callers can always clear state. If
+// the delete fails it still expires the cookie before returning 500, so the
+// client never keeps a session cookie from a failed logout.
 func LogoutHandler(svc *Service, cfg config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie(sessionCookieName(cfg)); err == nil && cookie.Value != "" {
 			if err := svc.Logout(r.Context(), cookie.Value); err != nil {
+				ClearSessionCookie(w, cfg)
 				writeProblem(w, http.StatusInternalServerError, "internal_error",
 					"Internal Server Error")
 				return
 			}
 		}
 		ClearSessionCookie(w, cfg)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// ResendVerificationHandler re-issues a verification email. Well-formed JSON
+// always answers 204, including unknown and already-verified addresses, so the
+// endpoint cannot be used to enumerate accounts. Malformed JSON is a 400
+// validation_error.
+func ResendVerificationHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req resendVerificationRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeValidationProblem(w)
+			return
+		}
+		if err := svc.ResendVerification(r.Context(), req.Email); err != nil {
+			// Validation problems look the same as an unknown address so a
+			// syntactically invalid request cannot distinguish accounts.
+			if !errors.Is(err, ErrValidation) {
+				writeProblem(w, http.StatusInternalServerError, "internal_error",
+					"Internal Server Error")
+				return
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

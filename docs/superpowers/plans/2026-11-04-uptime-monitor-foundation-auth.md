@@ -155,7 +155,7 @@ Expected: FAIL because `config.Load`, `api.NewRouter`, and the packages do not e
 - `cmd/api/main.go`: load config, build logger, start `http.Server` on `cfg.HTTPAddr` with 10s read header timeout, handle SIGINT/SIGTERM with 10s graceful shutdown.
 - `Makefile` targets: `dev-db` (compose up -d), `test` (`go test -short ./...`), `test-integration` (`go test ./...`), `lint` (`golangci-lint run`), `run` (`go run ./cmd/api`).
 - `.golangci.yml` in `backend/`: enable `errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`, `gosec`.
-- `.github/workflows/ci.yml`: on push/PR; setup Go 1.24, run `go vet`, `go test -short ./...`, `golangci-lint` (via `golangci/golangci-lint-action@v6`), and build all binaries.
+- `.github/workflows/ci.yml`: on push/PR; setup Go 1.24, run `go vet`, `go test -short ./...`, `golangci-lint` (via `golangci/golangci-lint-action@v8` with `version: v2.11.4`), and build all binaries.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -888,7 +888,7 @@ Expected: FAIL because CSRF/RateLimit and the full router do not exist.
 
 - [ ] **Step 3: Implement router and middleware**
 
-Routes (all under `/api/v1`):
+Routes (`/healthz` and `/readyz` are at the root; the rest are under `/api/v1`):
 
 ```text
 GET    /healthz                     (unauthenticated)

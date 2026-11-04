@@ -168,6 +168,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux.Handle("POST /api/v1/auth/register", authLimiter(http.HandlerFunc(auth.RegisterHandler(authSvc))))
 	mux.Handle("POST /api/v1/auth/verify-email", authLimiter(http.HandlerFunc(auth.VerifyEmailHandler(authSvc))))
+	mux.Handle("POST /api/v1/auth/verify-email/resend", authLimiter(http.HandlerFunc(auth.ResendVerificationHandler(authSvc))))
 	mux.Handle("POST /api/v1/auth/login", authLimiter(http.HandlerFunc(auth.LoginHandler(authSvc, deps.Config))))
 	mux.Handle("POST /api/v1/auth/logout", requireSession(http.HandlerFunc(auth.LogoutHandler(authSvc, deps.Config))))
 	mux.Handle("POST /api/v1/auth/password/forgot", authLimiter(http.HandlerFunc(auth.ForgotPasswordHandler(authSvc))))

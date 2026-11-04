@@ -45,3 +45,30 @@ func TestForgotPasswordHandler_QueueFullStill204(t *testing.T) {
 		t.Fatalf("status = %d, want 204 when the queue is full", rec.Code)
 	}
 }
+
+func TestCloseWithTimeout_ReturnsWhileWorkerStuck(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	started := make(chan struct{})
+	q := newPasswordResetQueue(1, 1, func(context.Context, string) {
+		close(started)
+		<-release
+	})
+	if !q.enqueue(passwordResetJob{ctx: context.Background(), email: "first@example.com"}) {
+		t.Fatal("enqueue failed")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker never started")
+	}
+
+	start := time.Now()
+	q.closeWithTimeout(50 * time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("closeWithTimeout blocked for %v with a stuck worker", elapsed)
+	}
+
+	// A second close must be safe and return immediately.
+	q.closeWithTimeout(50 * time.Millisecond)
+}

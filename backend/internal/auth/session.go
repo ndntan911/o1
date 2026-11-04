@@ -76,8 +76,12 @@ func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent 
 	if err != nil {
 		return "", sqlc.User{}, fmt.Errorf("create session token: %w", err)
 	}
+	sessionID, err := uuid.NewV7()
+	if err != nil {
+		return "", sqlc.User{}, fmt.Errorf("generate session id: %w", err)
+	}
 	if err := s.q.CreateSession(ctx, sqlc.CreateSessionParams{
-		ID:        uuid.New(),
+		ID:        sessionID,
 		UserID:    user.ID,
 		TokenHash: tokenHash,
 		ExpiresAt: time.Now().Add(s.cfg.SessionTTL),
@@ -152,8 +156,12 @@ func (s *Service) RequestPasswordReset(ctx context.Context, emailAddr string) er
 	if err != nil {
 		return fmt.Errorf("create password reset token: %w", err)
 	}
+	tokenID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("generate password reset token id: %w", err)
+	}
 	if err := s.q.CreatePasswordResetToken(ctx, sqlc.CreatePasswordResetTokenParams{
-		ID:        uuid.New(),
+		ID:        tokenID,
 		UserID:    user.ID,
 		TokenHash: tokenHash,
 		ExpiresAt: time.Now().Add(passwordResetTokenTTL),
@@ -174,6 +182,12 @@ func (s *Service) RequestPasswordReset(ctx context.Context, emailAddr string) er
 		// Delivery failed: log only a generic reason and non-sensitive fields.
 		// The raw error may echo message contents, and the token/URL are secret.
 		slog.Error("send password reset email failed", "user_id", user.ID, "error_type", fmt.Sprintf("%T", err))
+		markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenCleanupTimeout)
+		defer cancel()
+		if markErr := s.q.MarkPasswordResetTokenUsed(markCtx, tokenID); markErr != nil {
+			slog.Error("mark password reset token used failed",
+				"user_id", user.ID, "error_type", fmt.Sprintf("%T", markErr))
+		}
 	}
 	return nil
 }

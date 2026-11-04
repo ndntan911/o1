@@ -65,6 +65,7 @@ func TestRouter_ProtectedRoutesRequireSession(t *testing.T) {
 		path   string
 	}{
 		{http.MethodGet, "/api/v1/me"},
+		{http.MethodPost, "/api/v1/auth/logout"},
 		{http.MethodGet, "/api/v1/workspaces"},
 		{http.MethodPost, "/api/v1/workspaces"},
 		{http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef"},

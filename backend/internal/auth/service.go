@@ -37,8 +37,13 @@ var (
 	ErrUnauthenticated = errors.New("unauthenticated")
 )
 
-// verificationTokenTTL is how long a verification token remains usable.
-const verificationTokenTTL = 24 * time.Hour
+const (
+	// verificationTokenTTL is how long a verification token remains usable.
+	verificationTokenTTL = 24 * time.Hour
+	// tokenCleanupTimeout bounds the best-effort cleanup query after a failed
+	// email delivery.
+	tokenCleanupTimeout = 5 * time.Second
+)
 
 // Service implements registration, login, sessions, and password reset on top
 // of the auth database schema and an email sender.
@@ -82,10 +87,10 @@ func validateEmail(raw string) (string, error) {
 }
 
 // Register creates a new account: it normalizes and validates the input,
-// stores the user with an Argon2id password hash, issues a single-use
-// verification token, and emails the verification link. Email delivery
-// failures are logged and swallowed: the account exists and can be
-// re-verified later with a fresh token.
+// stores the user and its single-use verification token in one transaction,
+// then emails the verification link. A delivery failure is logged and the
+// token is retired so a lost link cannot stay live; the account remains and
+// can be re-verified later with a fresh token.
 func (s *Service) Register(ctx context.Context, emailAddr, password string) (sqlc.User, error) {
 	emailAddr, err := validateEmail(emailAddr)
 	if err != nil {
@@ -95,9 +100,30 @@ func (s *Service) Register(ctx context.Context, emailAddr, password string) (sql
 	if err != nil {
 		return sqlc.User{}, err
 	}
+	userID, err := uuid.NewV7()
+	if err != nil {
+		return sqlc.User{}, fmt.Errorf("generate user id: %w", err)
+	}
+	raw, tokenHash, err := NewToken()
+	if err != nil {
+		return sqlc.User{}, fmt.Errorf("create verification token: %w", err)
+	}
+	tokenID, err := uuid.NewV7()
+	if err != nil {
+		return sqlc.User{}, fmt.Errorf("generate verification token id: %w", err)
+	}
 
-	user, err := s.q.CreateUser(ctx, sqlc.CreateUserParams{
-		ID:           uuid.New(),
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return sqlc.User{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	user, err := qtx.CreateUser(ctx, sqlc.CreateUserParams{
+		ID:           userID,
 		Email:        emailAddr,
 		PasswordHash: hash,
 	})
@@ -108,34 +134,106 @@ func (s *Service) Register(ctx context.Context, emailAddr, password string) (sql
 		}
 		return sqlc.User{}, fmt.Errorf("create user: %w", err)
 	}
-
-	raw, tokenHash, err := NewToken()
-	if err != nil {
-		return sqlc.User{}, fmt.Errorf("create verification token: %w", err)
-	}
-	if err := s.q.CreateEmailVerificationToken(ctx, sqlc.CreateEmailVerificationTokenParams{
-		ID:        uuid.New(),
+	if err := qtx.CreateEmailVerificationToken(ctx, sqlc.CreateEmailVerificationTokenParams{
+		ID:        tokenID,
 		UserID:    user.ID,
 		TokenHash: tokenHash,
 		ExpiresAt: time.Now().Add(verificationTokenTTL),
 	}); err != nil {
 		return sqlc.User{}, fmt.Errorf("store verification token: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return sqlc.User{}, fmt.Errorf("commit registration: %w", err)
+	}
 
+	s.deliverVerificationEmail(ctx, user.ID, tokenID, user.Email, raw)
+	return user, nil
+}
+
+// verificationEmail builds the message shared by registration and resend.
+func (s *Service) verificationEmail(to, raw string) email.Message {
 	verifyURL := fmt.Sprintf("%s/verify-email?token=%s", s.cfg.AppBaseURL, raw)
-	msg := email.Message{
-		To:      user.Email,
+	return email.Message{
+		To:      to,
 		Subject: "Verify your email",
 		Text: fmt.Sprintf("Please verify your email by opening the following link:\n%s\n\n"+
 			"The link expires in 24 hours and can be used once.\n", verifyURL),
 		HTML: fmt.Sprintf(`<p>Please verify your email by opening <a href=%q>this link</a>.</p>`+
 			"<p>The link expires in 24 hours and can be used once.</p>\n", verifyURL),
 	}
-	if err := s.sender.Send(ctx, msg); err != nil {
-		// Delivery failed: log only what is safe (never the token).
-		slog.Error("send verification email failed", "user_id", user.ID, "err", err)
+}
+
+// deliverVerificationEmail sends a verification message and, if delivery
+// fails, retires the token so the undelivered link cannot be used. Logs carry
+// only the error type (never the token, URL, or raw SMTP error).
+func (s *Service) deliverVerificationEmail(ctx context.Context, userID, tokenID uuid.UUID, to, raw string) {
+	if err := s.sender.Send(ctx, s.verificationEmail(to, raw)); err != nil {
+		slog.Error("send verification email failed",
+			"user_id", userID, "error_type", fmt.Sprintf("%T", err))
+		markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenCleanupTimeout)
+		defer cancel()
+		if markErr := s.q.MarkEmailVerificationTokenUsed(markCtx, tokenID); markErr != nil {
+			slog.Error("mark verification token used failed",
+				"user_id", userID, "error_type", fmt.Sprintf("%T", markErr))
+		}
 	}
-	return user, nil
+}
+
+// ResendVerification issues a fresh verification token to an unverified
+// account, invalidating any unused tokens from earlier sends. Unknown and
+// already-verified addresses are ignored so the endpoint cannot enumerate
+// accounts.
+func (s *Service) ResendVerification(ctx context.Context, emailAddr string) error {
+	emailAddr, err := validateEmail(emailAddr)
+	if err != nil {
+		return err
+	}
+	user, err := s.q.GetUserByEmail(ctx, emailAddr)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("load user: %w", err)
+	}
+	if user.EmailVerifiedAt != nil {
+		return nil
+	}
+
+	raw, tokenHash, err := NewToken()
+	if err != nil {
+		return fmt.Errorf("create verification token: %w", err)
+	}
+	tokenID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("generate verification token id: %w", err)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	if err := qtx.MarkEmailVerificationTokensUsedByUserID(ctx, user.ID); err != nil {
+		return fmt.Errorf("retire previous verification tokens: %w", err)
+	}
+	if err := qtx.CreateEmailVerificationToken(ctx, sqlc.CreateEmailVerificationTokenParams{
+		ID:        tokenID,
+		UserID:    user.ID,
+		TokenHash: tokenHash,
+		ExpiresAt: time.Now().Add(verificationTokenTTL),
+	}); err != nil {
+		return fmt.Errorf("store verification token: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit verification resend: %w", err)
+	}
+
+	s.deliverVerificationEmail(ctx, user.ID, tokenID, user.Email, raw)
+	return nil
 }
 
 // VerifyEmail consumes a verification token: the row is locked FOR UPDATE

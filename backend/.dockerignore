@@ -1,0 +1,6 @@
+.git
+*_test.go
+tmp/
+bin/
+dist/
+.DS_Store

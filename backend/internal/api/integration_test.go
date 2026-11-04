@@ -118,8 +118,18 @@ func TestAPI_RegisterVerifyLoginCreateWorkspace(t *testing.T) {
 
 	c := newAPIClient(t, server.URL, cfg.AppBaseURL)
 
+	// 0. Readiness with a live pool reports ready.
+	resp, body := c.do(http.MethodGet, "/readyz", nil)
+	requireStatus(t, resp, http.StatusOK)
+	ready := decodeJSON[struct {
+		Status string `json:"status"`
+	}](t, body)
+	if ready.Status != "ok" {
+		t.Fatalf("readyz status = %q, want ok", ready.Status)
+	}
+
 	// 1. Register.
-	resp, body := c.do(http.MethodPost, "/api/v1/auth/register", map[string]string{
+	resp, body = c.do(http.MethodPost, "/api/v1/auth/register", map[string]string{
 		"email":    "alice@example.com",
 		"password": "correct horse battery staple",
 	})

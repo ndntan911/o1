@@ -330,8 +330,12 @@ func TestResetPassword_ExpiredToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tokenID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := q.CreatePasswordResetToken(context.Background(), sqlc.CreatePasswordResetTokenParams{
-		ID:        uuid.New(),
+		ID:        tokenID,
 		UserID:    userID,
 		TokenHash: hash,
 		ExpiresAt: time.Now().Add(-time.Minute),

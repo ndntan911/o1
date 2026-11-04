@@ -209,6 +209,17 @@ func (q *Queries) MarkEmailVerificationTokenUsed(ctx context.Context, id uuid.UU
 	return err
 }
 
+const markEmailVerificationTokensUsedByUserID = `-- name: MarkEmailVerificationTokensUsedByUserID :exec
+UPDATE email_verification_tokens
+SET used_at = now()
+WHERE user_id = $1 AND used_at IS NULL
+`
+
+func (q *Queries) MarkEmailVerificationTokensUsedByUserID(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markEmailVerificationTokensUsedByUserID, userID)
+	return err
+}
+
 const markPasswordResetTokenUsed = `-- name: MarkPasswordResetTokenUsed :exec
 UPDATE password_reset_tokens
 SET used_at = now()
