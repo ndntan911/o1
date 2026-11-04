@@ -24,6 +24,11 @@ VALUES ($1, $2, $3, $4);
 SELECT * FROM email_verification_tokens
 WHERE token_hash = $1 AND used_at IS NULL;
 
+-- name: GetEmailVerificationTokenForUpdate :one
+SELECT * FROM email_verification_tokens
+WHERE token_hash = $1
+FOR UPDATE;
+
 -- name: MarkEmailVerificationTokenUsed :exec
 UPDATE email_verification_tokens
 SET used_at = now()

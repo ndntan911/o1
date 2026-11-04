@@ -119,6 +119,26 @@ func (q *Queries) GetEmailVerificationToken(ctx context.Context, tokenHash []byt
 	return i, err
 }
 
+const getEmailVerificationTokenForUpdate = `-- name: GetEmailVerificationTokenForUpdate :one
+SELECT id, user_id, token_hash, expires_at, used_at, created_at FROM email_verification_tokens
+WHERE token_hash = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetEmailVerificationTokenForUpdate(ctx context.Context, tokenHash []byte) (EmailVerificationToken, error) {
+	row := q.db.QueryRow(ctx, getEmailVerificationTokenForUpdate, tokenHash)
+	var i EmailVerificationToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getPasswordResetToken = `-- name: GetPasswordResetToken :one
 SELECT id, user_id, token_hash, expires_at, used_at, created_at FROM password_reset_tokens
 WHERE token_hash = $1 AND used_at IS NULL
