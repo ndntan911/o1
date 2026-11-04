@@ -10,14 +10,36 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"o1/internal/auth"
+	"o1/internal/config"
+	"o1/internal/db/sqlc"
+	"o1/internal/email"
 	"o1/internal/httpx"
+	"o1/internal/workspaces"
 )
 
-// Dependencies carries the services the router needs. Later tasks add
-// more fields (stores, mailer, and so on).
+// Dependencies carries the services the router needs. AuthService and
+// WorkspaceService are optional: when nil the router builds them from Pool,
+// Config, and EmailSender. main.go passes explicit instances so it can close
+// the auth service before the database pool.
 type Dependencies struct {
-	Logger *slog.Logger
+	Logger           *slog.Logger
+	Pool             *pgxpool.Pool
+	Config           config.Config
+	EmailSender      email.Sender
+	AuthService      *auth.Service
+	WorkspaceService *workspaces.Service
 }
+
+// authRatePerSecond and authRateBurst implement 10 requests per minute for
+// the credential-handling endpoints.
+const (
+	authRatePerSecond = 10.0 / 60.0
+	authRateBurst     = 10
+)
 
 // maxBodyBytes limits the size of request bodies (1 MiB).
 const maxBodyBytes int64 = 1 << 20
@@ -123,19 +145,135 @@ func recoverPanics(logger *slog.Logger) func(http.Handler) http.Handler {
 
 // NewRouter builds the root HTTP handler.
 func NewRouter(deps Dependencies) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
-
 	logger := deps.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
+	authSvc := deps.AuthService
+	if authSvc == nil {
+		authSvc = auth.NewService(deps.Pool, sqlc.New(deps.Pool), deps.EmailSender, deps.Config)
+	}
+	wsSvc := deps.WorkspaceService
+	if wsSvc == nil {
+		wsSvc = workspaces.NewService(deps.Pool, sqlc.New(deps.Pool))
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
+	mux.HandleFunc("GET /readyz", readyzHandler(deps.Pool))
+
+	requireSession := auth.RequireSession(authSvc)
+	authLimiter := httpx.RateLimit(authRatePerSecond, authRateBurst, true)
+
+	mux.Handle("POST /api/v1/auth/register", authLimiter(http.HandlerFunc(auth.RegisterHandler(authSvc))))
+	mux.Handle("POST /api/v1/auth/verify-email", authLimiter(http.HandlerFunc(auth.VerifyEmailHandler(authSvc))))
+	mux.Handle("POST /api/v1/auth/login", authLimiter(http.HandlerFunc(auth.LoginHandler(authSvc, deps.Config))))
+	mux.Handle("POST /api/v1/auth/logout", requireSession(http.HandlerFunc(auth.LogoutHandler(authSvc, deps.Config))))
+	mux.Handle("POST /api/v1/auth/password/forgot", authLimiter(http.HandlerFunc(auth.ForgotPasswordHandler(authSvc))))
+	mux.Handle("POST /api/v1/auth/password/reset", authLimiter(http.HandlerFunc(auth.ResetPasswordHandler(authSvc))))
+
+	mux.Handle("GET /api/v1/me", requireSession(http.HandlerFunc(MeHandler(wsSvc))))
+
+	mux.Handle("GET /api/v1/workspaces", requireSession(http.HandlerFunc(workspaces.ListHandler(wsSvc))))
+	mux.Handle("POST /api/v1/workspaces", requireSession(http.HandlerFunc(workspaces.CreateHandler(wsSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}", requireSession(http.HandlerFunc(workspaces.GetHandler(wsSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.MembersHandler(wsSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.AddMemberHandler(wsSvc))))
+
 	var handler http.Handler = mux
 	handler = withBodyLimit(handler)
+	handler = httpx.CSRF(deps.Config.AllowedOrigins)(handler)
 	handler = withSecurityHeaders(handler)
 	handler = requestLogging(logger)(handler)
 	handler = recoverPanics(logger)(handler)
 	handler = withRequestID(handler)
 	return handler
+}
+
+// readinessResponse is the JSON body of a successful GET /readyz.
+type readinessResponse struct {
+	Status string `json:"status"`
+}
+
+// readyzHandler pings the database with a short timeout. A missing or
+// unreachable database yields 503 so orchestrators stop routing traffic here.
+func readyzHandler(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeNotReady(w)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			writeNotReady(w)
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, readinessResponse{Status: "ok"})
+	}
+}
+
+func writeNotReady(w http.ResponseWriter) {
+	httpx.WriteProblem(w, httpx.Problem{
+		Type:   "about:blank",
+		Title:  "Service Unavailable",
+		Status: http.StatusServiceUnavailable,
+		Code:   "not_ready",
+	})
+}
+
+// meUser is the public representation of the authenticated user.
+type meUser struct {
+	ID    uuid.UUID `json:"id"`
+	Email string    `json:"email"`
+}
+
+// meWorkspace is a workspace as returned by GET /me.
+type meWorkspace struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+	Slug string    `json:"slug"`
+	Role string    `json:"role"`
+}
+
+// meResponse is the JSON body of GET /me.
+type meResponse struct {
+	User       meUser        `json:"user"`
+	Workspaces []meWorkspace `json:"workspaces"`
+}
+
+// MeHandler returns the authenticated user together with every workspace they
+// belong to.
+func MeHandler(wsSvc *workspaces.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := auth.PrincipalFrom(r.Context())
+		if !ok {
+			httpx.WriteProblem(w, httpx.Problem{
+				Type:   "about:blank",
+				Title:  "Authentication required",
+				Status: http.StatusUnauthorized,
+				Code:   httpx.CodeUnauthenticated,
+			})
+			return
+		}
+		list, err := wsSvc.ListForUser(r.Context(), principal.UserID)
+		if err != nil {
+			httpx.WriteProblem(w, httpx.Problem{
+				Type:   "about:blank",
+				Title:  "Internal Server Error",
+				Status: http.StatusInternalServerError,
+				Code:   "internal_error",
+			})
+			return
+		}
+		out := make([]meWorkspace, 0, len(list))
+		for _, ws := range list {
+			out = append(out, meWorkspace{ID: ws.ID, Name: ws.Name, Slug: ws.Slug, Role: ws.Role.String()})
+		}
+		httpx.WriteJSON(w, http.StatusOK, meResponse{
+			User:       meUser{ID: principal.UserID, Email: principal.Email},
+			Workspaces: out,
+		})
+	}
 }

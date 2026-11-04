@@ -13,8 +13,13 @@ import (
 	"time"
 
 	"o1/internal/api"
+	"o1/internal/auth"
 	"o1/internal/config"
+	"o1/internal/db"
+	"o1/internal/db/sqlc"
+	"o1/internal/email"
 	"o1/internal/logging"
+	"o1/internal/workspaces"
 )
 
 func main() {
@@ -30,15 +35,50 @@ func run() error {
 		return err
 	}
 
+	// Only the Mailpit development sender exists today. Refuse to start in
+	// production rather than silently dropping transactional mail.
+	if cfg.Env == "production" {
+		return fmt.Errorf("no production email sender configured: Resend support is not implemented yet")
+	}
+
 	logger := logging.New(os.Stdout, cfg.Env)
-	logger.Log(context.Background(), slog.LevelInfo, "starting server",
+
+	ctx := context.Background()
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := db.Migrate(ctx, pool); err != nil {
+		return err
+	}
+
+	sender := email.NewMailpitSender(cfg.SMTPAddr, cfg.EmailFrom)
+	q := sqlc.New(pool)
+	authSvc := auth.NewService(pool, q, sender, cfg)
+	// Deferred after pool.Close, so LIFO ordering drains queued password
+	// resets before the pool disappears.
+	defer authSvc.Close()
+	wsSvc := workspaces.NewService(pool, q)
+
+	handler := api.NewRouter(api.Dependencies{
+		Logger:           logger,
+		Pool:             pool,
+		Config:           cfg,
+		EmailSender:      sender,
+		AuthService:      authSvc,
+		WorkspaceService: wsSvc,
+	})
+
+	logger.Log(ctx, slog.LevelInfo, "starting server",
 		"env", cfg.Env,
 		"addr", cfg.HTTPAddr,
 	)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Dependencies{Logger: logger}),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

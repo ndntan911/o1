@@ -13,6 +13,8 @@ const (
 	CodeInvalidCredentials = "invalid_credentials" //nolint:gosec // stable public error code, not a credential
 	CodeEmailNotVerified   = "email_not_verified"
 	CodeTokenInvalid       = "token_invalid"
+	CodeForbidden          = "forbidden"
+	CodeRateLimited        = "rate_limited"
 )
 
 // Problem is an RFC 9457 problem-details style response body. Every API
