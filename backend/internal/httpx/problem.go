@@ -5,6 +5,16 @@ import (
 	"net/http"
 )
 
+// Error codes shared by API problem responses. Authentication endpoints use
+// the 401/403 codes below so clients can branch on a stable identifier.
+const (
+	CodeValidationError    = "validation_error"
+	CodeUnauthenticated    = "unauthenticated"
+	CodeInvalidCredentials = "invalid_credentials" //nolint:gosec // stable public error code, not a credential
+	CodeEmailNotVerified   = "email_not_verified"
+	CodeTokenInvalid       = "token_invalid"
+)
+
 // Problem is an RFC 9457 problem-details style response body. Every API
 // error is serialized as application/problem+json.
 type Problem struct {

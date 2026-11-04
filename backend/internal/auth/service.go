@@ -25,6 +25,16 @@ var (
 	ErrEmailTaken   = errors.New("email already registered")
 	ErrTokenInvalid = errors.New("verification token invalid")
 	ErrTokenExpired = errors.New("verification token expired")
+
+	// ErrInvalidCredentials is returned for both an unknown email and a
+	// wrong password so callers cannot enumerate accounts.
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	// ErrEmailNotVerified is returned when the password is correct but the
+	// account has not completed email verification.
+	ErrEmailNotVerified = errors.New("email not verified")
+	// ErrUnauthenticated is returned for a missing, unknown, or expired
+	// session.
+	ErrUnauthenticated = errors.New("unauthenticated")
 )
 
 // verificationTokenTTL is how long a verification token remains usable.

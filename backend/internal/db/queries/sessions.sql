@@ -42,6 +42,11 @@ VALUES ($1, $2, $3, $4);
 SELECT * FROM password_reset_tokens
 WHERE token_hash = $1 AND used_at IS NULL;
 
+-- name: GetPasswordResetTokenForUpdate :one
+SELECT * FROM password_reset_tokens
+WHERE token_hash = $1
+FOR UPDATE;
+
 -- name: MarkPasswordResetTokenUsed :exec
 UPDATE password_reset_tokens
 SET used_at = now()

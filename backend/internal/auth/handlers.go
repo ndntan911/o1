@@ -3,8 +3,10 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 
+	"o1/internal/config"
 	"o1/internal/httpx"
 )
 
@@ -88,9 +90,148 @@ func VerifyEmailHandler(svc *Service) http.HandlerFunc {
 	}
 }
 
+// loginRequest is the JSON body of POST /login.
+type loginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// userProfile is the public representation of an authenticated user.
+type userProfile struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+}
+
+// loginResponse is the JSON body of a successful login.
+type loginResponse struct {
+	User userProfile `json:"user"`
+}
+
+// forgotPasswordRequest is the JSON body of POST /password/forgot.
+type forgotPasswordRequest struct {
+	Email string `json:"email"`
+}
+
+// resetPasswordRequest is the JSON body of POST /password/reset.
+type resetPasswordRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
+// LoginHandler authenticates a user, sets the session cookie, and returns the
+// user's public profile. Unknown emails and wrong passwords share the same
+// 401 invalid_credentials response; unverified accounts get 403
+// email_not_verified.
+func LoginHandler(svc *Service, cfg config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req loginRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeValidationProblem(w)
+			return
+		}
+		rawToken, user, err := svc.Login(r.Context(), req.Email, req.Password, requestIP(r), r.UserAgent())
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrInvalidCredentials):
+				writeProblem(w, http.StatusUnauthorized, httpx.CodeInvalidCredentials,
+					"Invalid email or password")
+			case errors.Is(err, ErrEmailNotVerified):
+				writeProblem(w, http.StatusForbidden, httpx.CodeEmailNotVerified,
+					"Email address is not verified")
+			default:
+				writeProblem(w, http.StatusInternalServerError, "internal_error",
+					"Internal Server Error")
+			}
+			return
+		}
+		SetSessionCookie(w, cfg, rawToken)
+		httpx.WriteJSON(w, http.StatusOK, loginResponse{
+			User: userProfile{ID: user.ID.String(), Email: user.Email},
+		})
+	}
+}
+
+// LogoutHandler deletes the session and expires the cookie. It returns 204 even
+// when no session cookie was supplied, so callers can always clear state.
+func LogoutHandler(svc *Service, cfg config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cookie, err := r.Cookie(sessionCookieName(cfg)); err == nil && cookie.Value != "" {
+			if err := svc.Logout(r.Context(), cookie.Value); err != nil {
+				writeProblem(w, http.StatusInternalServerError, "internal_error",
+					"Internal Server Error")
+				return
+			}
+		}
+		ClearSessionCookie(w, cfg)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// ForgotPasswordHandler requests a reset link and always answers 204 for
+// unknown or unverified emails, preventing account enumeration.
+func ForgotPasswordHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req forgotPasswordRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeValidationProblem(w)
+			return
+		}
+		if err := svc.RequestPasswordReset(r.Context(), req.Email); err != nil {
+			writeProblem(w, http.StatusInternalServerError, "internal_error",
+				"Internal Server Error")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// ResetPasswordHandler consumes a single-use reset token, replaces the
+// password, and revokes existing sessions. It answers 204 on success, 400
+// token_invalid for unknown/used/expired tokens, and 400 validation_error for
+// an unacceptable new password.
+func ResetPasswordHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req resetPasswordRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeValidationProblem(w)
+			return
+		}
+		if err := svc.ResetPassword(r.Context(), req.Token, req.NewPassword); err != nil {
+			switch {
+			case errors.Is(err, ErrTokenInvalid), errors.Is(err, ErrTokenExpired):
+				writeProblem(w, http.StatusBadRequest, httpx.CodeTokenInvalid,
+					"Invalid or expired reset token")
+			case errors.Is(err, ErrValidation):
+				writeProblem(w, http.StatusBadRequest, httpx.CodeValidationError, err.Error())
+			default:
+				writeProblem(w, http.StatusInternalServerError, "internal_error",
+					"Internal Server Error")
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// requestIP extracts the client IP from RemoteAddr, leaving off the port. It
+// deliberately does not trust forwarding headers.
+func requestIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 // writeValidationProblem responds 400 with code validation_error.
 func writeValidationProblem(w http.ResponseWriter) {
-	writeProblem(w, http.StatusBadRequest, "validation_error", "Invalid request body")
+	writeProblem(w, http.StatusBadRequest, httpx.CodeValidationError, "Invalid request body")
 }
 
 // writeProblem emits an application/problem+json response with the given

@@ -158,6 +158,26 @@ func (q *Queries) GetPasswordResetToken(ctx context.Context, tokenHash []byte) (
 	return i, err
 }
 
+const getPasswordResetTokenForUpdate = `-- name: GetPasswordResetTokenForUpdate :one
+SELECT id, user_id, token_hash, expires_at, used_at, created_at FROM password_reset_tokens
+WHERE token_hash = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetPasswordResetTokenForUpdate(ctx context.Context, tokenHash []byte) (PasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, getPasswordResetTokenForUpdate, tokenHash)
+	var i PasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getSessionByTokenHash = `-- name: GetSessionByTokenHash :one
 SELECT id, user_id, token_hash, created_at, last_used_at, expires_at, ip, user_agent FROM sessions WHERE token_hash = $1
 `
