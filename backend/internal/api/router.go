@@ -266,8 +266,9 @@ func writeNotReady(w http.ResponseWriter) {
 
 // meUser is the public representation of the authenticated user.
 type meUser struct {
-	ID    uuid.UUID `json:"id"`
-	Email string    `json:"email"`
+	ID      uuid.UUID `json:"id"`
+	Email   string    `json:"email"`
+	IsAdmin bool      `json:"is_admin"`
 }
 
 // meWorkspace is a workspace as returned by GET /me.
@@ -313,7 +314,7 @@ func MeHandler(wsSvc *workspaces.Service) http.HandlerFunc {
 			out = append(out, meWorkspace{ID: ws.ID, Name: ws.Name, Slug: ws.Slug, Role: ws.Role.String()})
 		}
 		httpx.WriteJSON(w, http.StatusOK, meResponse{
-			User:       meUser{ID: principal.UserID, Email: principal.Email},
+			User:       meUser{ID: principal.UserID, Email: principal.Email, IsAdmin: principal.IsAdmin},
 			Workspaces: out,
 		})
 	}

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -226,5 +227,51 @@ func TestAPI_RegisterVerifyLoginCreateWorkspace(t *testing.T) {
 	}
 	if strings.Contains(string(body), "alice@example.com") {
 		t.Fatal("unauthenticated response leaked the user's email")
+	}
+}
+
+func TestAPI_MeExposesAdminFlag(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+
+	cfg := testutil.TestConfig(t)
+	const email = "admin-flag@example.com"
+	const password = "correct horse battery staple"
+	userID := testutil.CreateVerifiedUser(t, pool, email, password)
+
+	router := api.NewRouter(api.Dependencies{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Pool:   pool,
+		Config: cfg,
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	c := newAPIClient(t, server.URL, cfg.AppBaseURL)
+	resp, _ := c.do(http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": email, "password": password,
+	})
+	requireStatus(t, resp, http.StatusOK)
+
+	readAdmin := func() bool {
+		resp, body := c.do(http.MethodGet, "/api/v1/me", nil)
+		requireStatus(t, resp, http.StatusOK)
+		out := decodeJSON[struct {
+			User struct {
+				IsAdmin bool `json:"is_admin"`
+			} `json:"user"`
+		}](t, body)
+		return out.User.IsAdmin
+	}
+
+	if readAdmin() {
+		t.Fatal("new user is admin, want false")
+	}
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE users SET is_admin = true WHERE id = $1`, userID); err != nil {
+		t.Fatalf("promote user: %v", err)
+	}
+	if !readAdmin() {
+		t.Fatal("promoted user is not admin, want true")
 	}
 }
