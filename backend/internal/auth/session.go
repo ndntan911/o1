@@ -37,6 +37,7 @@ type Principal struct {
 	UserID    uuid.UUID
 	SessionID uuid.UUID
 	Email     string
+	IsAdmin   bool
 }
 
 // principalKey is the context key carrying a Principal.
@@ -122,7 +123,7 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Principal,
 	}); err != nil {
 		return Principal{}, fmt.Errorf("touch session: %w", err)
 	}
-	return Principal{UserID: user.ID, SessionID: session.ID, Email: user.Email}, nil
+	return Principal{UserID: user.ID, SessionID: session.ID, Email: user.Email, IsAdmin: user.IsAdmin}, nil
 }
 
 // Logout deletes the session identified by rawToken. Missing sessions are not

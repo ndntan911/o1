@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/auth"
 	"o1/internal/config"
 	"o1/internal/db"
 	"o1/internal/logging"
@@ -40,7 +41,34 @@ func Start(ctx context.Context) (*Runtime, error) {
 		pool.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
+	if err := bootstrapAdmin(ctx, pool, logger, cfg.BootstrapAdminEmail); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return &Runtime{Config: cfg, Logger: logger, Pool: pool}, nil
+}
+
+// bootstrapAdmin promotes an existing verified account when
+// O1_BOOTSTRAP_ADMIN_EMAIL is configured. It never errors when the account
+// does not exist yet, so operators can set the variable before signing up.
+func bootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, emailAddr string) error {
+	emailAddr = auth.NormalizeEmail(emailAddr)
+	if emailAddr == "" {
+		return nil
+	}
+	tag, err := pool.Exec(ctx, `
+		UPDATE users
+		SET is_admin = true
+		WHERE email = $1 AND email_verified_at IS NOT NULL AND is_admin = false`,
+		emailAddr)
+	if err != nil {
+		return fmt.Errorf("bootstrap admin: %w", err)
+	}
+	logger.Log(ctx, slog.LevelInfo, "bootstrap admin check",
+		"email", emailAddr,
+		"promoted", tag.RowsAffected(),
+	)
+	return nil
 }
 
 // Close releases the runtime's resources.

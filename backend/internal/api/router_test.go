@@ -80,6 +80,12 @@ func TestRouter_ProtectedRoutesRequireSession(t *testing.T) {
 		{http.MethodPost, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef/resume"},
 		{http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef/results"},
 		{http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef/summary"},
+		{http.MethodGet, "/api/v1/admin/workspaces"},
+		{http.MethodGet, "/api/v1/admin/workspaces/01234567-89ab-cdef-0123-456789abcdef"},
+		{http.MethodPost, "/api/v1/admin/workspaces/01234567-89ab-cdef-0123-456789abcdef/suspend"},
+		{http.MethodPost, "/api/v1/admin/workspaces/01234567-89ab-cdef-0123-456789abcdef/unsuspend"},
+		{http.MethodGet, "/api/v1/admin/monitors"},
+		{http.MethodGet, "/api/v1/admin/security-events"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {

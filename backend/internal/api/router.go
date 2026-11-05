@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/admin"
 	"o1/internal/auth"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
@@ -24,10 +25,10 @@ import (
 	"o1/internal/workspaces"
 )
 
-// Dependencies carries the services the router needs. AuthService and
-// WorkspaceService are optional: when nil the router builds them from Pool,
-// Config, and EmailSender. main.go passes explicit instances so it can close
-// the auth service before the database pool.
+// Dependencies carries the services the router needs. The services are
+// optional: when nil the router builds them from Pool, Config, and
+// EmailSender. main.go passes explicit instances so it can close the auth
+// service before the database pool.
 type Dependencies struct {
 	Logger           *slog.Logger
 	Pool             *pgxpool.Pool
@@ -36,6 +37,7 @@ type Dependencies struct {
 	AuthService      *auth.Service
 	WorkspaceService *workspaces.Service
 	MonitorService   *monitors.Service
+	AdminService     *admin.Service
 }
 
 // authRatePerSecond and authRateBurst implement 10 requests per minute for
@@ -175,6 +177,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			)
 		}
 	}
+	adminSvc := deps.AdminService
+	if adminSvc == nil && deps.Pool != nil {
+		adminSvc = admin.NewService(deps.Pool, sqlc.New(deps.Pool))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
@@ -208,6 +214,14 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/resume", requireSession(http.HandlerFunc(monitors.ResumeHandler(monitorSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/results", requireSession(http.HandlerFunc(monitors.ResultsHandler(monitorSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/summary", requireSession(http.HandlerFunc(monitors.SummaryHandler(monitorSvc))))
+
+	requireAdmin := auth.RequireAdmin
+	mux.Handle("GET /api/v1/admin/workspaces", requireSession(requireAdmin(http.HandlerFunc(admin.WorkspacesHandler(adminSvc)))))
+	mux.Handle("GET /api/v1/admin/workspaces/{workspaceID}", requireSession(requireAdmin(http.HandlerFunc(admin.GetWorkspaceHandler(adminSvc)))))
+	mux.Handle("POST /api/v1/admin/workspaces/{workspaceID}/suspend", requireSession(requireAdmin(http.HandlerFunc(admin.SuspendHandler(adminSvc)))))
+	mux.Handle("POST /api/v1/admin/workspaces/{workspaceID}/unsuspend", requireSession(requireAdmin(http.HandlerFunc(admin.UnsuspendHandler(adminSvc)))))
+	mux.Handle("GET /api/v1/admin/monitors", requireSession(requireAdmin(http.HandlerFunc(admin.MonitorsHandler(adminSvc)))))
+	mux.Handle("GET /api/v1/admin/security-events", requireSession(requireAdmin(http.HandlerFunc(admin.SecurityEventsHandler(adminSvc)))))
 
 	var handler http.Handler = mux
 	handler = withBodyLimit(handler)
