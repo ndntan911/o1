@@ -10,6 +10,7 @@ import {
 	isRedirect,
 	redirect,
 	useNavigate,
+	type RouterHistory,
 } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RootLayout } from '@/components/layout/RootLayout';
@@ -203,11 +204,21 @@ export const routeTree = rootRoute.addChildren([
 	appLayoutRoute.addChildren([homeRoute, workspacesRoute]),
 ]);
 
-export const router = createRouter({
-	routeTree,
-	context: { queryClient: appQueryClient },
-	defaultPreload: 'intent',
-});
+export interface CreateAppRouterOptions {
+	history?: RouterHistory;
+	queryClient?: QueryClient;
+}
+
+export function createAppRouter(options: CreateAppRouterOptions = {}) {
+	return createRouter({
+		routeTree,
+		context: { queryClient: options.queryClient ?? appQueryClient },
+		defaultPreload: 'intent',
+		history: options.history,
+	});
+}
+
+export const router = createAppRouter();
 
 declare module '@tanstack/react-router' {
 	interface Register {
