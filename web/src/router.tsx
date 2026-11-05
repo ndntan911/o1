@@ -62,6 +62,21 @@ const MonitorDetailScreen = lazy(async () => {
 	return { default: module.MonitorDetailScreen };
 });
 
+const AdminWorkspacesScreen = lazy(async () => {
+	const module = await import('@/features/admin/AdminWorkspacesScreen');
+	return { default: module.AdminWorkspacesScreen };
+});
+
+const AdminMonitorsScreen = lazy(async () => {
+	const module = await import('@/features/admin/AdminMonitorsScreen');
+	return { default: module.AdminMonitorsScreen };
+});
+
+const SecurityEventsScreen = lazy(async () => {
+	const module = await import('@/features/admin/SecurityEventsScreen');
+	return { default: module.SecurityEventsScreen };
+});
+
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
 	component: RootLayout,
 });
@@ -286,23 +301,41 @@ const membersRoute = createRoute({
 	component: MembersRoute,
 });
 
-const adminWorkspacesPlaceholderRoute = createRoute({
+function AdminLayoutRoute() {
+	return (
+		<section className="space-y-6">
+			<h1 className="font-heading text-xl font-semibold">Admin</h1>
+			<Outlet />
+		</section>
+	);
+}
+
+const adminRoute = createRoute({
 	getParentRoute: () => appLayoutRoute,
-	path: '/admin/workspaces',
+	path: '/admin',
 	beforeLoad: async ({ context }) => {
 		const me = await context.queryClient.ensureQueryData(meQueryOptions());
 		if (!me.user.is_admin) throw redirect({ to: '/' });
 	},
-	component: function AdminWorkspacesPlaceholder() {
-		return (
-			<section className="space-y-3">
-				<h1 className="font-heading text-xl font-semibold">Admin</h1>
-				<p className="text-sm text-muted-foreground">
-					Administration tools are coming next.
-				</p>
-			</section>
-		);
-	},
+	component: AdminLayoutRoute,
+});
+
+const adminWorkspacesRoute = createRoute({
+	getParentRoute: () => adminRoute,
+	path: '/workspaces',
+	component: AdminWorkspacesScreen,
+});
+
+const adminMonitorsRoute = createRoute({
+	getParentRoute: () => adminRoute,
+	path: '/monitors',
+	component: AdminMonitorsScreen,
+});
+
+const adminSecurityEventsRoute = createRoute({
+	getParentRoute: () => adminRoute,
+	path: '/security-events',
+	component: SecurityEventsScreen,
 });
 
 export const routeTree = rootRoute.addChildren([
@@ -323,7 +356,11 @@ export const routeTree = rootRoute.addChildren([
 			monitorEditRoute,
 			membersRoute,
 		]),
-		adminWorkspacesPlaceholderRoute,
+		adminRoute.addChildren([
+			adminWorkspacesRoute,
+			adminMonitorsRoute,
+			adminSecurityEventsRoute,
+		]),
 	]),
 ]);
 

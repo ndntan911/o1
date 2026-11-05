@@ -64,6 +64,22 @@ export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 					>
 						Workspaces
 					</Link>
+					<Link
+						to="/admin/monitors"
+						className={linkClass}
+						activeProps={{ className: activeClass }}
+						onClick={onNavigate}
+					>
+						Monitors
+					</Link>
+					<Link
+						to="/admin/security-events"
+						className={linkClass}
+						activeProps={{ className: activeClass }}
+						onClick={onNavigate}
+					>
+						Security events
+					</Link>
 				</div>
 			) : null}
 
