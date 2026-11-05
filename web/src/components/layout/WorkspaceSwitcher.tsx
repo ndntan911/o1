@@ -14,11 +14,13 @@ import type { Workspace } from '@/lib/api/types';
 export interface WorkspaceSwitcherProps {
 	workspaces: Workspace[];
 	current?: Workspace;
+	onNavigate?: () => void;
 }
 
 export function WorkspaceSwitcher({
 	workspaces,
 	current,
+	onNavigate,
 }: WorkspaceSwitcherProps) {
 	return (
 		<DropdownMenu>
@@ -42,6 +44,7 @@ export function WorkspaceSwitcher({
 						<Link
 							to="/w/$workspaceSlug/monitors"
 							params={{ workspaceSlug: workspace.slug }}
+							onClick={onNavigate}
 						>
 							<span className="truncate">{workspace.name}</span>
 							{workspace.id === current?.id ? (
@@ -52,7 +55,9 @@ export function WorkspaceSwitcher({
 				))}
 				<DropdownMenuSeparator />
 				<DropdownMenuItem asChild>
-					<Link to="/workspaces">All workspaces</Link>
+					<Link to="/workspaces" onClick={onNavigate}>
+						All workspaces
+					</Link>
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>

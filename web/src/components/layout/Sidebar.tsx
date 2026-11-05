@@ -19,6 +19,7 @@ export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 			<WorkspaceSwitcher
 				workspaces={me.workspaces}
 				current={currentWorkspace}
+				onNavigate={onNavigate}
 			/>
 
 			<div className="space-y-1">

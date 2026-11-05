@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
@@ -30,10 +30,14 @@ const beta: Workspace = {
 	role: 'member',
 };
 
-function renderSwitcher() {
+function renderSwitcher(onNavigate?: () => void) {
 	const rootRoute = createRootRoute({
 		component: () => (
-			<WorkspaceSwitcher workspaces={[acme, beta]} current={acme} />
+			<WorkspaceSwitcher
+				workspaces={[acme, beta]}
+				current={acme}
+				onNavigate={onNavigate}
+			/>
 		),
 	});
 	const monitorsRoute = createRoute({
@@ -60,7 +64,8 @@ function renderSwitcher() {
 describe('WorkspaceSwitcher', () => {
 	test('selecting a workspace navigates to its monitors', async () => {
 		const user = userEvent.setup();
-		const router = renderSwitcher();
+		const onNavigate = vi.fn();
+		const router = renderSwitcher(onNavigate);
 
 		await user.click(
 			await screen.findByRole('button', { name: 'Workspace switcher' }),
@@ -72,11 +77,13 @@ describe('WorkspaceSwitcher', () => {
 		await waitFor(() =>
 			expect(router.state.location.pathname).toBe('/w/beta-status/monitors'),
 		);
+		expect(onNavigate).toHaveBeenCalledTimes(1);
 	});
 
 	test('All workspaces navigates to the workspace list', async () => {
 		const user = userEvent.setup();
-		const router = renderSwitcher();
+		const onNavigate = vi.fn();
+		const router = renderSwitcher(onNavigate);
 
 		await user.click(
 			await screen.findByRole('button', { name: 'Workspace switcher' }),
@@ -88,5 +95,6 @@ describe('WorkspaceSwitcher', () => {
 		await waitFor(() =>
 			expect(router.state.location.pathname).toBe('/workspaces'),
 		);
+		expect(onNavigate).toHaveBeenCalledTimes(1);
 	});
 });
