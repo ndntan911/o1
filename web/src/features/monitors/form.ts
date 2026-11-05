@@ -126,9 +126,13 @@ export function buildUpdatePayload(
 
 	if (secrets.bodyMode === 'clear') {
 		payload.body = '';
-	} else if (secrets.bodyMode === 'replace') {
+	} else if (
+		methodAllowsBody(values.method) &&
+		secrets.bodyMode === 'replace'
+	) {
 		payload.body = values.body;
-		if (values.body !== '' && values.content_type !== '') {
+		if (values.body !== '') {
+			// An empty content type clears the stored value while keeping a body.
 			payload.content_type = values.content_type;
 		}
 	}

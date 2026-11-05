@@ -1,5 +1,5 @@
 import type { UseFormReturn } from 'react-hook-form';
-import { useFieldArray } from 'react-hook-form';
+import { useFieldArray, useWatch } from 'react-hook-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -27,8 +27,12 @@ export function HeadersField({
 		control: form.control,
 		name: 'headers',
 	});
+	const watchedHeaders = useWatch({ control: form.control, name: 'headers' });
 
 	const editable = mode === 'create' || replaceHeaders;
+	const hasNamedHeader = (watchedHeaders ?? []).some(
+		(row) => row.name.trim() !== '',
+	);
 
 	return (
 		<section className="space-y-3">
@@ -68,7 +72,7 @@ export function HeadersField({
 				</div>
 			) : null}
 
-			{replaceHeaders && fields.length === 0 ? (
+			{replaceHeaders && !hasNamedHeader ? (
 				<p className="text-sm text-destructive" role="status">
 					Saving will remove all headers.
 				</p>

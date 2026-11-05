@@ -88,8 +88,37 @@ describe('MonitorForm header secrets', () => {
 		await user.click(screen.getByRole('button', { name: 'Add header' }));
 
 		expect(
+			screen.getByText('Saving will remove all headers.'),
+		).toBeInTheDocument();
+
+		await user.type(screen.getByLabelText('Header 1 name'), 'Authorization');
+
+		expect(
 			screen.queryByText('Saving will remove all headers.'),
 		).not.toBeInTheDocument();
+	});
+
+	test('whitespace-only header rows keep the clear-all warning visible', async () => {
+		const user = userEvent.setup();
+		const { onSubmit } = renderEditForm();
+
+		await user.click(screen.getByRole('switch', { name: 'Replace headers' }));
+		await user.click(screen.getByRole('button', { name: 'Add header' }));
+		await user.type(screen.getByLabelText('Header 1 name'), '   ');
+
+		expect(
+			screen.getByText('Saving will remove all headers.'),
+		).toBeInTheDocument();
+
+		await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+		const [values, secrets] = onSubmit.mock.calls[0] ?? [];
+		expect(values.headers).toEqual([{ name: '   ', value: '' }]);
+		expect(secrets).toEqual({
+			replaceHeaders: true,
+			bodyMode: 'keep',
+		});
 	});
 });
 
@@ -144,6 +173,57 @@ describe('MonitorForm body editor', () => {
 
 		expect(screen.getByLabelText('Body')).toBeInTheDocument();
 		expect(screen.getByLabelText('Content type')).toBeInTheDocument();
+	});
+
+	test('shows a note that saving clears the body when GET hides the editor', () => {
+		const getMonitor: Monitor = { ...monitor, method: 'GET' };
+
+		renderWithProviders(
+			<MonitorForm
+				mode="edit"
+				initialValues={monitorToFormValues(getMonitor)}
+				monitor={getMonitor}
+				submitLabel="Save changes"
+				submitting={false}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		expect(
+			screen.getByText(
+				'GET and HEAD requests cannot have a body. Saving will clear the body and content type.',
+			),
+		).toBeInTheDocument();
+	});
+
+	test('shows hidden body field errors in ProblemAlert when the editor is hidden', async () => {
+		const getMonitor: Monitor = { ...monitor, method: 'GET' };
+		const problem: ApiProblem = {
+			type: 'about:blank',
+			title: 'Validation failed',
+			status: 400,
+			code: 'validation_error',
+			fields: {
+				body: 'body is too long',
+				content_type: 'content type is invalid',
+			},
+		};
+
+		renderWithProviders(
+			<MonitorForm
+				mode="edit"
+				initialValues={monitorToFormValues(getMonitor)}
+				monitor={getMonitor}
+				submitLabel="Save changes"
+				submitting={false}
+				problem={problem}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText('Validation failed')).toBeInTheDocument();
+		expect(screen.getByText(/body is too long/)).toBeInTheDocument();
+		expect(screen.getByText(/content type is invalid/)).toBeInTheDocument();
 	});
 });
 

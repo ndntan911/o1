@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { ErrorPanel } from '@/components/feedback/ErrorPanel';
 import { PageSkeleton } from '@/components/feedback/Skeletons';
 import { isApiProblem } from '@/lib/api/client';
 import type { ApiProblem } from '@/lib/api/problems';
-import type { Workspace } from '@/lib/api/types';
+import type { Monitor, Workspace } from '@/lib/api/types';
 import {
 	buildUpdatePayload,
 	monitorToFormValues,
@@ -60,19 +60,11 @@ export function MonitorEditScreen({
 	workspace,
 	monitorId,
 }: MonitorEditScreenProps) {
-	const navigate = useNavigate();
 	const monitorQuery = useMonitor(workspace.id, monitorId);
-	const mutation = useUpdateMonitor(workspace.id, monitorId);
-	const [problem, setProblem] = useState<ApiProblem | null>(null);
-
-	const initialValues = useMemo(
-		() => (monitorQuery.data ? monitorToFormValues(monitorQuery.data) : null),
-		[monitorQuery.data],
-	);
 
 	if (monitorQuery.isPending) return <PageSkeleton />;
 
-	if (monitorQuery.isError || !monitorQuery.data || !initialValues) {
+	if (!monitorQuery.data) {
 		const notFound =
 			isApiProblem(monitorQuery.error) &&
 			monitorQuery.error.problem.code === 'not_found';
@@ -92,7 +84,33 @@ export function MonitorEditScreen({
 		);
 	}
 
-	const initial = initialValues;
+	return (
+		<MonitorEditView
+			key={monitorId}
+			workspace={workspace}
+			monitorId={monitorId}
+			monitor={monitorQuery.data}
+		/>
+	);
+}
+
+interface MonitorEditViewProps {
+	workspace: Workspace;
+	monitorId: string;
+	monitor: Monitor;
+}
+
+function MonitorEditView({
+	workspace,
+	monitorId,
+	monitor,
+}: MonitorEditViewProps) {
+	const navigate = useNavigate();
+	const mutation = useUpdateMonitor(workspace.id, monitorId);
+	const [problem, setProblem] = useState<ApiProblem | null>(null);
+	// Freeze the baseline on first load. Background refetches must not move the
+	// dirty comparison baseline underneath the open form.
+	const [initial] = useState(() => monitorToFormValues(monitor));
 
 	async function handleSubmit(
 		values: MonitorFormValues,
@@ -121,14 +139,14 @@ export function MonitorEditScreen({
 			<div className="space-y-1">
 				<h1 className="font-heading text-xl font-semibold">Edit monitor</h1>
 				<p className="text-sm text-muted-foreground">
-					Update checks for {monitorQuery.data.name}.
+					Update checks for {monitor.name}.
 				</p>
 			</div>
 
 			<MonitorForm
 				mode="edit"
 				initialValues={initial}
-				monitor={monitorQuery.data}
+				monitor={monitor}
 				submitLabel="Save changes"
 				submitting={mutation.isPending}
 				problem={problem}

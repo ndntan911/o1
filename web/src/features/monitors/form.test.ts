@@ -188,6 +188,17 @@ describe('buildUpdatePayload', () => {
 		expect(payload.headers).toEqual({});
 	});
 
+	test('whitespace-only header rows also clear all headers', () => {
+		const payload = buildUpdatePayload(
+			{ ...initial, headers: [{ name: '   ', value: '' }] },
+			initial,
+			{},
+			{ replaceHeaders: true, bodyMode: 'keep' },
+		);
+
+		expect(payload.headers).toEqual({});
+	});
+
 	test('body keep omits body and content type; clear sends an empty body', () => {
 		expect(
 			buildUpdatePayload(
@@ -236,6 +247,35 @@ describe('buildUpdatePayload', () => {
 		);
 
 		expect(payload).toEqual({ body: '' });
+	});
+
+	test('a non-empty body sends an explicitly cleared content type', () => {
+		const payload = buildUpdatePayload(
+			{ ...initial, body: 'ping=true', content_type: '' },
+			initial,
+			{},
+			{ replaceHeaders: false, bodyMode: 'replace' },
+		);
+
+		expect(payload).toEqual({ body: 'ping=true', content_type: '' });
+	});
+
+	test('never sends a non-empty body or content type for GET or HEAD', () => {
+		const payload = buildUpdatePayload(
+			{
+				...initial,
+				method: 'GET',
+				body: 'ping=true',
+				content_type: 'application/json',
+			},
+			initial,
+			{ method: true },
+			{ replaceHeaders: false, bodyMode: 'replace' },
+		);
+
+		expect(payload).toEqual({ method: 'GET' });
+		expect(JSON.stringify(payload)).not.toContain('ping=true');
+		expect(JSON.stringify(payload)).not.toContain('application/json');
 	});
 
 	test('only dirty plain fields are sent', () => {

@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import type { ApiProblem } from '@/lib/api/problems';
-import type { Monitor } from '@/lib/api/types';
+import type { HttpMethod, Monitor } from '@/lib/api/types';
 import { applyProblemToForm } from '@/lib/forms';
 import { HeadersField } from './HeadersField';
 import {
@@ -123,15 +123,26 @@ export function MonitorForm({
 
 	const errors = form.formState.errors;
 	const method = useWatch({ control: form.control, name: 'method' });
+	const bodyValue = useWatch({ control: form.control, name: 'body' });
 	const showBody = methodAllowsBody(method);
+	const showBodyClearedNote =
+		!showBody &&
+		(monitor?.has_body === true ||
+			(bodyValue ?? '') !== '' ||
+			(mode === 'edit' && bodyMode !== 'keep'));
 
+	const bodyEditorHidden = !showBody;
 	const unmappedMessages = useMemo(() => {
 		const fields = problem?.fields;
 		if (!fields) return [];
 		return Object.entries(fields)
-			.filter(([field]) => !(field in FIELD_MAP))
+			.filter(
+				([field]) =>
+					!(field in FIELD_MAP) ||
+					(bodyEditorHidden && (field === 'body' || field === 'content_type')),
+			)
 			.map(([, message]) => message);
-	}, [problem]);
+	}, [problem, bodyEditorHidden]);
 
 	useEffect(() => {
 		if (!problem) {
@@ -161,7 +172,16 @@ export function MonitorForm({
 		: undefined;
 
 	const handleSubmit = form.handleSubmit(async (values) => {
-		await onSubmit(values, { replaceHeaders, bodyMode });
+		const bodyAllowed = methodAllowsBody(values.method);
+		const forceClear =
+			!bodyAllowed && (bodyMode !== 'keep' || monitor?.has_body === true);
+		const submittedValues: MonitorFormValues = bodyAllowed
+			? values
+			: { ...values, body: '', content_type: '' };
+		await onSubmit(submittedValues, {
+			replaceHeaders,
+			bodyMode: forceClear ? 'clear' : bodyMode,
+		});
 	});
 
 	const pending = submitting || form.formState.isSubmitting;
@@ -187,7 +207,23 @@ export function MonitorForm({
 						control={form.control}
 						name="method"
 						render={({ field }) => (
-							<Select value={field.value} onValueChange={field.onChange}>
+							<Select
+								value={field.value}
+								onValueChange={(value) => {
+									field.onChange(value);
+									if (!methodAllowsBody(value as HttpMethod)) {
+										const hadBody =
+											bodyMode !== 'keep' ||
+											(form.getValues('body') ?? '') !== '' ||
+											monitor?.has_body === true;
+										form.setValue('body', '', { shouldDirty: false });
+										form.setValue('content_type', '', {
+											shouldDirty: false,
+										});
+										if (hadBody) setBodyMode('clear');
+									}
+								}}
+							>
 								<SelectTrigger
 									id="monitor-method"
 									className="w-full"
@@ -339,6 +375,13 @@ export function MonitorForm({
 				onReplaceHeadersChange={setReplaceHeaders}
 				error={headersError}
 			/>
+
+			{showBodyClearedNote ? (
+				<p className="text-sm text-muted-foreground">
+					GET and HEAD requests cannot have a body. Saving will clear the body
+					and content type.
+				</p>
+			) : null}
 
 			{showBody ? (
 				<section className="space-y-3">
