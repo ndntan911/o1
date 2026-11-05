@@ -21,7 +21,9 @@ import { RegisterScreen } from '@/features/auth/RegisterScreen';
 import { ResetPasswordScreen } from '@/features/auth/ResetPasswordScreen';
 import { VerifyEmailScreen } from '@/features/auth/VerifyEmailScreen';
 import { findWorkspace, isUnauthenticated } from '@/features/auth/guards';
+import { parseMonitorWindow } from '@/features/monitors/window';
 import { buildLoginSearch } from '@/lib/auth-redirect';
+import type { ResultsWindow } from '@/lib/api/types';
 import {
 	readLastWorkspaceSlug,
 	writeLastWorkspaceSlug,
@@ -53,6 +55,11 @@ const MonitorCreateScreen = lazy(async () => {
 const MonitorEditScreen = lazy(async () => {
 	const module = await import('@/features/monitors/MonitorEditScreen');
 	return { default: module.MonitorEditScreen };
+});
+
+const MonitorDetailScreen = lazy(async () => {
+	const module = await import('@/features/monitors/MonitorDetailScreen');
+	return { default: module.MonitorDetailScreen };
 });
 
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
@@ -228,6 +235,24 @@ const monitorCreateRoute = createRoute({
 	component: MonitorCreateRoute,
 });
 
+function MonitorDetailRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+	const { monitorId } = monitorDetailRoute.useParams();
+
+	return <MonitorDetailScreen workspace={workspace} monitorId={monitorId} />;
+}
+
+const monitorDetailRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/monitors/$monitorId',
+	validateSearch: (
+		search: Record<string, unknown>,
+	): { window?: ResultsWindow } => ({
+		window: parseMonitorWindow(search.window),
+	}),
+	component: MonitorDetailRoute,
+});
+
 function MonitorEditRoute() {
 	const { workspace } = workspaceRoute.useRouteContext();
 	const { monitorId } = monitorEditRoute.useParams();
@@ -294,6 +319,7 @@ export const routeTree = rootRoute.addChildren([
 		workspaceRoute.addChildren([
 			monitorsRoute,
 			monitorCreateRoute,
+			monitorDetailRoute,
 			monitorEditRoute,
 			membersRoute,
 		]),

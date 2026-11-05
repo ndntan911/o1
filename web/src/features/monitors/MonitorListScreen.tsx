@@ -84,10 +84,6 @@ function monitorLastCheck(monitor: Monitor): string {
 	return formatRelativeTime(monitor.last_check.checked_at);
 }
 
-function monitorHref(workspaceSlug: string, monitorId: string): string {
-	return `/w/${encodeURIComponent(workspaceSlug)}/monitors/${encodeURIComponent(monitorId)}`;
-}
-
 interface MonitorActionsProps {
 	workspace: Workspace;
 	monitor: Monitor;
@@ -110,12 +106,13 @@ function MonitorActions({
 	return (
 		<div className="flex items-center justify-end gap-1">
 			<Button asChild variant="ghost" size="icon-sm">
-				<a
-					href={monitorHref(workspace.slug, monitor.id)}
+				<Link
+					to="/w/$workspaceSlug/monitors/$monitorId"
+					params={{ workspaceSlug: workspace.slug, monitorId: monitor.id }}
 					aria-label={`View ${monitor.name}`}
 				>
 					<EyeIcon aria-hidden />
-				</a>
+				</Link>
 			</Button>
 			{canManageMonitors(workspace.role) ? (
 				<>

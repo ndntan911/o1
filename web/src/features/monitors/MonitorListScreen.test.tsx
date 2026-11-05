@@ -154,6 +154,10 @@ describe('MonitorListScreen', () => {
 		expect(
 			screen.getByText(formatUptime(summary.uptime, summary.checks)),
 		).toBeInTheDocument();
+		expect(screen.getByRole('link', { name: 'View API' })).toHaveAttribute(
+			'href',
+			'/w/acme-status/monitors/m1',
+		);
 		expect(screen.getAllByRole('link', { name: 'New monitor' })).toHaveLength(
 			1,
 		);

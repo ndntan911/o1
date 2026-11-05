@@ -17,6 +17,47 @@ import { createAppRouter } from './router';
 
 const ORIGIN = 'http://localhost:5173';
 
+const memberMe: Me = {
+	user: { id: 'u1', email: 'alice@example.com', is_admin: false },
+	workspaces: [
+		{ id: 'w1', name: 'Acme Status', slug: 'acme-status', role: 'member' },
+	],
+};
+
+const detailSummary = {
+	window: '6h',
+	uptime: 0.99,
+	checks: 100,
+	up: 99,
+	down: 1,
+	avg_latency_ms: 120,
+	p95_latency_ms: 200,
+	min_latency_ms: 80,
+	max_latency_ms: 300,
+};
+
+const detailMonitor = {
+	id: 'm1',
+	workspace_id: 'w1',
+	name: 'API',
+	url: 'https://api.example.com/health',
+	method: 'GET',
+	headers: {},
+	has_body: false,
+	content_type: null,
+	expected_status: '2xx',
+	interval_seconds: 60,
+	timeout_seconds: 10,
+	confirmation_threshold: 1,
+	recovery_threshold: 1,
+	paused: false,
+	status: 'up',
+	last_check: null,
+	summary_24h: null,
+	created_at: '2026-01-01T00:00:00Z',
+	updated_at: '2026-01-01T00:00:00Z',
+};
+
 function unauthenticatedProblem() {
 	return HttpResponse.json(
 		{
@@ -243,5 +284,68 @@ describe('router guards', () => {
 		expect(
 			screen.queryByRole('heading', { name: 'Edit monitor' }),
 		).not.toBeInTheDocument();
+	});
+
+	test('the monitor detail route drives summary and results with the window search param', async () => {
+		const summaryWindows: (string | null)[] = [];
+		const resultsWindows: (string | null)[] = [];
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors/m1`, () =>
+				HttpResponse.json(detailMonitor),
+			),
+			http.get(
+				`${ORIGIN}/api/v1/workspaces/w1/monitors/m1/summary`,
+				({ request }) => {
+					summaryWindows.push(new URL(request.url).searchParams.get('window'));
+					return HttpResponse.json(detailSummary);
+				},
+			),
+			http.get(
+				`${ORIGIN}/api/v1/workspaces/w1/monitors/m1/results`,
+				({ request }) => {
+					resultsWindows.push(new URL(request.url).searchParams.get('window'));
+					return HttpResponse.json({ results: [] });
+				},
+			),
+		);
+
+		const { router } = renderRouter('/w/acme-status/monitors/m1?window=6h');
+
+		expect(
+			await screen.findByRole('heading', { name: 'API' }),
+		).toBeInTheDocument();
+		await waitFor(() => expect(summaryWindows).toContain('6h'));
+		expect(resultsWindows).toContain('6h');
+		expect(router.state.location.search).toEqual({ window: '6h' });
+		expect(screen.getByText('Never checked')).toBeInTheDocument();
+	});
+
+	test('an invalid detail window search falls back to 24h', async () => {
+		const summaryWindows: (string | null)[] = [];
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors/m1`, () =>
+				HttpResponse.json(detailMonitor),
+			),
+			http.get(
+				`${ORIGIN}/api/v1/workspaces/w1/monitors/m1/summary`,
+				({ request }) => {
+					summaryWindows.push(new URL(request.url).searchParams.get('window'));
+					return HttpResponse.json(detailSummary);
+				},
+			),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors/m1/results`, () =>
+				HttpResponse.json({ results: [] }),
+			),
+		);
+
+		renderRouter('/w/acme-status/monitors/m1?window=bogus');
+
+		expect(
+			await screen.findByRole('heading', { name: 'API' }),
+		).toBeInTheDocument();
+		await waitFor(() => expect(summaryWindows).toContain('24h'));
+		expect(summaryWindows).not.toContain('bogus');
 	});
 });
