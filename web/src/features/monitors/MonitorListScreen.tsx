@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from '@tanstack/react-router';
 import { EyeIcon, PauseIcon, PlayIcon, Trash2Icon } from 'lucide-react';
 import { ConfirmDialog } from '@/components/feedback/ConfirmDialog';
 import { EmptyState } from '@/components/feedback/EmptyState';
@@ -81,10 +82,6 @@ function monitorUptime(monitor: Monitor): string {
 function monitorLastCheck(monitor: Monitor): string {
 	if (!monitor.last_check) return 'Never checked';
 	return formatRelativeTime(monitor.last_check.checked_at);
-}
-
-function newMonitorHref(workspaceSlug: string): string {
-	return `/w/${encodeURIComponent(workspaceSlug)}/monitors/new`;
 }
 
 function monitorHref(workspaceSlug: string, monitorId: string): string {
@@ -202,7 +199,12 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 				</div>
 				{canManage && monitors.length > 0 ? (
 					<Button asChild>
-						<a href={newMonitorHref(workspace.slug)}>New monitor</a>
+						<Link
+							to="/w/$workspaceSlug/monitors/new"
+							params={{ workspaceSlug: workspace.slug }}
+						>
+							New monitor
+						</Link>
 					</Button>
 				) : null}
 			</div>
@@ -233,7 +235,12 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 					action={
 						canManage ? (
 							<Button asChild>
-								<a href={newMonitorHref(workspace.slug)}>New monitor</a>
+								<Link
+									to="/w/$workspaceSlug/monitors/new"
+									params={{ workspaceSlug: workspace.slug }}
+								>
+									New monitor
+								</Link>
 							</Button>
 						) : null
 					}

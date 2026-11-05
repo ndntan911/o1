@@ -28,6 +28,7 @@ import {
 } from '@/lib/last-workspace';
 import { queryClient as appQueryClient } from '@/lib/query/client';
 import { meQueryOptions, useMe } from '@/lib/query/me';
+import { canManageMonitors } from '@/lib/roles';
 
 const WorkspaceListScreen = lazy(async () => {
 	const module = await import('@/features/workspaces/WorkspaceListScreen');
@@ -42,6 +43,16 @@ const MembersScreen = lazy(async () => {
 const MonitorListScreen = lazy(async () => {
 	const module = await import('@/features/monitors/MonitorListScreen');
 	return { default: module.MonitorListScreen };
+});
+
+const MonitorCreateScreen = lazy(async () => {
+	const module = await import('@/features/monitors/MonitorCreateScreen');
+	return { default: module.MonitorCreateScreen };
+});
+
+const MonitorEditScreen = lazy(async () => {
+	const module = await import('@/features/monitors/MonitorEditScreen');
+	return { default: module.MonitorEditScreen };
 });
 
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
@@ -197,6 +208,47 @@ const monitorsRoute = createRoute({
 	component: MonitorsRoute,
 });
 
+function MonitorCreateRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return <MonitorCreateScreen workspace={workspace} />;
+}
+
+const monitorCreateRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/monitors/new',
+	beforeLoad: ({ context }) => {
+		if (!canManageMonitors(context.workspace.role)) {
+			throw redirect({
+				to: '/w/$workspaceSlug/monitors',
+				params: { workspaceSlug: context.workspace.slug },
+			});
+		}
+	},
+	component: MonitorCreateRoute,
+});
+
+function MonitorEditRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+	const { monitorId } = monitorEditRoute.useParams();
+
+	return <MonitorEditScreen workspace={workspace} monitorId={monitorId} />;
+}
+
+const monitorEditRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/monitors/$monitorId/edit',
+	beforeLoad: ({ context }) => {
+		if (!canManageMonitors(context.workspace.role)) {
+			throw redirect({
+				to: '/w/$workspaceSlug/monitors',
+				params: { workspaceSlug: context.workspace.slug },
+			});
+		}
+	},
+	component: MonitorEditRoute,
+});
+
 function MembersRoute() {
 	const { workspace } = workspaceRoute.useRouteContext();
 
@@ -239,7 +291,12 @@ export const routeTree = rootRoute.addChildren([
 	appLayoutRoute.addChildren([
 		homeRoute,
 		workspacesRoute,
-		workspaceRoute.addChildren([monitorsRoute, membersRoute]),
+		workspaceRoute.addChildren([
+			monitorsRoute,
+			monitorCreateRoute,
+			monitorEditRoute,
+			membersRoute,
+		]),
 		adminWorkspacesPlaceholderRoute,
 	]),
 ]);

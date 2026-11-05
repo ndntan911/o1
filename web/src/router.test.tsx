@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import {
 	RouterProvider,
@@ -159,5 +159,89 @@ describe('router guards', () => {
 		expect(screen.queryByText('Something went wrong!')).not.toBeInTheDocument();
 		expect(router.state.location.pathname).toBe('/login');
 		expect(router.state.location.searchStr).toBe('?redirect=%2Fworkspaces');
+	});
+
+	test('a member can open the new monitor form', async () => {
+		const memberMe: Me = {
+			user: { id: 'u1', email: 'alice@example.com', is_admin: false },
+			workspaces: [
+				{
+					id: 'w1',
+					name: 'Acme Status',
+					slug: 'acme-status',
+					role: 'member',
+				},
+			],
+		};
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+		);
+
+		renderRouter('/w/acme-status/monitors/new');
+
+		expect(
+			await screen.findByRole('heading', { name: 'New monitor' }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Create monitor' }),
+		).toBeInTheDocument();
+	});
+
+	test('a viewer is redirected away from the new monitor form', async () => {
+		const viewerMe: Me = {
+			user: { id: 'u1', email: 'alice@example.com', is_admin: false },
+			workspaces: [
+				{
+					id: 'w1',
+					name: 'Acme Status',
+					slug: 'acme-status',
+					role: 'viewer',
+				},
+			],
+		};
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(viewerMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+
+		const { router } = renderRouter('/w/acme-status/monitors/new');
+
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe('/w/acme-status/monitors'),
+		);
+		expect(
+			screen.queryByRole('heading', { name: 'New monitor' }),
+		).not.toBeInTheDocument();
+	});
+
+	test('a viewer is redirected away from the edit monitor form', async () => {
+		const viewerMe: Me = {
+			user: { id: 'u1', email: 'alice@example.com', is_admin: false },
+			workspaces: [
+				{
+					id: 'w1',
+					name: 'Acme Status',
+					slug: 'acme-status',
+					role: 'viewer',
+				},
+			],
+		};
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(viewerMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+
+		const { router } = renderRouter('/w/acme-status/monitors/m1/edit');
+
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe('/w/acme-status/monitors'),
+		);
+		expect(
+			screen.queryByRole('heading', { name: 'Edit monitor' }),
+		).not.toBeInTheDocument();
 	});
 });

@@ -19,6 +19,14 @@ if (!window.matchMedia) {
 
 window.scrollTo = () => undefined;
 
+if (!('ResizeObserver' in globalThis)) {
+	globalThis.ResizeObserver = class {
+		observe() {}
+		unobserve() {}
+		disconnect() {}
+	} as unknown as typeof ResizeObserver;
+}
+
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
 afterEach(() => {
 	cleanup();
