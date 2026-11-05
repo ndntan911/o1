@@ -43,7 +43,10 @@ type monitorJSON struct {
 	ExpectedStatus string            `json:"expected_status"`
 	Paused         bool              `json:"paused"`
 	Status         string            `json:"status"`
-	Summary24h     *struct {
+	LastCheck      *struct {
+		StatusCode *int `json:"status_code"`
+	} `json:"last_check"`
+	Summary24h *struct {
 		Checks int64 `json:"checks"`
 	} `json:"summary_24h"`
 }

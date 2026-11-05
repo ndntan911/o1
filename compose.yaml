@@ -21,5 +21,50 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  api:
+    build:
+      context: ./backend
+    entrypoint: ["/api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &backend-env
+      O1_ENV: development
+      O1_DATABASE_URL: postgres://o1:o1@postgres:5432/o1?sslmode=disable
+      # Development-only key. Override O1_SECRET_KEY and O1_ENCRYPTION_KEY in
+      # production; see README.md.
+      O1_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      O1_SMTP_ADDR: mailpit:1025
+      O1_EMAIL_FROM: o1@localhost
+      O1_APP_BASE_URL: http://localhost:5173
+    ports:
+      - "8080:8080"
+
+  scheduler:
+    build:
+      context: ./backend
+    entrypoint: ["/scheduler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+      O1_SCHEDULER_HEALTH_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+
+  worker:
+    build:
+      context: ./backend
+    entrypoint: ["/worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+      O1_WORKER_HEALTH_ADDR: ":8082"
+    ports:
+      - "8082:8082"
+
 volumes:
   postgres-data:
