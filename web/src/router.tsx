@@ -1,31 +1,43 @@
 /* eslint-disable react-refresh/only-export-components -- route modules export the router alongside route components. */
-import { useState } from 'react';
+import { lazy, useEffect } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
 import {
-	Link,
 	Outlet,
 	createRootRouteWithContext,
 	createRoute,
 	createRouter,
 	isRedirect,
+	notFound,
 	redirect,
-	useNavigate,
 	type RouterHistory,
 } from '@tanstack/react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RootLayout } from '@/components/layout/RootLayout';
-import { Button } from '@/components/ui/button';
+import { AppShell } from '@/components/layout/AppShell';
+import { PageSkeleton } from '@/components/feedback/Skeletons';
 import { ForgotPasswordScreen } from '@/features/auth/ForgotPasswordScreen';
 import { LoginScreen } from '@/features/auth/LoginScreen';
 import { PublicLayout } from '@/features/auth/PublicLayout';
 import { RegisterScreen } from '@/features/auth/RegisterScreen';
 import { ResetPasswordScreen } from '@/features/auth/ResetPasswordScreen';
 import { VerifyEmailScreen } from '@/features/auth/VerifyEmailScreen';
-import { logout } from '@/features/auth/api';
-import { isUnauthenticated } from '@/features/auth/guards';
+import { findWorkspace, isUnauthenticated } from '@/features/auth/guards';
 import { buildLoginSearch } from '@/lib/auth-redirect';
+import {
+	readLastWorkspaceSlug,
+	writeLastWorkspaceSlug,
+} from '@/lib/last-workspace';
 import { queryClient as appQueryClient } from '@/lib/query/client';
-import { meQueryOptions } from '@/lib/query/me';
+import { meQueryOptions, useMe } from '@/lib/query/me';
+
+const WorkspaceListScreen = lazy(async () => {
+	const module = await import('@/features/workspaces/WorkspaceListScreen');
+	return { default: module.WorkspaceListScreen };
+});
+
+const MembersScreen = lazy(async () => {
+	const module = await import('@/features/workspaces/MembersScreen');
+	return { default: module.MembersScreen };
+});
 
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
 	component: RootLayout,
@@ -94,48 +106,6 @@ const resetPasswordRoute = createRoute({
 	},
 });
 
-function AppLayout() {
-	const queryClient = useQueryClient();
-	const navigate = useNavigate();
-	const me = useQuery(meQueryOptions());
-	const [loggingOut, setLoggingOut] = useState(false);
-
-	async function handleLogout() {
-		setLoggingOut(true);
-		try {
-			await logout();
-		} finally {
-			queryClient.clear();
-			await navigate({ to: '/login' });
-		}
-	}
-
-	return (
-		<div className="min-h-screen bg-background">
-			<header className="flex items-center justify-between border-b px-4 py-3">
-				<Link to="/" className="font-medium tracking-tight">
-					o1 uptime
-				</Link>
-				<div className="flex items-center gap-3 text-sm text-muted-foreground">
-					<span>{me.data?.user.email}</span>
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						onClick={() => void handleLogout()}
-						disabled={loggingOut}
-					>
-						{loggingOut ? 'Logging out…' : 'Log out'}
-					</Button>
-				</div>
-			</header>
-			<main className="p-4">
-				<Outlet />
-			</main>
-		</div>
-	);
-}
-
 const appLayoutRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	id: 'app',
@@ -153,44 +123,111 @@ const appLayoutRoute = createRoute({
 			throw error;
 		}
 	},
-	component: AppLayout,
+	component: AppShell,
 });
-
-function HomePlaceholder() {
-	return (
-		<section className="mx-auto max-w-xl space-y-3">
-			<h1 className="text-xl font-semibold">o1 uptime dashboard</h1>
-			<p className="text-sm text-muted-foreground">
-				Your workspaces and monitors will appear here.
-			</p>
-			<Button asChild>
-				<Link to="/workspaces">View workspaces</Link>
-			</Button>
-		</section>
-	);
-}
 
 const homeRoute = createRoute({
 	getParentRoute: () => appLayoutRoute,
 	path: '/',
-	component: HomePlaceholder,
+	beforeLoad: async ({ context }) => {
+		const me = await context.queryClient.ensureQueryData(meQueryOptions());
+		const lastSlug = readLastWorkspaceSlug();
+		const lastWorkspace = lastSlug ? findWorkspace(me, lastSlug) : undefined;
+		const workspace = lastWorkspace ?? me.workspaces[0];
+
+		if (!workspace) throw redirect({ to: '/workspaces' });
+
+		throw redirect({
+			to: '/w/$workspaceSlug/monitors',
+			params: { workspaceSlug: workspace.slug },
+		});
+	},
 });
 
-function WorkspacesPlaceholder() {
-	return (
-		<section className="mx-auto max-w-xl space-y-3">
-			<h1 className="text-xl font-semibold">Workspaces</h1>
-			<p className="text-sm text-muted-foreground">
-				Workspace management is coming next.
-			</p>
-		</section>
-	);
+function WorkspacesRoute() {
+	const me = useMe();
+
+	if (!me.data) return <PageSkeleton />;
+
+	return <WorkspaceListScreen workspaces={me.data.workspaces} />;
 }
 
 const workspacesRoute = createRoute({
 	getParentRoute: () => appLayoutRoute,
 	path: '/workspaces',
-	component: WorkspacesPlaceholder,
+	component: WorkspacesRoute,
+});
+
+function WorkspaceLayoutRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	useEffect(() => {
+		writeLastWorkspaceSlug(workspace.slug);
+	}, [workspace.slug]);
+
+	return <Outlet />;
+}
+
+const workspaceRoute = createRoute({
+	getParentRoute: () => appLayoutRoute,
+	path: '/w/$workspaceSlug',
+	beforeLoad: async ({ context, params }) => {
+		const me = await context.queryClient.ensureQueryData(meQueryOptions());
+		const workspace = findWorkspace(me, params.workspaceSlug);
+		if (!workspace) throw notFound();
+		return { workspace };
+	},
+	component: WorkspaceLayoutRoute,
+});
+
+function MonitorsRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return (
+		<section className="space-y-3">
+			<h1 className="font-heading text-xl font-semibold">Monitors</h1>
+			<p className="text-sm text-muted-foreground">
+				Monitors for {workspace.name} will appear here.
+			</p>
+		</section>
+	);
+}
+
+const monitorsRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/monitors',
+	component: MonitorsRoute,
+});
+
+function MembersRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return <MembersScreen workspace={workspace} />;
+}
+
+const membersRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/members',
+	component: MembersRoute,
+});
+
+const adminWorkspacesPlaceholderRoute = createRoute({
+	getParentRoute: () => appLayoutRoute,
+	path: '/admin/workspaces',
+	beforeLoad: async ({ context }) => {
+		const me = await context.queryClient.ensureQueryData(meQueryOptions());
+		if (!me.user.is_admin) throw redirect({ to: '/' });
+	},
+	component: function AdminWorkspacesPlaceholder() {
+		return (
+			<section className="space-y-3">
+				<h1 className="font-heading text-xl font-semibold">Admin</h1>
+				<p className="text-sm text-muted-foreground">
+					Administration tools are coming next.
+				</p>
+			</section>
+		);
+	},
 });
 
 export const routeTree = rootRoute.addChildren([
@@ -201,7 +238,12 @@ export const routeTree = rootRoute.addChildren([
 		forgotPasswordRoute,
 		resetPasswordRoute,
 	]),
-	appLayoutRoute.addChildren([homeRoute, workspacesRoute]),
+	appLayoutRoute.addChildren([
+		homeRoute,
+		workspacesRoute,
+		workspaceRoute.addChildren([monitorsRoute, membersRoute]),
+		adminWorkspacesPlaceholderRoute,
+	]),
 ]);
 
 export interface CreateAppRouterOptions {

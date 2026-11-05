@@ -92,10 +92,10 @@ describe('router guards', () => {
 
 		expect(
 			await screen.findByRole('heading', {
-				name: 'o1 uptime dashboard',
+				name: 'Workspaces',
 			}),
 		).toBeInTheDocument();
-		expect(router.state.location.pathname).toBe('/');
+		expect(router.state.location.pathname).toBe('/workspaces');
 	});
 
 	test('a cached me refetch 401 does not fail open back into the app', async () => {
@@ -109,7 +109,7 @@ describe('router guards', () => {
 		const { router, queryClient } = renderRouter('/');
 		expect(
 			await screen.findByRole('heading', {
-				name: 'o1 uptime dashboard',
+				name: 'Workspaces',
 			}),
 		).toBeInTheDocument();
 
@@ -122,10 +122,10 @@ describe('router guards', () => {
 			await screen.findByRole('button', { name: 'Sign in' }),
 		).toBeInTheDocument();
 		expect(
-			screen.queryByRole('heading', { name: 'o1 uptime dashboard' }),
+			screen.queryByRole('heading', { name: 'Workspaces' }),
 		).not.toBeInTheDocument();
 		expect(router.state.location.pathname).toBe('/login');
-		expect(router.state.location.searchStr).toBe('?redirect=%2F');
+		expect(router.state.location.searchStr).toBe('?redirect=%2Fworkspaces');
 	});
 
 	test('a non-me 401 while me is cached lands on login without the error boundary', async () => {
@@ -142,7 +142,7 @@ describe('router guards', () => {
 		const { router } = renderRouter('/');
 		expect(
 			await screen.findByRole('heading', {
-				name: 'o1 uptime dashboard',
+				name: 'Workspaces',
 			}),
 		).toBeInTheDocument();
 
@@ -158,6 +158,6 @@ describe('router guards', () => {
 		).toBeInTheDocument();
 		expect(screen.queryByText('Something went wrong!')).not.toBeInTheDocument();
 		expect(router.state.location.pathname).toBe('/login');
-		expect(router.state.location.searchStr).toBe('?redirect=%2F');
+		expect(router.state.location.searchStr).toBe('?redirect=%2Fworkspaces');
 	});
 });
