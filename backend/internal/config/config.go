@@ -23,9 +23,12 @@ type Config struct {
 	SessionTTL        time.Duration
 	SecretKey         []byte
 	EncryptionKey     []byte
-	SMTPAddr          string
-	EmailFrom         string
-	ResendAPIKey      string
+	// EncryptionKeyDerived is true when no O1_ENCRYPTION_KEY was supplied and
+	// the key was derived from O1_SECRET_KEY (development and tests only).
+	EncryptionKeyDerived bool
+	SMTPAddr             string
+	EmailFrom            string
+	ResendAPIKey         string
 
 	MonitorMinInterval time.Duration
 	MonitorMaxInterval time.Duration
@@ -177,7 +180,7 @@ func Load() (Config, error) {
 	}
 	cfg.SecretKey = key
 
-	if cfg.EncryptionKey, err = loadEncryptionKey(cfg); err != nil {
+	if cfg.EncryptionKey, cfg.EncryptionKeyDerived, err = loadEncryptionKey(cfg); err != nil {
 		return cfg, err
 	}
 
@@ -219,30 +222,30 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-func loadEncryptionKey(cfg Config) ([]byte, error) {
+func loadEncryptionKey(cfg Config) ([]byte, bool, error) {
 	if raw := env("O1_ENCRYPTION_KEY", ""); raw != "" {
 		key, err := base64.StdEncoding.DecodeString(raw)
 		if err != nil {
-			return nil, fmt.Errorf("invalid O1_ENCRYPTION_KEY: must be base64-encoded: %w", err)
+			return nil, false, fmt.Errorf("invalid O1_ENCRYPTION_KEY: must be base64-encoded: %w", err)
 		}
 		if len(key) != 32 {
-			return nil, fmt.Errorf("invalid O1_ENCRYPTION_KEY: expected 32 bytes after base64 decoding, got %d", len(key))
+			return nil, false, fmt.Errorf("invalid O1_ENCRYPTION_KEY: expected 32 bytes after base64 decoding, got %d", len(key))
 		}
-		return key, nil
+		return key, false, nil
 	}
 	if cfg.Env == "production" {
-		return nil, fmt.Errorf("missing required environment variable O1_ENCRYPTION_KEY in production")
+		return nil, false, fmt.Errorf("missing required environment variable O1_ENCRYPTION_KEY in production")
 	}
 	key, err := hkdf.Key(sha256.New, cfg.SecretKey, nil, "o1:tenant-secrets:v1", 32)
 	if err != nil {
-		return nil, fmt.Errorf("derive encryption key from O1_SECRET_KEY: %w", err)
+		return nil, false, fmt.Errorf("derive encryption key from O1_SECRET_KEY: %w", err)
 	}
-	return key, nil
+	return key, true, nil
 }
 
 func (cfg Config) validate() error {
-	if cfg.MonitorMinInterval <= 0 || cfg.MonitorMaxInterval <= 0 {
-		return fmt.Errorf("invalid monitor intervals: O1_MONITOR_MIN_INTERVAL and O1_MONITOR_MAX_INTERVAL must be positive")
+	if cfg.MonitorMinInterval < 60*time.Second || cfg.MonitorMaxInterval > 24*time.Hour {
+		return fmt.Errorf("invalid monitor intervals: must be between 60s and 24h")
 	}
 	if cfg.MonitorMinInterval > cfg.MonitorMaxInterval {
 		return fmt.Errorf("invalid monitor intervals: minimum %v exceeds maximum %v", cfg.MonitorMinInterval, cfg.MonitorMaxInterval)

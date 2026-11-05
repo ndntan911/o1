@@ -217,7 +217,6 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	requireAdmin := auth.RequireAdmin
 	mux.Handle("GET /api/v1/admin/workspaces", requireSession(requireAdmin(http.HandlerFunc(admin.WorkspacesHandler(adminSvc)))))
-	mux.Handle("GET /api/v1/admin/workspaces/{workspaceID}", requireSession(requireAdmin(http.HandlerFunc(admin.GetWorkspaceHandler(adminSvc)))))
 	mux.Handle("POST /api/v1/admin/workspaces/{workspaceID}/suspend", requireSession(requireAdmin(http.HandlerFunc(admin.SuspendHandler(adminSvc)))))
 	mux.Handle("POST /api/v1/admin/workspaces/{workspaceID}/unsuspend", requireSession(requireAdmin(http.HandlerFunc(admin.UnsuspendHandler(adminSvc)))))
 	mux.Handle("GET /api/v1/admin/monitors", requireSession(requireAdmin(http.HandlerFunc(admin.MonitorsHandler(adminSvc)))))

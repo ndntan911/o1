@@ -269,6 +269,28 @@ func (q *Queries) GetMonitorState(ctx context.Context, monitorID uuid.UUID) (Mon
 	return i, err
 }
 
+const getMonitorStateForUpdate = `-- name: GetMonitorStateForUpdate :one
+SELECT status, consecutive_failures, consecutive_successes
+FROM monitor_state
+WHERE monitor_id = $1
+FOR UPDATE
+`
+
+type GetMonitorStateForUpdateRow struct {
+	Status               string
+	ConsecutiveFailures  int32
+	ConsecutiveSuccesses int32
+}
+
+// Locking the state row serializes concurrent probe results for one monitor so
+// counter updates cannot be lost.
+func (q *Queries) GetMonitorStateForUpdate(ctx context.Context, monitorID uuid.UUID) (GetMonitorStateForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getMonitorStateForUpdate, monitorID)
+	var i GetMonitorStateForUpdateRow
+	err := row.Scan(&i.Status, &i.ConsecutiveFailures, &i.ConsecutiveSuccesses)
+	return i, err
+}
+
 const insertProbeResult = `-- name: InsertProbeResult :execrows
 INSERT INTO probe_results (
   id, monitor_id, workspace_id, scheduled_for, checked_at,

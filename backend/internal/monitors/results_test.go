@@ -60,8 +60,8 @@ func TestSummary_ExcludesNoDataAndComputesP95(t *testing.T) {
 		t.Fatalf("p95 = %v", sum.P95LatencyMS)
 	}
 
-	other, _ := env.createMonitor(t)
-	empty, err := env.svc.Summary(context.Background(), env.ownerID, ws, other, 24*time.Hour)
+	otherWS, other := env.createMonitor(t)
+	empty, err := env.svc.Summary(context.Background(), env.ownerID, otherWS, other, 24*time.Hour)
 	if err != nil || empty.Checks != 0 || empty.Uptime != nil {
 		t.Fatalf("empty summary = %+v, %v", empty, err)
 	}
@@ -98,5 +98,29 @@ func TestResults_PaginatesNewestFirstAndIsTenantScoped(t *testing.T) {
 	}
 	if _, err := env.svc.Summary(context.Background(), outsider, ws, id, 24*time.Hour); !errors.Is(err, monitors.ErrNotFound) {
 		t.Fatalf("outsider summary err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestResultsAndSummary_MissingOrCrossWorkspaceMonitorIsNotFound(t *testing.T) {
+	env := newTestEnv(t)
+	ws, id := env.createMonitor(t)
+	otherWS, otherID := env.createMonitor(t)
+	now := time.Now().UTC()
+	env.insertResult(t, id, ws, now, "up", 200, 100)
+
+	if _, err := env.svc.Results(context.Background(), env.ownerID, ws, uuid.New(), 24*time.Hour, nil, 10); !errors.Is(err, monitors.ErrNotFound) {
+		t.Fatalf("missing monitor results err = %v, want ErrNotFound", err)
+	}
+	if _, err := env.svc.Summary(context.Background(), env.ownerID, ws, uuid.New(), 24*time.Hour); !errors.Is(err, monitors.ErrNotFound) {
+		t.Fatalf("missing monitor summary err = %v, want ErrNotFound", err)
+	}
+	if _, err := env.svc.Results(context.Background(), env.ownerID, ws, otherID, 24*time.Hour, nil, 10); !errors.Is(err, monitors.ErrNotFound) {
+		t.Fatalf("cross-workspace results err = %v, want ErrNotFound", err)
+	}
+	if _, err := env.svc.Summary(context.Background(), env.ownerID, ws, otherID, 24*time.Hour); !errors.Is(err, monitors.ErrNotFound) {
+		t.Fatalf("cross-workspace summary err = %v, want ErrNotFound", err)
+	}
+	if _, err := env.svc.Results(context.Background(), env.ownerID, otherWS, otherID, 24*time.Hour, nil, 10); err != nil {
+		t.Fatalf("own results err = %v", err)
 	}
 }

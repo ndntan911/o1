@@ -60,7 +60,7 @@ func WorkspacesHandler(svc *Service) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		workspaces, err := svc.ListWorkspaces(r.Context(), r.URL.Query().Get("q"), suspended, cursor, limit)
+		workspaces, err := svc.ListWorkspaces(r.Context(), searchQuery(r), suspended, cursor, limit)
 		if err != nil {
 			writeServiceError(w, err)
 			return
@@ -71,25 +71,6 @@ func WorkspacesHandler(svc *Service) http.HandlerFunc {
 			resp.NextCursor = httpx.EncodeCursor(httpx.PageCursor{Time: last.CreatedAt, ID: last.ID})
 		}
 		httpx.WriteJSON(w, http.StatusOK, resp)
-	}
-}
-
-// GetWorkspaceHandler returns GET /admin/workspaces/{workspaceID}.
-func GetWorkspaceHandler(svc *Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !serviceAvailable(w, svc) {
-			return
-		}
-		workspaceID, ok := parseWorkspaceID(w, r)
-		if !ok {
-			return
-		}
-		workspace, err := svc.GetWorkspace(r.Context(), workspaceID)
-		if err != nil {
-			writeServiceError(w, err)
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, workspace)
 	}
 }
 
@@ -169,7 +150,7 @@ func MonitorsHandler(svc *Service) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		list, err := svc.ListMonitors(r.Context(), workspaceID, r.URL.Query().Get("q"), cursor, limit)
+		list, err := svc.ListMonitors(r.Context(), workspaceID, searchQuery(r), cursor, limit)
 		if err != nil {
 			writeServiceError(w, err)
 			return
@@ -256,6 +237,15 @@ func parseOptionalWorkspaceID(w http.ResponseWriter, r *http.Request) (*uuid.UUI
 		return nil, false
 	}
 	return &id, true
+}
+
+// searchQuery reads the documented query parameter, accepting the legacy
+// short name q as a fallback.
+func searchQuery(r *http.Request) string {
+	if v := r.URL.Query().Get("query"); v != "" {
+		return v
+	}
+	return r.URL.Query().Get("q")
 }
 
 // parseSuspended parses the optional suspended query parameter.

@@ -311,6 +311,7 @@ func (s *Service) List(ctx context.Context, actorID, workspaceID uuid.UUID, curs
 			continue
 		}
 		summaries[row.MonitorID] = Summary{
+			Window:       "24h",
 			Uptime:       uptime(row.UpCount, row.Checks),
 			Checks:       row.Checks,
 			Up:           row.UpCount,
@@ -389,6 +390,7 @@ func (s *Service) Get(ctx context.Context, actorID, workspaceID, monitorID uuid.
 	var summary *Summary
 	if summaryRow.Checks > 0 {
 		summary = &Summary{
+			Window:       "24h",
 			Uptime:       uptime(summaryRow.UpCount, summaryRow.Checks),
 			Checks:       summaryRow.Checks,
 			Up:           summaryRow.UpCount,

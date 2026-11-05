@@ -2,9 +2,12 @@ package monitors
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"o1/internal/db/sqlc"
 	"o1/internal/workspaces"
@@ -32,6 +35,9 @@ type ProbeResult struct {
 // Results returns raw probe results for a monitor, newest first.
 func (s *Service) Results(ctx context.Context, actorID, workspaceID, monitorID uuid.UUID, window time.Duration, cursor *Cursor, limit int) ([]ProbeResult, error) {
 	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleViewer); err != nil {
+		return nil, err
+	}
+	if err := s.ensureMonitorInWorkspace(ctx, workspaceID, monitorID); err != nil {
 		return nil, err
 	}
 	if limit < 1 {
@@ -71,6 +77,9 @@ func (s *Service) Summary(ctx context.Context, actorID, workspaceID, monitorID u
 	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleViewer); err != nil {
 		return Summary{}, err
 	}
+	if err := s.ensureMonitorInWorkspace(ctx, workspaceID, monitorID); err != nil {
+		return Summary{}, err
+	}
 	row, err := s.q.MonitorSummary(ctx, sqlc.MonitorSummaryParams{
 		MonitorID:   monitorID,
 		WorkspaceID: workspaceID,
@@ -80,6 +89,19 @@ func (s *Service) Summary(ctx context.Context, actorID, workspaceID, monitorID u
 		return Summary{}, err
 	}
 	return summaryFromRow(row, window), nil
+}
+
+// ensureMonitorInWorkspace maps missing or out-of-workspace monitors onto
+// ErrNotFound, matching the rest of the workspace-scoped API.
+func (s *Service) ensureMonitorInWorkspace(ctx context.Context, workspaceID, monitorID uuid.UUID) error {
+	_, err := s.q.GetMonitor(ctx, sqlc.GetMonitorParams{ID: monitorID, WorkspaceID: workspaceID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load monitor: %w", err)
+	}
+	return nil
 }
 
 func probeResult(row sqlc.ProbeResult) ProbeResult {

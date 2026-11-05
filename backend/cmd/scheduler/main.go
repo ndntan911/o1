@@ -70,6 +70,15 @@ func run() error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if result == nil {
+		// Wait for an in-flight tick to finish before closing the pool.
+		select {
+		case err := <-runErr:
+			result = err
+		case <-shutdownCtx.Done():
+			rt.Logger.Log(context.Background(), slog.LevelWarn, "scheduler did not stop before shutdown deadline")
+		}
+	}
 	if err := health.Shutdown(shutdownCtx); err != nil {
 		rt.Logger.Log(context.Background(), slog.LevelError, "health shutdown failed", "error", err)
 	}

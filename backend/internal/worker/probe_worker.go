@@ -10,12 +10,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"golang.org/x/time/rate"
 
 	"o1/internal/db/sqlc"
 	"o1/internal/jobs"
+	"o1/internal/monitors"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
 )
@@ -66,16 +68,6 @@ func (w *ProbeWorker) Process(ctx context.Context, args jobs.ProbeArgs) error {
 	}
 
 	scheduledFor := args.ScheduledFor.UTC()
-	exists, err := w.q.ProbeResultExists(ctx, sqlc.ProbeResultExistsParams{
-		MonitorID:    monitor.ID,
-		ScheduledFor: scheduledFor,
-	})
-	if err != nil {
-		return fmt.Errorf("check probe result: %w", err)
-	}
-	if exists {
-		return nil
-	}
 
 	if w.limiter != nil {
 		if err := w.limiter.Wait(ctx); err != nil {
@@ -124,6 +116,24 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 	}()
 	q := w.q.WithTx(tx)
 
+	// Locking the state row serializes concurrent jobs for this monitor. The
+	// existence check must happen after the lock so two workers racing on the
+	// same scheduled probe cannot both advance state.
+	state, err := q.GetMonitorStateForUpdate(ctx, monitor.ID)
+	if err != nil {
+		return fmt.Errorf("lock monitor state: %w", err)
+	}
+	exists, err := q.ProbeResultExists(ctx, sqlc.ProbeResultExistsParams{
+		MonitorID:    monitor.ID,
+		ScheduledFor: scheduledFor,
+	})
+	if err != nil {
+		return fmt.Errorf("check probe result: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
 	id, err := uuid.NewV7()
 	if err != nil {
 		return fmt.Errorf("new probe result id: %w", err)
@@ -160,19 +170,16 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		return fmt.Errorf("insert probe result: %w", err)
 	}
 	if rows == 0 {
-		// Another worker recorded this probe between the existence check and
-		// the insert; do not advance state a second time.
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit replayed probe: %w", err)
-		}
+		// The result already exists; the state lock makes this unreachable in
+		// practice, but never advance counters twice.
 		return nil
 	}
 
-	previous := monitor.Status
+	previous := state.Status
 	next := Advance(State{
 		Status:    previous,
-		Failures:  int(monitor.ConsecutiveFailures),
-		Successes: int(monitor.ConsecutiveSuccesses),
+		Failures:  int(state.ConsecutiveFailures),
+		Successes: int(state.ConsecutiveSuccesses),
 	}, result.Up, int(monitor.ConfirmationThreshold), int(monitor.RecoveryThreshold))
 
 	if err := q.UpdateMonitorState(ctx, sqlc.UpdateMonitorStateParams{
@@ -187,6 +194,11 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 	}); err != nil {
 		return fmt.Errorf("update monitor state: %w", err)
 	}
+	if result.ErrorClass == "ssrf_blocked" {
+		if err := w.recordSSRFEvent(ctx, q, monitor, result); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit probe result: %w", err)
 	}
@@ -198,6 +210,33 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 			"previous_status", previous,
 			"new_status", next.Status,
 		)
+	}
+	return nil
+}
+
+// recordSSRFEvent persists a dial-time or redirect-time block in the same
+// transaction as the probe result so administrators can audit abuse attempts.
+func (w *ProbeWorker) recordSSRFEvent(ctx context.Context, q *sqlc.Queries, monitor sqlc.GetMonitorForProbeRow, result probe.Result) error {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("new security event id: %w", err)
+	}
+	detail, err := json.Marshal(map[string]any{
+		"monitor_id":   monitor.ID,
+		"workspace_id": monitor.WorkspaceID,
+		"url":          monitors.RedactURL(monitor.Url),
+		"reason":       result.ErrorMessage,
+	})
+	if err != nil {
+		return fmt.Errorf("encode ssrf security event: %w", err)
+	}
+	if err := q.CreateSecurityEvent(ctx, sqlc.CreateSecurityEventParams{
+		ID:          id,
+		WorkspaceID: pgtype.UUID{Bytes: monitor.WorkspaceID, Valid: true},
+		Kind:        "ssrf_blocked",
+		Detail:      detail,
+	}); err != nil {
+		return fmt.Errorf("record ssrf security event: %w", err)
 	}
 	return nil
 }

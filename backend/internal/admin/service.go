@@ -143,41 +143,72 @@ func (s *Service) GetWorkspace(ctx context.Context, id uuid.UUID) (AdminWorkspac
 	}, nil
 }
 
-// Suspend suspends a workspace and records an audit event. Repeated calls
-// succeed and record another event.
+// Suspend suspends a workspace and records an audit event atomically.
+// Repeated calls succeed and record another event.
 func (s *Service) Suspend(ctx context.Context, adminID, workspaceID uuid.UUID, reason string) error {
 	reason = strings.TrimSpace(reason)
 	if n := utf8.RuneCountInString(reason); n < 1 || n > maxReasonLen {
 		return fmt.Errorf("%w: reason must be between 1 and %d characters", ErrValidation, maxReasonLen)
 	}
-	if _, err := s.q.GetWorkspaceByID(ctx, workspaceID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin suspend transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	if _, err := qtx.GetWorkspaceByID(ctx, workspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		return fmt.Errorf("load workspace: %w", err)
 	}
-	if err := s.q.SuspendWorkspace(ctx, sqlc.SuspendWorkspaceParams{
+	if err := qtx.SuspendWorkspace(ctx, sqlc.SuspendWorkspaceParams{
 		ID:              workspaceID,
 		SuspendedBy:     pgtype.UUID{Bytes: adminID, Valid: true},
 		SuspendedReason: &reason,
 	}); err != nil {
 		return fmt.Errorf("suspend workspace: %w", err)
 	}
-	return s.recordEvent(ctx, workspaceID, &adminID, eventSuspended, map[string]any{"reason": reason})
+	if err := s.recordEvent(ctx, qtx, workspaceID, &adminID, eventSuspended, map[string]any{"reason": reason}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit suspend transaction: %w", err)
+	}
+	return nil
 }
 
-// Unsuspend clears a workspace suspension and records an audit event.
+// Unsuspend clears a workspace suspension and records an audit event
+// atomically.
 func (s *Service) Unsuspend(ctx context.Context, adminID, workspaceID uuid.UUID) error {
-	if _, err := s.q.GetWorkspaceByID(ctx, workspaceID); err != nil {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin unsuspend transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	if _, err := qtx.GetWorkspaceByID(ctx, workspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		return fmt.Errorf("load workspace: %w", err)
 	}
-	if err := s.q.UnsuspendWorkspace(ctx, workspaceID); err != nil {
+	if err := qtx.UnsuspendWorkspace(ctx, workspaceID); err != nil {
 		return fmt.Errorf("unsuspend workspace: %w", err)
 	}
-	return s.recordEvent(ctx, workspaceID, &adminID, eventUnsuspend, map[string]any{})
+	if err := s.recordEvent(ctx, qtx, workspaceID, &adminID, eventUnsuspend, map[string]any{}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit unsuspend transaction: %w", err)
+	}
+	return nil
 }
 
 // ListMonitors returns monitors across tenants, newest first, with URLs
@@ -266,7 +297,7 @@ func (s *Service) ListSecurityEvents(ctx context.Context, kind string, workspace
 	return out, nil
 }
 
-func (s *Service) recordEvent(ctx context.Context, workspaceID uuid.UUID, actorID *uuid.UUID, kind string, detail map[string]any) error {
+func (s *Service) recordEvent(ctx context.Context, q *sqlc.Queries, workspaceID uuid.UUID, actorID *uuid.UUID, kind string, detail map[string]any) error {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return fmt.Errorf("new security event id: %w", err)
@@ -284,7 +315,7 @@ func (s *Service) recordEvent(ctx context.Context, workspaceID uuid.UUID, actorI
 	if actorID != nil {
 		params.ActorUserID = pgtype.UUID{Bytes: *actorID, Valid: true}
 	}
-	if err := s.q.CreateSecurityEvent(ctx, params); err != nil {
+	if err := q.CreateSecurityEvent(ctx, params); err != nil {
 		return fmt.Errorf("record security event: %w", err)
 	}
 	return nil

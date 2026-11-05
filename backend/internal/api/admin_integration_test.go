@@ -88,7 +88,7 @@ func TestAdmin_SuspendStopsProbesAndMutations(t *testing.T) {
 	}
 
 	// Admin lists expose suspension fields, counts, and redacted URLs.
-	resp, raw = admin.do(http.MethodGet, "/api/v1/admin/workspaces?q=Abuse", nil)
+	resp, raw = admin.do(http.MethodGet, "/api/v1/admin/workspaces?query=Abuse", nil)
 	requireStatus(t, resp, http.StatusOK)
 	workspaces := decodeJSON[struct {
 		Workspaces []adminWorkspaceJSON `json:"workspaces"`

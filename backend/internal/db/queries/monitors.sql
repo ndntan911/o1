@@ -146,6 +146,14 @@ SELECT EXISTS (
   WHERE monitor_id = $1 AND scheduled_for = $2
 ) AS result_exists;
 
+-- name: GetMonitorStateForUpdate :one
+-- Locking the state row serializes concurrent probe results for one monitor so
+-- counter updates cannot be lost.
+SELECT status, consecutive_failures, consecutive_successes
+FROM monitor_state
+WHERE monitor_id = $1
+FOR UPDATE;
+
 -- name: UpdateMonitorState :exec
 UPDATE monitor_state
 SET status = $2,

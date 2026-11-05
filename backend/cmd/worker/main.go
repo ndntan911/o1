@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -46,7 +47,7 @@ func run() error {
 	}
 	guard := probe.NewGuard(probe.PolicyFromConfig(rt.Config))
 	prober := probe.NewProber(guard)
-	limiter := rate.NewLimiter(rate.Limit(rt.Config.ProbeGlobalRPS), int(rt.Config.ProbeGlobalRPS)) //nolint:gosec // validated positive integer
+	limiter := probeLimiter(rt.Config.ProbeGlobalRPS)
 
 	q := sqlc.New(rt.Pool)
 	probeWorker := worker.NewProbeWorker(rt.Pool, q, box, prober, limiter, rt.Logger)
@@ -102,4 +103,14 @@ func run() error {
 	}
 	rt.Logger.Log(context.Background(), slog.LevelInfo, "worker stopped")
 	return nil
+}
+
+// probeLimiter builds the global probe rate limiter. A fractional RPS still
+// needs a burst of at least one or every probe would be rejected.
+func probeLimiter(rps float64) *rate.Limiter {
+	burst := int(math.Ceil(rps))
+	if burst < 1 {
+		burst = 1
+	}
+	return rate.NewLimiter(rate.Limit(rps), burst)
 }

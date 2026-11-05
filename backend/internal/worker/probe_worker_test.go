@@ -3,12 +3,14 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -193,5 +195,132 @@ func TestProcess_MissingMonitorIsNoOp(t *testing.T) {
 		ScheduledFor: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("Process missing monitor: %v", err)
+	}
+}
+
+func TestProcess_ConcurrentSchedulesBothAdvanceState(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	monitorID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
+
+	base := time.Now().UTC().Truncate(time.Second)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = env.worker.Process(context.Background(), jobs.ProbeArgs{
+				MonitorID:    monitorID,
+				ScheduledFor: base.Add(-time.Duration(i) * time.Minute),
+			})
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Process %d: %v", i, err)
+		}
+	}
+
+	var successes int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT consecutive_successes FROM monitor_state WHERE monitor_id = $1`, monitorID).
+		Scan(&successes); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if successes != 2 {
+		t.Fatalf("successes = %d, want 2", successes)
+	}
+	if results := env.resultCount(t, monitorID); results != 2 {
+		t.Fatalf("results = %d, want 2", results)
+	}
+}
+
+func TestProcess_ConcurrentReplayRecordsOnce(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	monitorID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
+
+	args := jobs.ProbeArgs{MonitorID: monitorID, ScheduledFor: time.Now().UTC().Truncate(time.Second)}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = env.worker.Process(context.Background(), args)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Process %d: %v", i, err)
+		}
+	}
+
+	var successes int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT consecutive_successes FROM monitor_state WHERE monitor_id = $1`, monitorID).
+		Scan(&successes); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if successes != 1 {
+		t.Fatalf("successes = %d, want 1", successes)
+	}
+	if results := env.resultCount(t, monitorID); results != 1 {
+		t.Fatalf("results = %d, want 1", results)
+	}
+}
+
+func TestProcess_SSRFBlockRecordsSecurityEvent(t *testing.T) {
+	env := newWorkerEnv(t)
+	env.worker.prober = probe.NewProber(probe.NewGuardWithResolver(probe.Policy{
+		AllowedPorts:    map[int]struct{}{80: {}, 443: {}},
+		MaxRedirects:    5,
+		MaxResponseBody: 1 << 20,
+	}, staticResolver{}))
+	monitorID, wsID := env.createMonitor(t, "http://example.com/health?token=super-secret", 1, 1, false, false)
+
+	args := jobs.ProbeArgs{MonitorID: monitorID, ScheduledFor: time.Now().UTC().Truncate(time.Second)}
+	if err := env.worker.Process(context.Background(), args); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	var class string
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT error FROM probe_results WHERE monitor_id = $1`, monitorID).Scan(&class); err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	if !strings.HasPrefix(class, "ssrf_blocked") {
+		t.Fatalf("result error = %q, want ssrf_blocked", class)
+	}
+
+	var kind string
+	var detail []byte
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT kind, detail FROM security_events WHERE workspace_id = $1`, wsID).Scan(&kind, &detail); err != nil {
+		t.Fatalf("read security event: %v", err)
+	}
+	if kind != "ssrf_blocked" {
+		t.Fatalf("kind = %q", kind)
+	}
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(detail, &payload); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if payload.URL != "http://example.com/health" {
+		t.Fatalf("event url = %q, want query stripped", payload.URL)
+	}
+	if strings.Contains(string(detail), "super-secret") {
+		t.Fatalf("security event leaked the query string: %s", detail)
 	}
 }

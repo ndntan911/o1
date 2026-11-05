@@ -111,7 +111,6 @@ Administrator endpoints:
 
 ```text
 GET  /api/v1/admin/workspaces
-GET  /api/v1/admin/workspaces/{workspaceID}
 POST /api/v1/admin/workspaces/{workspaceID}/suspend
 POST /api/v1/admin/workspaces/{workspaceID}/unsuspend
 GET  /api/v1/admin/monitors

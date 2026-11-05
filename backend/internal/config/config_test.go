@@ -113,3 +113,42 @@ func TestLoad_AcceptsKnownEnvs(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_TracksDerivedEncryptionKey(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_ENV", "development")
+	t.Setenv("O1_ENCRYPTION_KEY", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.EncryptionKeyDerived {
+		t.Fatal("EncryptionKeyDerived = false, want true")
+	}
+
+	t.Setenv("O1_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load with explicit key: %v", err)
+	}
+	if cfg.EncryptionKeyDerived {
+		t.Fatal("EncryptionKeyDerived = true, want false for explicit key")
+	}
+}
+
+func TestLoad_RejectsIntervalsOutsideSchema(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	for _, tc := range []struct{ name, value string }{
+		{"O1_MONITOR_MIN_INTERVAL", "30s"},
+		{"O1_MONITOR_MAX_INTERVAL", "48h"},
+	} {
+		t.Setenv("O1_MONITOR_MIN_INTERVAL", "60s")
+		t.Setenv("O1_MONITOR_MAX_INTERVAL", "24h")
+		t.Setenv(tc.name, tc.value)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("Load() accepted %s=%s", tc.name, tc.value)
+		}
+	}
+}
