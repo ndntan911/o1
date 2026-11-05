@@ -99,6 +99,18 @@ func TestConfig(t *testing.T) config.Config {
 	}
 }
 
+// SessionToken logs in as the given user and returns the raw session token,
+// ready to be set as the o1_session cookie by a test client.
+func SessionToken(t testing.TB, pool *pgxpool.Pool, cfg config.Config, emailAddr, password string) string {
+	t.Helper()
+	svc := auth.NewService(pool, sqlc.New(pool), NewFakeSender(), cfg)
+	token, _, err := svc.Login(context.Background(), emailAddr, password, "", "")
+	if err != nil {
+		t.Fatalf("login %s: %v", emailAddr, err)
+	}
+	return token
+}
+
 // CreateVerifiedUser inserts a user with the given email and password and
 // marks its email as verified, returning the user ID.
 func CreateVerifiedUser(t *testing.T, pool *pgxpool.Pool, emailAddr, password string) uuid.UUID {

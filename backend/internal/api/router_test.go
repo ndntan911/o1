@@ -71,6 +71,13 @@ func TestRouter_ProtectedRoutesRequireSession(t *testing.T) {
 		{http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef"},
 		{http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/members"},
 		{http.MethodPost, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/members"},
+		{http.MethodPost, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors"},
+		{http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors"},
+		{http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef"},
+		{http.MethodPatch, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef"},
+		{http.MethodDelete, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef"},
+		{http.MethodPost, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef/pause"},
+		{http.MethodPost, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors/01234567-89ab-cdef-0123-456789abcdef/resume"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {

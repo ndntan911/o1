@@ -18,6 +18,9 @@ import (
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
 	"o1/internal/httpx"
+	"o1/internal/monitors"
+	"o1/internal/probe"
+	"o1/internal/secretbox"
 	"o1/internal/workspaces"
 )
 
@@ -32,6 +35,7 @@ type Dependencies struct {
 	EmailSender      email.Sender
 	AuthService      *auth.Service
 	WorkspaceService *workspaces.Service
+	MonitorService   *monitors.Service
 }
 
 // authRatePerSecond and authRateBurst implement 10 requests per minute for
@@ -158,6 +162,19 @@ func NewRouter(deps Dependencies) http.Handler {
 	if wsSvc == nil {
 		wsSvc = workspaces.NewService(deps.Pool, sqlc.New(deps.Pool))
 	}
+	monitorSvc := deps.MonitorService
+	if monitorSvc == nil && deps.Pool != nil && len(deps.Config.EncryptionKey) == 32 {
+		if box, err := secretbox.New(deps.Config.EncryptionKey); err == nil {
+			monitorSvc = monitors.NewService(
+				deps.Pool,
+				sqlc.New(deps.Pool),
+				wsSvc,
+				box,
+				probe.NewGuard(probe.PolicyFromConfig(deps.Config)),
+				deps.Config,
+			)
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
@@ -181,6 +198,14 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}", requireSession(http.HandlerFunc(workspaces.GetHandler(wsSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.MembersHandler(wsSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.AddMemberHandler(wsSvc))))
+
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors", requireSession(http.HandlerFunc(monitors.CreateHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors", requireSession(http.HandlerFunc(monitors.ListHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", requireSession(http.HandlerFunc(monitors.GetHandler(monitorSvc))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", requireSession(http.HandlerFunc(monitors.UpdateHandler(monitorSvc))))
+	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", requireSession(http.HandlerFunc(monitors.DeleteHandler(monitorSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/pause", requireSession(http.HandlerFunc(monitors.PauseHandler(monitorSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/resume", requireSession(http.HandlerFunc(monitors.ResumeHandler(monitorSvc))))
 
 	var handler http.Handler = mux
 	handler = withBodyLimit(handler)

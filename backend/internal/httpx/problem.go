@@ -15,6 +15,11 @@ const (
 	CodeTokenInvalid       = "token_invalid"
 	CodeForbidden          = "forbidden"
 	CodeRateLimited        = "rate_limited"
+	CodeNotFound           = "not_found"
+	CodeWorkspaceSuspended = "workspace_suspended"
+	CodeQuotaExceeded      = "quota_exceeded"
+	CodeMonitorRateLimited = "monitor_rate_limited"
+	CodeInternalError      = "internal_error"
 )
 
 // Problem is an RFC 9457 problem-details style response body. Every API
