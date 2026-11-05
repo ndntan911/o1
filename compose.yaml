@@ -44,6 +44,14 @@ services:
     ports:
       - "8080:8080"
 
+  web:
+    build:
+      context: ./web
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+
   scheduler:
     build:
       context: ./backend

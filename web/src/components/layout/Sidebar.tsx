@@ -10,8 +10,8 @@ export interface SidebarProps {
 }
 
 const linkClass =
-	'flex h-9 items-center rounded-lg px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground';
-const activeClass = 'bg-muted text-foreground';
+	'flex h-9 items-center rounded-lg px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground [&[aria-current=page]]:text-foreground';
+const activeClass = 'bg-muted';
 
 export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 	return (

@@ -68,7 +68,7 @@ describe('WorkspaceSwitcher', () => {
 		const router = renderSwitcher(onNavigate);
 
 		await user.click(
-			await screen.findByRole('button', { name: 'Workspace switcher' }),
+			await screen.findByRole('button', { name: /Workspace switcher/ }),
 		);
 		await user.click(
 			await screen.findByRole('menuitem', { name: 'Beta Status' }),
@@ -86,7 +86,7 @@ describe('WorkspaceSwitcher', () => {
 		const router = renderSwitcher(onNavigate);
 
 		await user.click(
-			await screen.findByRole('button', { name: 'Workspace switcher' }),
+			await screen.findByRole('button', { name: /Workspace switcher/ }),
 		);
 		await user.click(
 			await screen.findByRole('menuitem', { name: 'All workspaces' }),

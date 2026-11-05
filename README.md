@@ -1,9 +1,9 @@
 # o1
 
 Uptime and incident monitoring for small teams. Go backend, PostgreSQL, and a
-React dashboard (the dashboard lands in a later milestone). This repository
-currently ships the backend: authentication, workspaces and RBAC, monitor CRUD,
-SSRF-guarded probing, scheduling, and administrator controls.
+React dashboard. This repository ships authentication, workspaces and RBAC,
+monitor CRUD, SSRF-guarded probing, scheduling, and administrator controls
+behind the dashboard.
 
 ## Architecture
 
@@ -27,9 +27,9 @@ daily.
 docker compose up --build
 ```
 
-This starts PostgreSQL, Mailpit, the API, the scheduler, and the worker. The
-API listens on <http://localhost:8080>; Mailpit's web UI is on
-<http://localhost:8025>.
+This starts PostgreSQL, Mailpit, the API, the scheduler, the worker, and the
+dashboard. The dashboard listens on <http://localhost:5173>, the API on
+<http://localhost:8080>, and Mailpit's web UI on <http://localhost:8025>.
 
 Health endpoints:
 
@@ -40,6 +40,49 @@ curl http://localhost:8080/readyz
 
 The compose file uses a development-only `O1_SECRET_KEY`. Never use it outside
 local development.
+
+## Dashboard
+
+`docker compose up --build` serves the dashboard at
+<http://localhost:5173> and the API at <http://localhost:8080>. The web
+container (Caddy) serves the single-page app and proxies `/api` to `api:8080`
+on the same origin, so no CORS setup or cookie changes are needed.
+
+Local frontend development uses Vite and proxies `/api` to the Compose API:
+
+```sh
+cd web
+npm install
+npm run dev
+```
+
+Frontend checks live under `web/`:
+
+```sh
+cd web
+npm run format:check
+npm run lint
+npm run typecheck
+npm test -- --run
+npm run build
+```
+
+The Playwright smoke test drives the deployed stack through registration,
+email verification, workspace and monitor management, and administrator
+suspension. With Compose running:
+
+```sh
+cd web
+npx playwright install chromium
+npx playwright test
+```
+
+To promote an administrator, register and verify the account, set
+`O1_BOOTSTRAP_ADMIN_EMAIL` to that address, then recreate the API service as
+described under [Administrator bootstrap](#administrator-bootstrap).
+
+The dashboard is not a status page. Incidents, alerts, and public status pages
+are later milestones.
 
 ## Configuration
 

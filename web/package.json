@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.e2e.json --noEmit",
     "test": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
