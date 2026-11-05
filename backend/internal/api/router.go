@@ -206,6 +206,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", requireSession(http.HandlerFunc(monitors.DeleteHandler(monitorSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/pause", requireSession(http.HandlerFunc(monitors.PauseHandler(monitorSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/resume", requireSession(http.HandlerFunc(monitors.ResumeHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/results", requireSession(http.HandlerFunc(monitors.ResultsHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/summary", requireSession(http.HandlerFunc(monitors.SummaryHandler(monitorSvc))))
 
 	var handler http.Handler = mux
 	handler = withBodyLimit(handler)

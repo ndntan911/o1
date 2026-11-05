@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"o1/internal/api"
@@ -268,6 +269,84 @@ func TestAPI_MonitorQuota(t *testing.T) {
 	if p := decodeJSON[problemJSON](t, raw); p.Code != "quota_exceeded" {
 		t.Fatalf("problem = %+v", p)
 	}
+}
+
+func (e *monitorAPIEnv) insertResult(t *testing.T, monitorID, workspaceID uuid.UUID, checkedAt time.Time) {
+	t.Helper()
+	id, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new uuid: %v", err)
+	}
+	if _, err := e.pool.Exec(context.Background(), `
+		INSERT INTO probe_results
+			(id, monitor_id, workspace_id, scheduled_for, checked_at, status, status_code, latency_ms)
+		VALUES ($1, $2, $3, $4, $4, 'up', 200, 120)`,
+		id, monitorID, workspaceID, checkedAt); err != nil {
+		t.Fatalf("insert result: %v", err)
+	}
+}
+
+func TestAPI_MonitorResultsAndSummary(t *testing.T) {
+	env := newMonitorAPIEnv(t, 10)
+	alice := env.login("alice@example.com")
+	bob := env.login("bob@example.com")
+	ws := alice.createWorkspace(t, "Results")
+	wsID := uuid.MustParse(ws)
+
+	resp, raw := alice.do(http.MethodPost, "/api/v1/workspaces/"+ws+"/monitors", validMonitorBody(0))
+	requireStatus(t, resp, http.StatusCreated)
+	created := decodeJSON[monitorJSON](t, raw)
+	monitorID := uuid.MustParse(created.ID)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for i := 0; i < 3; i++ {
+		env.insertResult(t, monitorID, wsID, now.Add(-time.Duration(i)*time.Minute))
+	}
+
+	resp, raw = alice.do(http.MethodGet, "/api/v1/workspaces/"+ws+"/monitors/"+created.ID+"/results?window=24h&limit=2", nil)
+	requireStatus(t, resp, http.StatusOK)
+	first := decodeJSON[struct {
+		Results []struct {
+			ID        string `json:"id"`
+			CheckedAt string `json:"checked_at"`
+		} `json:"results"`
+		NextCursor string `json:"next_cursor"`
+	}](t, raw)
+	if len(first.Results) != 2 || first.NextCursor == "" {
+		t.Fatalf("results page 1 = %+v", first)
+	}
+	resp, raw = alice.do(http.MethodGet, "/api/v1/workspaces/"+ws+"/monitors/"+created.ID+"/results?window=24h&limit=2&cursor="+url.QueryEscape(first.NextCursor), nil)
+	requireStatus(t, resp, http.StatusOK)
+	second := decodeJSON[struct {
+		Results []struct {
+			ID string `json:"id"`
+		} `json:"results"`
+		NextCursor string `json:"next_cursor"`
+	}](t, raw)
+	if len(second.Results) != 1 || second.NextCursor != "" {
+		t.Fatalf("results page 2 = %+v", second)
+	}
+
+	resp, raw = alice.do(http.MethodGet, "/api/v1/workspaces/"+ws+"/monitors/"+created.ID+"/summary", nil)
+	requireStatus(t, resp, http.StatusOK)
+	summary := decodeJSON[struct {
+		Window string  `json:"window"`
+		Checks int64   `json:"checks"`
+		Up     int64   `json:"up"`
+		Uptime float64 `json:"uptime"`
+	}](t, raw)
+	if summary.Window != "24h" || summary.Checks != 3 || summary.Up != 3 || summary.Uptime != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+
+	resp, raw = alice.do(http.MethodGet, "/api/v1/workspaces/"+ws+"/monitors/"+created.ID+"/results?window=30d", nil)
+	requireStatus(t, resp, http.StatusBadRequest)
+	if p := decodeJSON[problemJSON](t, raw); p.Fields["window"] == "" {
+		t.Fatalf("window problem = %+v", p)
+	}
+
+	resp, _ = bob.do(http.MethodGet, "/api/v1/workspaces/"+ws+"/monitors/"+created.ID+"/summary", nil)
+	requireStatus(t, resp, http.StatusNotFound)
 }
 
 func TestAPI_MonitorListCursor(t *testing.T) {

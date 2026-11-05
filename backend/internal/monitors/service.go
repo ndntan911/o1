@@ -75,6 +75,7 @@ type State struct {
 // Summary aggregates probe results over a window. Uptime is nil when Checks
 // is zero.
 type Summary struct {
+	Window       string   `json:"window"`
 	Uptime       *float64 `json:"uptime"`
 	Checks       int64    `json:"checks"`
 	Up           int64    `json:"up"`
