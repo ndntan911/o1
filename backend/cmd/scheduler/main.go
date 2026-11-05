@@ -54,27 +54,37 @@ func run() error {
 	}()
 
 	runErr := make(chan error, 1)
+	schedCtx, cancelSched := context.WithCancel(ctx)
+	defer cancelSched()
 	go func() {
 		rt.Logger.Log(ctx, slog.LevelInfo, "scheduler started", "tick", rt.Config.SchedulerTick.String())
-		runErr <- sched.Run(ctx)
+		runErr <- sched.Run(schedCtx)
 	}()
 
 	var result error
+	runFinished := false
 	select {
 	case err := <-healthErr:
 		result = fmt.Errorf("health server: %w", err)
 	case err := <-runErr:
 		result = err
+		runFinished = true
 	case <-ctx.Done():
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if result == nil {
-		// Wait for an in-flight tick to finish before closing the pool.
+	cancelSched()
+	if !runFinished {
+		// Wait for an in-flight tick to finish before closing the pool, even
+		// when the process is stopping because the health server failed.
 		select {
 		case err := <-runErr:
-			result = err
+			if result == nil {
+				result = err
+			} else if err != nil {
+				rt.Logger.Log(context.Background(), slog.LevelError, "scheduler stopped with error", "error", err)
+			}
 		case <-shutdownCtx.Done():
 			rt.Logger.Log(context.Background(), slog.LevelWarn, "scheduler did not stop before shutdown deadline")
 		}

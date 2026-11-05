@@ -609,6 +609,21 @@ func (q *Queries) LockWorkspace(ctx context.Context, id uuid.UUID) (LockWorkspac
 	return i, err
 }
 
+const lockWorkspaceForProbe = `-- name: LockWorkspaceForProbe :one
+SELECT id FROM workspaces WHERE id = $1 FOR KEY SHARE
+`
+
+// Take a KEY SHARE lock on the workspace before locking monitor_state so probe
+// result writes follow the same workspace -> monitor_state lock order as
+// monitor update/delete/resume. Without this, the probe_results foreign key
+// would acquire the workspace lock after monitor_state and could deadlock.
+func (q *Queries) LockWorkspaceForProbe(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForProbe, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const monitorSummary = `-- name: MonitorSummary :one
 SELECT
   count(*)::bigint AS checks,

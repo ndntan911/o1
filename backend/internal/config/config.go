@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -259,8 +260,8 @@ func (cfg Config) validate() error {
 	if cfg.ProbeMaxBodyBytes <= 0 {
 		return fmt.Errorf("invalid O1_PROBE_MAX_BODY_BYTES: must be positive")
 	}
-	if cfg.ProbeGlobalRPS <= 0 {
-		return fmt.Errorf("invalid O1_PROBE_GLOBAL_RPS: must be positive")
+	if cfg.ProbeGlobalRPS <= 0 || math.IsNaN(cfg.ProbeGlobalRPS) || math.IsInf(cfg.ProbeGlobalRPS, 0) {
+		return fmt.Errorf("invalid O1_PROBE_GLOBAL_RPS: must be a finite positive number")
 	}
 	if cfg.SchedulerTick <= 0 {
 		return fmt.Errorf("invalid O1_SCHEDULER_TICK: must be positive")

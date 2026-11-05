@@ -137,6 +137,17 @@ func TestLoad_TracksDerivedEncryptionKey(t *testing.T) {
 	}
 }
 
+func TestLoad_RejectsNonFiniteProbeRPS(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		t.Setenv("O1_PROBE_GLOBAL_RPS", value)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("Load() accepted O1_PROBE_GLOBAL_RPS=%s", value)
+		}
+	}
+}
+
 func TestLoad_RejectsIntervalsOutsideSchema(t *testing.T) {
 	t.Setenv("O1_DATABASE_URL", "postgres://example")
 	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))

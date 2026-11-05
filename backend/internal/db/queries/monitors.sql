@@ -4,6 +4,13 @@ FROM workspaces
 WHERE id = $1
 FOR UPDATE;
 
+-- name: LockWorkspaceForProbe :one
+-- Take a KEY SHARE lock on the workspace before locking monitor_state so probe
+-- result writes follow the same workspace -> monitor_state lock order as
+-- monitor update/delete/resume. Without this, the probe_results foreign key
+-- would acquire the workspace lock after monitor_state and could deadlock.
+SELECT id FROM workspaces WHERE id = $1 FOR KEY SHARE;
+
 -- name: CountMonitors :one
 SELECT count(*) FROM monitors WHERE workspace_id = $1;
 

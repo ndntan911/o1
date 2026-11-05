@@ -11,10 +11,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/time/rate"
 
@@ -107,6 +109,51 @@ func (e *workerEnv) resultCount(t *testing.T, monitorID uuid.UUID) int {
 	return n
 }
 
+// blockingTarget holds each probe request until want requests are in flight.
+// Tests use it to guarantee that concurrent probe jobs actually overlap instead
+// of serializing behind a fast handler.
+func blockingTarget(t *testing.T, want int32) *httptest.Server {
+	t.Helper()
+	var calls atomic.Int32
+	release := make(chan struct{})
+	var once sync.Once
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == want {
+			once.Do(func() { close(release) })
+		}
+		select {
+		case <-release:
+		case <-time.After(10 * time.Second):
+			t.Errorf("timed out waiting for %d concurrent probe requests", want)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	return target
+}
+
+// waitForWorkspaceLockWait blocks until some session is waiting for a row lock
+// on workspaces, which proves the probe transaction reached its workspace lock.
+func waitForWorkspaceLockWait(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		if err := pool.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("probe did not block on the workspace lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestProcess_RecordsResultAndTransitionsOnce(t *testing.T) {
 	env := newWorkerEnv(t)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -133,6 +180,31 @@ func TestProcess_RecordsResultAndTransitionsOnce(t *testing.T) {
 	}
 	if results := env.resultCount(t, monitorID); results != 1 || status != "up" || successes != 1 {
 		t.Fatalf("results/status/successes = %d/%s/%d", results, status, successes)
+	}
+}
+
+func TestProcess_ReplayDoesNotProbeAgain(t *testing.T) {
+	env := newWorkerEnv(t)
+	var calls atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	monitorID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
+
+	args := jobs.ProbeArgs{MonitorID: monitorID, ScheduledFor: time.Now().UTC().Truncate(time.Second)}
+	if err := env.worker.Process(context.Background(), args); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if err := env.worker.Process(context.Background(), args); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("target calls = %d, want 1", got)
+	}
+	if results := env.resultCount(t, monitorID); results != 1 {
+		t.Fatalf("results = %d, want 1", results)
 	}
 }
 
@@ -200,10 +272,7 @@ func TestProcess_MissingMonitorIsNoOp(t *testing.T) {
 
 func TestProcess_ConcurrentSchedulesBothAdvanceState(t *testing.T) {
 	env := newWorkerEnv(t)
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer target.Close()
+	target := blockingTarget(t, 2)
 	monitorID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
 
 	base := time.Now().UTC().Truncate(time.Second)
@@ -240,7 +309,7 @@ func TestProcess_ConcurrentSchedulesBothAdvanceState(t *testing.T) {
 	}
 }
 
-func TestProcess_ConcurrentReplayRecordsOnce(t *testing.T) {
+func TestRecord_ConcurrentSameScheduleRecordsOnce(t *testing.T) {
 	env := newWorkerEnv(t)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -248,20 +317,33 @@ func TestProcess_ConcurrentReplayRecordsOnce(t *testing.T) {
 	defer target.Close()
 	monitorID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
 
-	args := jobs.ProbeArgs{MonitorID: monitorID, ScheduledFor: time.Now().UTC().Truncate(time.Second)}
+	q := sqlc.New(env.pool)
+	monitor, err := q.GetMonitorForProbe(context.Background(), monitorID)
+	if err != nil {
+		t.Fatalf("load monitor: %v", err)
+	}
+	scheduledFor := time.Now().UTC().Truncate(time.Second)
+	result := probe.Result{Up: true, StatusCode: http.StatusOK, LatencyMS: 1}
+
+	// Call the record step directly so both transactions are guaranteed to
+	// race on the same schedule; the pre-probe replay check is covered by
+	// TestProcess_ReplayDoesNotProbeAgain.
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = env.worker.Process(context.Background(), args)
+			<-start
+			errs[i] = env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result)
 		}(i)
 	}
+	close(start)
 	wg.Wait()
 	for i, err := range errs {
 		if err != nil {
-			t.Fatalf("Process %d: %v", i, err)
+			t.Fatalf("record %d: %v", i, err)
 		}
 	}
 
@@ -276,6 +358,105 @@ func TestProcess_ConcurrentReplayRecordsOnce(t *testing.T) {
 	}
 	if results := env.resultCount(t, monitorID); results != 1 {
 		t.Fatalf("results = %d, want 1", results)
+	}
+}
+
+// TestProcess_LockOrderMatchesMonitorMutations overlaps a probe result write
+// with each monitor mutation while holding the workspace row lock the mutation
+// would take. Before the worker locked the workspace first, the mutation
+// deadlocked with the probe transaction (SQLSTATE 40P01).
+func TestProcess_LockOrderMatchesMonitorMutations(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+
+	mutations := []struct {
+		name    string
+		deleted bool
+		run     func(context.Context, pgx.Tx, uuid.UUID) error
+	}{
+		{
+			name: "update",
+			run: func(ctx context.Context, tx pgx.Tx, monitorID uuid.UUID) error {
+				if _, err := tx.Exec(ctx, `UPDATE monitors SET updated_at = now() WHERE id = $1`, monitorID); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `UPDATE monitor_state SET updated_at = now() WHERE monitor_id = $1`, monitorID)
+				return err
+			},
+		},
+		{
+			name: "resume",
+			run: func(ctx context.Context, tx pgx.Tx, monitorID uuid.UUID) error {
+				if _, err := tx.Exec(ctx, `UPDATE monitors SET paused = false, updated_at = now() WHERE id = $1`, monitorID); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `UPDATE monitor_state SET next_check_at = now(), updated_at = now() WHERE monitor_id = $1`, monitorID)
+				return err
+			},
+		},
+		{
+			name:    "delete",
+			deleted: true,
+			run: func(ctx context.Context, tx pgx.Tx, monitorID uuid.UUID) error {
+				_, err := tx.Exec(ctx, `DELETE FROM monitors WHERE id = $1`, monitorID)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer target.Close()
+			monitorID, workspaceID := env.createMonitor(t, target.URL, 1, 1, false, false)
+
+			tx, err := env.pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin mutation tx: %v", err)
+			}
+			defer func() {
+				_ = tx.Rollback(ctx)
+			}()
+			if _, err := tx.Exec(ctx, `SELECT id FROM workspaces WHERE id = $1 FOR UPDATE`, workspaceID); err != nil {
+				t.Fatalf("lock workspace: %v", err)
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				done <- env.worker.Process(ctx, jobs.ProbeArgs{
+					MonitorID:    monitorID,
+					ScheduledFor: time.Now().UTC().Truncate(time.Second),
+				})
+			}()
+
+			waitForWorkspaceLockWait(t, env.pool)
+
+			if err := tc.run(ctx, tx, monitorID); err != nil {
+				t.Fatalf("mutation was blocked by the probe transaction: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit mutation: %v", err)
+			}
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Process: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("Process did not finish after the mutation committed")
+			}
+
+			want := 1
+			if tc.deleted {
+				want = 0
+			}
+			if results := env.resultCount(t, monitorID); results != want {
+				t.Fatalf("results = %d, want %d", results, want)
+			}
+		})
 	}
 }
 
@@ -305,7 +486,9 @@ func TestProcess_SSRFBlockRecordsSecurityEvent(t *testing.T) {
 	var kind string
 	var detail []byte
 	if err := env.pool.QueryRow(context.Background(),
-		`SELECT kind, detail FROM security_events WHERE workspace_id = $1`, wsID).Scan(&kind, &detail); err != nil {
+		`SELECT kind, detail FROM security_events
+		 WHERE workspace_id = $1 AND kind = 'ssrf_blocked'
+		 ORDER BY created_at DESC, id DESC LIMIT 1`, wsID).Scan(&kind, &detail); err != nil {
 		t.Fatalf("read security event: %v", err)
 	}
 	if kind != "ssrf_blocked" {

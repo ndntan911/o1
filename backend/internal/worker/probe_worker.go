@@ -69,6 +69,21 @@ func (w *ProbeWorker) Process(ctx context.Context, args jobs.ProbeArgs) error {
 
 	scheduledFor := args.ScheduledFor.UTC()
 
+	// Cheap pre-probe replay check: a duplicate delivery for an already
+	// recorded schedule must not perform another outbound request. This check
+	// is advisory only; the authoritative check happens under the state lock
+	// in record so racing workers still record exactly once.
+	exists, err := w.q.ProbeResultExists(ctx, sqlc.ProbeResultExistsParams{
+		MonitorID:    monitor.ID,
+		ScheduledFor: scheduledFor,
+	})
+	if err != nil {
+		return fmt.Errorf("check probe result: %w", err)
+	}
+	if exists {
+		return nil
+	}
+
 	if w.limiter != nil {
 		if err := w.limiter.Wait(ctx); err != nil {
 			return err
@@ -116,11 +131,27 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 	}()
 	q := w.q.WithTx(tx)
 
+	// Follow the workspace -> monitor_state lock order used by monitor
+	// update/delete/resume. The probe_results foreign keys would otherwise take
+	// a key-share lock on workspaces after monitor_state, which can deadlock
+	// with a mutation holding the workspace lock.
+	if _, err := q.LockWorkspaceForProbe(ctx, monitor.WorkspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The workspace disappeared; the monitor is gone with it.
+			return nil
+		}
+		return fmt.Errorf("lock workspace for probe: %w", err)
+	}
+
 	// Locking the state row serializes concurrent jobs for this monitor. The
 	// existence check must happen after the lock so two workers racing on the
 	// same scheduled probe cannot both advance state.
 	state, err := q.GetMonitorStateForUpdate(ctx, monitor.ID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The monitor was deleted after the probe ran.
+			return nil
+		}
 		return fmt.Errorf("lock monitor state: %w", err)
 	}
 	exists, err := q.ProbeResultExists(ctx, sqlc.ProbeResultExistsParams{

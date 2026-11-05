@@ -100,6 +100,22 @@ func TestAdmin_SuspendStopsProbesAndMutations(t *testing.T) {
 		t.Fatalf("admin workspace missing suspension: %+v", workspaces.Workspaces[0])
 	}
 
+	// Query filtering must not leak a second workspace that does not match.
+	other := owner.createWorkspace(t, "Distinct Other")
+	for _, path := range []string{
+		"/api/v1/admin/workspaces?query=Distinct",
+		"/api/v1/admin/workspaces?q=Distinct",
+	} {
+		resp, raw = admin.do(http.MethodGet, path, nil)
+		requireStatus(t, resp, http.StatusOK)
+		filtered := decodeJSON[struct {
+			Workspaces []adminWorkspaceJSON `json:"workspaces"`
+		}](t, raw)
+		if len(filtered.Workspaces) != 1 || filtered.Workspaces[0].ID != other {
+			t.Fatalf("%s workspaces = %+v, want only %s", path, filtered.Workspaces, other)
+		}
+	}
+
 	resp, raw = admin.do(http.MethodGet, "/api/v1/admin/monitors?workspace_id="+url.QueryEscape(ws), nil)
 	requireStatus(t, resp, http.StatusOK)
 	monitors := decodeJSON[struct {
