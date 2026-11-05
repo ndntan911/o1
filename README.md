@@ -102,6 +102,17 @@ binaries in separate terminals or under a process supervisor.
 3. Restart the API (or any binary). The account is promoted only if it exists
    and its email is verified.
 
+With Docker Compose, put `O1_BOOTSTRAP_ADMIN_EMAIL` in `.env` and recreate the
+services so the new environment is applied:
+
+```sh
+docker compose up -d --force-recreate api scheduler worker
+```
+
+Compose only forwards `.env` values into containers when the variable is
+referenced in `compose.yaml`; `O1_BOOTSTRAP_ADMIN_EMAIL` is forwarded by the
+shared backend environment.
+
 Administrators can list workspaces, suspend and unsuspend workspaces, inspect
 monitors across tenants, and read the security-event audit trail under
 `/api/v1/admin/*`. Suspension blocks monitor mutations and probes while leaving

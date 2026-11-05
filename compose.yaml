@@ -37,6 +37,9 @@ services:
       O1_SMTP_ADDR: mailpit:1025
       O1_EMAIL_FROM: o1@localhost
       O1_APP_BASE_URL: http://localhost:5173
+      # Compose only passes .env values into containers when they are
+      # referenced here. Required for the admin bootstrap at startup.
+      O1_BOOTSTRAP_ADMIN_EMAIL: ${O1_BOOTSTRAP_ADMIN_EMAIL:-}
     ports:
       - "8080:8080"
 
