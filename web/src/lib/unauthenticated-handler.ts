@@ -24,12 +24,11 @@ export function registerUnauthenticatedHandler(
 	queryClient: QueryClient,
 ): void {
 	setUnauthenticatedHandler(() => {
+		// Do not clear the whole cache here: after navigation a guard may start a
+		// fresh `/me` request, and a wholesale clear would cancel it and surface
+		// CancelledError instead of the unauthenticated ApiError. Evicting `me`
+		// is enough for the guards to fail closed.
 		evictCachedMe(queryClient);
-		// Clear on a macrotask. The handler fires synchronously inside apiRequest
-		// before the query rejection settles; clearing now would cancel the
-		// in-flight `me` query and turn the 401 into a CancelledError, so route
-		// guards could not recognize it as unauthenticated.
-		setTimeout(() => queryClient.clear(), 0);
 		const { pathname, searchStr } = router.state.location;
 		if (shouldRedirectToLogin(pathname)) {
 			void router.navigate({

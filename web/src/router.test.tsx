@@ -6,10 +6,10 @@ import {
 	createMemoryHistory,
 	type RouterHistory,
 } from '@tanstack/react-router';
-import { HttpResponse, http } from 'msw';
+import { HttpResponse, delay, http } from 'msw';
 import { server } from '@/test/msw/server';
 import { createTestQueryClient } from '@/test/render';
-import { setUnauthenticatedHandler } from '@/lib/api/client';
+import { apiRequest, setUnauthenticatedHandler } from '@/lib/api/client';
 import { queryKeys } from '@/lib/query/keys';
 import { registerUnauthenticatedHandler } from '@/lib/unauthenticated-handler';
 import type { Me } from '@/lib/api/types';
@@ -124,6 +124,39 @@ describe('router guards', () => {
 		expect(
 			screen.queryByRole('heading', { name: 'o1 uptime dashboard' }),
 		).not.toBeInTheDocument();
+		expect(router.state.location.pathname).toBe('/login');
+		expect(router.state.location.searchStr).toBe('?redirect=%2F');
+	});
+
+	test('a non-me 401 while me is cached lands on login without the error boundary', async () => {
+		let authenticated = true;
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, async () => {
+				if (authenticated) return HttpResponse.json(me);
+				await delay(25);
+				return unauthenticatedProblem();
+			}),
+			http.get(`${ORIGIN}/api/v1/workspaces`, () => unauthenticatedProblem()),
+		);
+
+		const { router } = renderRouter('/');
+		expect(
+			await screen.findByRole('heading', {
+				name: 'o1 uptime dashboard',
+			}),
+		).toBeInTheDocument();
+
+		authenticated = false;
+		await act(async () => {
+			await expect(apiRequest('/workspaces')).rejects.toMatchObject({
+				problem: { code: 'unauthenticated' },
+			});
+		});
+
+		expect(
+			await screen.findByRole('button', { name: 'Sign in' }),
+		).toBeInTheDocument();
+		expect(screen.queryByText('Something went wrong!')).not.toBeInTheDocument();
 		expect(router.state.location.pathname).toBe('/login');
 		expect(router.state.location.searchStr).toBe('?redirect=%2F');
 	});
