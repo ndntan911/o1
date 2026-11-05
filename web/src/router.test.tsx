@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import {
 	RouterProvider,
@@ -10,6 +10,7 @@ import { HttpResponse, http } from 'msw';
 import { server } from '@/test/msw/server';
 import { createTestQueryClient } from '@/test/render';
 import { setUnauthenticatedHandler } from '@/lib/api/client';
+import { queryKeys } from '@/lib/query/keys';
 import { registerUnauthenticatedHandler } from '@/lib/unauthenticated-handler';
 import type { Me } from '@/lib/api/types';
 import { createAppRouter } from './router';
@@ -50,7 +51,7 @@ function renderRouter(initialEntry: string) {
 		</QueryClientProvider>,
 	);
 
-	return router;
+	return { router, queryClient };
 }
 
 describe('router guards', () => {
@@ -61,7 +62,7 @@ describe('router guards', () => {
 	test('logged-out / redirects to /login and preserves the destination', async () => {
 		server.use(http.get(`${ORIGIN}/api/v1/me`, () => unauthenticatedProblem()));
 
-		const router = renderRouter('/');
+		const { router } = renderRouter('/');
 
 		expect(
 			await screen.findByRole('button', { name: 'Sign in' }),
@@ -74,7 +75,7 @@ describe('router guards', () => {
 	test('logged-out users can open the login screen', async () => {
 		server.use(http.get(`${ORIGIN}/api/v1/me`, () => unauthenticatedProblem()));
 
-		const router = renderRouter('/login');
+		const { router } = renderRouter('/login');
 
 		expect(
 			await screen.findByRole('button', { name: 'Sign in' }),
@@ -87,7 +88,7 @@ describe('router guards', () => {
 	test('authenticated users visiting /login are redirected home', async () => {
 		server.use(http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(me)));
 
-		const router = renderRouter('/login');
+		const { router } = renderRouter('/login');
 
 		expect(
 			await screen.findByRole('heading', {
@@ -95,5 +96,35 @@ describe('router guards', () => {
 			}),
 		).toBeInTheDocument();
 		expect(router.state.location.pathname).toBe('/');
+	});
+
+	test('a cached me refetch 401 does not fail open back into the app', async () => {
+		let authenticated = true;
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () =>
+				authenticated ? HttpResponse.json(me) : unauthenticatedProblem(),
+			),
+		);
+
+		const { router, queryClient } = renderRouter('/');
+		expect(
+			await screen.findByRole('heading', {
+				name: 'o1 uptime dashboard',
+			}),
+		).toBeInTheDocument();
+
+		authenticated = false;
+		await act(async () => {
+			await queryClient.invalidateQueries({ queryKey: queryKeys.me });
+		});
+
+		expect(
+			await screen.findByRole('button', { name: 'Sign in' }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole('heading', { name: 'o1 uptime dashboard' }),
+		).not.toBeInTheDocument();
+		expect(router.state.location.pathname).toBe('/login');
+		expect(router.state.location.searchStr).toBe('?redirect=%2F');
 	});
 });
