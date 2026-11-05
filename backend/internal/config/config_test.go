@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"encoding/base64"
+	"reflect"
 	"testing"
 	"time"
 
@@ -161,5 +162,37 @@ func TestLoad_RejectsIntervalsOutsideSchema(t *testing.T) {
 		if _, err := config.Load(); err == nil {
 			t.Errorf("Load() accepted %s=%s", tc.name, tc.value)
 		}
+	}
+}
+
+func TestLoad_DefaultsAllowedOriginsToAppBaseURL(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_APP_BASE_URL", "http://localhost:5173")
+	t.Setenv("O1_ALLOWED_ORIGINS", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"http://localhost:5173"}
+	if !reflect.DeepEqual(cfg.AllowedOrigins, want) {
+		t.Fatalf("allowed origins = %v, want %v", cfg.AllowedOrigins, want)
+	}
+}
+
+func TestLoad_UsesExplicitAllowedOrigins(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_APP_BASE_URL", "http://localhost:5173")
+	t.Setenv("O1_ALLOWED_ORIGINS", "http://a.example, http://b.example")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"http://a.example", "http://b.example"}
+	if !reflect.DeepEqual(cfg.AllowedOrigins, want) {
+		t.Fatalf("allowed origins = %v, want %v", cfg.AllowedOrigins, want)
 	}
 }

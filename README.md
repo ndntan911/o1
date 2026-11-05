@@ -63,8 +63,9 @@ Common optional settings:
 - `O1_WORKER_HEALTH_ADDR` — default `:8082`.
 - `O1_APP_BASE_URL` — dashboard origin used in verification and reset links,
   default `http://localhost:5173`.
-- `O1_ALLOWED_ORIGINS` — comma-separated CORS allowlist. Defaults to
-  `O1_APP_BASE_URL`.
+- `O1_ALLOWED_ORIGINS` — comma-separated Origin allowlist for unsafe requests.
+  Defaults to `O1_APP_BASE_URL`. Compose forwards this variable; leave it empty
+  to use the dashboard origin.
 - `O1_SMTP_ADDR` and `O1_EMAIL_FROM` — transactional email. Development uses
   Mailpit. A production email sender is not implemented yet, and the API
   refuses to start with `O1_ENV=production`.

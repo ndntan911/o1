@@ -162,6 +162,9 @@ func Load() (Config, error) {
 			cfg.AllowedOrigins = append(cfg.AllowedOrigins, origin)
 		}
 	}
+	if len(cfg.AllowedOrigins) == 0 && cfg.AppBaseURL != "" {
+		cfg.AllowedOrigins = []string{cfg.AppBaseURL}
+	}
 
 	if v := env("O1_SESSION_TTL", "720h"); v != "" {
 		ttl, err := time.ParseDuration(v)
