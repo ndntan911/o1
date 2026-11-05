@@ -39,6 +39,11 @@ const MembersScreen = lazy(async () => {
 	return { default: module.MembersScreen };
 });
 
+const MonitorListScreen = lazy(async () => {
+	const module = await import('@/features/monitors/MonitorListScreen');
+	return { default: module.MonitorListScreen };
+});
+
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
 	component: RootLayout,
 });
@@ -183,14 +188,7 @@ const workspaceRoute = createRoute({
 function MonitorsRoute() {
 	const { workspace } = workspaceRoute.useRouteContext();
 
-	return (
-		<section className="space-y-3">
-			<h1 className="font-heading text-xl font-semibold">Monitors</h1>
-			<p className="text-sm text-muted-foreground">
-				Monitors for {workspace.name} will appear here.
-			</p>
-		</section>
-	);
+	return <MonitorListScreen workspace={workspace} />;
 }
 
 const monitorsRoute = createRoute({
