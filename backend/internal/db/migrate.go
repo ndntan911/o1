@@ -62,6 +62,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := goose.UpContext(ctx, d, "migrations"); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
+	if err := MigrateRiver(ctx, pool); err != nil {
+		return err
+	}
 	if err := EnsureProbePartitions(ctx, pool, time.Now().UTC()); err != nil {
 		return fmt.Errorf("ensure probe partitions: %w", err)
 	}

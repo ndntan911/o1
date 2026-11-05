@@ -13,12 +13,10 @@ import (
 	"time"
 
 	"o1/internal/api"
+	"o1/internal/app"
 	"o1/internal/auth"
-	"o1/internal/config"
-	"o1/internal/db"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
-	"o1/internal/logging"
 	"o1/internal/workspaces"
 )
 
@@ -30,55 +28,43 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	ctx := context.Background()
+	rt, err := app.Start(ctx)
 	if err != nil {
 		return err
 	}
+	defer rt.Close()
 
 	// Only the Mailpit development sender exists today. Refuse to start in
 	// production rather than silently dropping transactional mail.
-	if cfg.Env == "production" {
+	if rt.Config.Env == "production" {
 		return fmt.Errorf("no production email sender configured: Resend support is not implemented yet")
 	}
 
-	logger := logging.New(os.Stdout, cfg.Env)
-	slog.SetDefault(logger)
-
-	ctx := context.Background()
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-
-	if err := db.Migrate(ctx, pool); err != nil {
-		return err
-	}
-
-	sender := email.NewMailpitSender(cfg.SMTPAddr, cfg.EmailFrom)
-	q := sqlc.New(pool)
-	authSvc := auth.NewService(pool, q, sender, cfg)
-	// Deferred after pool.Close, so LIFO ordering drains queued password
-	// resets before the pool disappears.
+	sender := email.NewMailpitSender(rt.Config.SMTPAddr, rt.Config.EmailFrom)
+	q := sqlc.New(rt.Pool)
+	authSvc := auth.NewService(rt.Pool, q, sender, rt.Config)
+	// Deferred after rt.Close, so LIFO ordering drains queued password resets
+	// before the pool disappears.
 	defer authSvc.Close()
-	wsSvc := workspaces.NewService(pool, q)
+	wsSvc := workspaces.NewService(rt.Pool, q)
 
 	handler := api.NewRouter(api.Dependencies{
-		Logger:           logger,
-		Pool:             pool,
-		Config:           cfg,
+		Logger:           rt.Logger,
+		Pool:             rt.Pool,
+		Config:           rt.Config,
 		EmailSender:      sender,
 		AuthService:      authSvc,
 		WorkspaceService: wsSvc,
 	})
 
-	logger.Log(ctx, slog.LevelInfo, "starting server",
-		"env", cfg.Env,
-		"addr", cfg.HTTPAddr,
+	rt.Logger.Log(ctx, slog.LevelInfo, "starting server",
+		"env", rt.Config.Env,
+		"addr", rt.Config.HTTPAddr,
 	)
 
 	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
+		Addr:              rt.Config.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -89,7 +75,7 @@ func run() error {
 	errCh := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Log(context.Background(), slog.LevelError, "server error", "error", err)
+			rt.Logger.Log(context.Background(), slog.LevelError, "server error", "error", err)
 			errCh <- err
 		}
 	}()
@@ -103,12 +89,12 @@ func run() error {
 	case <-stop:
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Log(context.Background(), slog.LevelError, "graceful shutdown failed", "error", err)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		rt.Logger.Log(context.Background(), slog.LevelError, "graceful shutdown failed", "error", err)
 		return err
 	}
-	logger.Log(context.Background(), slog.LevelInfo, "server stopped")
+	rt.Logger.Log(context.Background(), slog.LevelInfo, "server stopped")
 	return nil
 }
