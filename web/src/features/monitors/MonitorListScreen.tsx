@@ -5,6 +5,7 @@ import { EmptyState } from '@/components/feedback/EmptyState';
 import { ErrorPanel } from '@/components/feedback/ErrorPanel';
 import { ProblemAlert } from '@/components/feedback/ProblemAlert';
 import { PageSkeleton } from '@/components/feedback/Skeletons';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -107,6 +108,7 @@ function MonitorActions({
 	const remove = useDeleteMonitor(workspace.id, monitor.id, workspace.slug);
 	const paused = monitor.paused || monitor.status === 'paused';
 	const mutation = paused ? resume : pause;
+	const busy = pause.isPending || resume.isPending;
 
 	return (
 		<div className="flex items-center justify-end gap-1">
@@ -125,7 +127,7 @@ function MonitorActions({
 						variant="ghost"
 						size="icon-sm"
 						aria-label={`${paused ? 'Resume' : 'Pause'} ${monitor.name}`}
-						disabled={mutation.isPending}
+						disabled={busy}
 						onClick={() => mutation.mutate(undefined, { onError: onProblem })}
 					>
 						{paused ? <PlayIcon aria-hidden /> : <PauseIcon aria-hidden />}
@@ -198,7 +200,7 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 						HTTP uptime checks for {workspace.name}.
 					</p>
 				</div>
-				{canManage ? (
+				{canManage && monitors.length > 0 ? (
 					<Button asChild>
 						<a href={newMonitorHref(workspace.slug)}>New monitor</a>
 					</Button>
@@ -217,7 +219,7 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 
 			{monitorsQuery.isPending ? (
 				<PageSkeleton />
-			) : monitorsQuery.isError ? (
+			) : monitorsQuery.isError && monitors.length === 0 ? (
 				listProblem ? null : (
 					<ErrorPanel
 						message={errorMessage(monitorsQuery.error)}
@@ -238,6 +240,22 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 				/>
 			) : (
 				<>
+					{monitorsQuery.isError ? (
+						<Alert>
+							<AlertTitle>Could not refresh monitors</AlertTitle>
+							<AlertDescription className="space-y-2">
+								<p>Showing the last loaded monitors.</p>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => void monitorsQuery.refetch()}
+								>
+									Retry
+								</Button>
+							</AlertDescription>
+						</Alert>
+					) : null}
 					{filtered.length === 0 ? (
 						<p className="text-sm text-muted-foreground">
 							No monitors match your search.

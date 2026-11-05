@@ -68,8 +68,8 @@ export function deleteMonitor(
 export function pauseMonitor(
 	workspaceId: string,
 	monitorId: string,
-): Promise<Monitor> {
-	return apiRequest<Monitor>(`${monitorPath(workspaceId, monitorId)}/pause`, {
+): Promise<void> {
+	return apiRequest<void>(`${monitorPath(workspaceId, monitorId)}/pause`, {
 		method: 'POST',
 	});
 }
@@ -77,8 +77,8 @@ export function pauseMonitor(
 export function resumeMonitor(
 	workspaceId: string,
 	monitorId: string,
-): Promise<Monitor> {
-	return apiRequest<Monitor>(`${monitorPath(workspaceId, monitorId)}/resume`, {
+): Promise<void> {
+	return apiRequest<void>(`${monitorPath(workspaceId, monitorId)}/resume`, {
 		method: 'POST',
 	});
 }
