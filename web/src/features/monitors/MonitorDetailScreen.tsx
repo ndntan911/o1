@@ -5,8 +5,14 @@ import { ConfirmDialog } from '@/components/feedback/ConfirmDialog';
 import { ErrorPanel } from '@/components/feedback/ErrorPanel';
 import { ProblemAlert } from '@/components/feedback/ProblemAlert';
 import { PageSkeleton } from '@/components/feedback/Skeletons';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useIncidents } from '@/features/incidents/hooks';
+import {
+	formatIncidentDuration,
+	incidentStatusLabel,
+} from '@/features/incidents/status';
 import { isApiProblem } from '@/lib/api/client';
 import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
@@ -120,6 +126,16 @@ function MonitorDetailView({
 
 	const summaryQuery = useSummary(workspace.id, monitorId, timeWindow);
 	const resultsQuery = useResults(workspace.id, monitorId, timeWindow);
+	const activeIncidentsQuery = useIncidents(
+		workspace.id,
+		{ status: 'active', monitorId },
+		1,
+	);
+	const recentIncidentsQuery = useIncidents(
+		workspace.id,
+		{ status: 'all', monitorId },
+		5,
+	);
 	const pause = usePauseMonitor(workspace.id, monitorId);
 	const resume = useResumeMonitor(workspace.id, monitorId);
 	const remove = useDeleteMonitor(workspace.id, monitorId, workspace.slug);
@@ -134,6 +150,12 @@ function MonitorDetailView({
 	const mutationPending = pause.isPending || resume.isPending;
 	const results =
 		resultsQuery.data?.pages.flatMap((page) => page.results) ?? [];
+	const activeIncident =
+		activeIncidentsQuery.data?.pages[0]?.incidents[0] ?? null;
+	const recentIncidents =
+		recentIncidentsQuery.data?.pages
+			.flatMap((page) => page.incidents)
+			.slice(0, 5) ?? [];
 
 	function handleProblem(error: unknown) {
 		setProblem(problemFromError(error));
@@ -252,6 +274,28 @@ function MonitorDetailView({
 
 			{problem ? <ProblemAlert problem={problem} /> : null}
 
+			{activeIncident ? (
+				<Alert>
+					<AlertTitle>Active incident</AlertTitle>
+					<AlertDescription className="space-y-2">
+						<p>
+							{incidentStatusLabel(activeIncident.status)} incident started{' '}
+							{formatRelativeTime(activeIncident.started_at)}.
+						</p>
+						<Link
+							to="/w/$workspaceSlug/incidents/$incidentId"
+							params={{
+								workspaceSlug: workspace.slug,
+								incidentId: activeIncident.id,
+							}}
+							className="font-medium underline underline-offset-4"
+						>
+							View incident
+						</Link>
+					</AlertDescription>
+				</Alert>
+			) : null}
+
 			<div className="flex flex-wrap items-center justify-between gap-3">
 				<h2 className="font-heading text-lg font-medium">Summary</h2>
 				<div
@@ -338,6 +382,40 @@ function MonitorDetailView({
 					/>
 				</>
 			)}
+
+			<section className="space-y-3" aria-label="Recent incidents">
+				<h2 className="font-heading text-lg font-medium">Recent incidents</h2>
+				{recentIncidents.length === 0 ? (
+					<p className="text-sm text-muted-foreground">No incidents yet</p>
+				) : (
+					<ul className="space-y-2">
+						{recentIncidents.map((incident) => (
+							<li
+								key={incident.id}
+								className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm"
+							>
+								<Link
+									to="/w/$workspaceSlug/incidents/$incidentId"
+									params={{
+										workspaceSlug: workspace.slug,
+										incidentId: incident.id,
+									}}
+									className="font-medium underline underline-offset-4"
+								>
+									{incidentStatusLabel(incident.status)}
+								</Link>
+								<span className="text-xs text-muted-foreground">
+									Started {formatRelativeTime(incident.started_at)} ·{' '}
+									{formatIncidentDuration(
+										incident.started_at,
+										incident.resolved_at,
+									)}
+								</span>
+							</li>
+						))}
+					</ul>
+				)}
+			</section>
 
 			<ConfirmDialog
 				open={confirmOpen}

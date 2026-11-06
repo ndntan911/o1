@@ -21,6 +21,18 @@ export function canManageMonitors(role: Role): boolean {
 	return roleAtLeast(role, 'member');
 }
 
+export function canAcknowledgeIncidents(role: Role): boolean {
+	return roleAtLeast(role, 'member');
+}
+
+export function canManageAlertChannels(role: Role): boolean {
+	return roleAtLeast(role, 'admin');
+}
+
+export function canManageMonitorAlerts(role: Role): boolean {
+	return roleAtLeast(role, 'member');
+}
+
 export function assignableRoles(role: Role): Role[] {
 	if (!canManageMembers(role)) return [];
 	return ASSIGNABLE_ROLES.filter(

@@ -62,6 +62,16 @@ const MonitorDetailScreen = lazy(async () => {
 	return { default: module.MonitorDetailScreen };
 });
 
+const IncidentsScreen = lazy(async () => {
+	const module = await import('@/features/incidents/IncidentsScreen');
+	return { default: module.IncidentsScreen };
+});
+
+const IncidentDetailScreen = lazy(async () => {
+	const module = await import('@/features/incidents/IncidentDetailScreen');
+	return { default: module.IncidentDetailScreen };
+});
+
 const AdminWorkspacesScreen = lazy(async () => {
 	const module = await import('@/features/admin/AdminWorkspacesScreen');
 	return { default: module.AdminWorkspacesScreen };
@@ -289,6 +299,31 @@ const monitorEditRoute = createRoute({
 	component: MonitorEditRoute,
 });
 
+function IncidentsRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return <IncidentsScreen workspace={workspace} />;
+}
+
+const incidentsRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/incidents',
+	component: IncidentsRoute,
+});
+
+function IncidentDetailRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+	const { incidentId } = incidentDetailRoute.useParams();
+
+	return <IncidentDetailScreen workspace={workspace} incidentId={incidentId} />;
+}
+
+const incidentDetailRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/incidents/$incidentId',
+	component: IncidentDetailRoute,
+});
+
 function MembersRoute() {
 	const { workspace } = workspaceRoute.useRouteContext();
 
@@ -362,6 +397,8 @@ export const routeTree = rootRoute.addChildren([
 			monitorCreateRoute,
 			monitorDetailRoute,
 			monitorEditRoute,
+			incidentsRoute,
+			incidentDetailRoute,
 			membersRoute,
 		]),
 		adminRoute.addChildren([

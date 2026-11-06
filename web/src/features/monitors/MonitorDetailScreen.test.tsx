@@ -6,6 +6,7 @@ import { HttpResponse, http } from 'msw';
 import { server } from '@/test/msw/server';
 import { renderWithProviders } from '@/test/render';
 import type {
+	Incident,
 	Monitor,
 	ProbeResult,
 	ResultsWindow,
@@ -130,6 +131,24 @@ const listPath = `${ORIGIN}/api/v1/workspaces/${workspace.id}/monitors`;
 const monitorPath = `${listPath}/m1`;
 const summaryPath = `${monitorPath}/summary`;
 const resultsPath = `${monitorPath}/results`;
+const incidentsPath = `${ORIGIN}/api/v1/workspaces/${workspace.id}/incidents`;
+
+function makeIncident(overrides: Partial<Incident> = {}): Incident {
+	return {
+		id: 'i1',
+		workspace_id: workspace.id,
+		monitor_id: 'm1',
+		monitor_name: 'API',
+		status: 'open',
+		started_at: new Date(Date.now() - 60 * 60_000).toISOString(),
+		acknowledged_at: null,
+		acknowledged_by: null,
+		resolved_at: null,
+		last_notified_at: null,
+		reminder_count: 0,
+		...overrides,
+	};
+}
 
 function problem(code: string, status: number, title: string) {
 	return HttpResponse.json(
@@ -157,6 +176,25 @@ function useMonitorHandlers(
 		http.get(resultsPath, ({ request }) => {
 			requests.results.push(new URL(request.url).searchParams.get('window'));
 			return HttpResponse.json({ results });
+		}),
+		http.get(incidentsPath, () => HttpResponse.json({ incidents: [] })),
+	);
+
+	return requests;
+}
+
+function useIncidentHandlers(
+	active: Incident[],
+	all: Incident[],
+	requests: URLSearchParams[] = [],
+) {
+	server.use(
+		http.get(incidentsPath, ({ request }) => {
+			const params = new URL(request.url).searchParams;
+			requests.push(params);
+			return HttpResponse.json({
+				incidents: params.get('status') === 'active' ? active : all,
+			});
 		}),
 	);
 
@@ -436,5 +474,68 @@ describe('MonitorDetailScreen', () => {
 		expect(
 			screen.queryByRole('button', { name: 'Load more' }),
 		).not.toBeInTheDocument();
+	});
+
+	test('an active incident banner links to the incident', async () => {
+		const incident = makeIncident({ status: 'acknowledged' });
+		useMonitorHandlers();
+		useIncidentHandlers([incident], [incident]);
+
+		renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+
+		expect(await screen.findByText('Active incident')).toBeInTheDocument();
+		expect(screen.getByText(/Acknowledged incident/)).toBeInTheDocument();
+		expect(screen.getByRole('link', { name: 'View incident' })).toHaveAttribute(
+			'href',
+			'/w/acme-status/incidents/i1',
+		);
+	});
+
+	test('renders the five most recent incidents for the monitor', async () => {
+		const requests: URLSearchParams[] = [];
+		const recent = [
+			makeIncident({
+				id: 'i2',
+				status: 'resolved',
+				resolved_at: new Date().toISOString(),
+			}),
+			makeIncident({ id: 'i3', status: 'acknowledged' }),
+		];
+		useMonitorHandlers();
+		useIncidentHandlers([], recent, requests);
+
+		renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+
+		expect(
+			await screen.findByRole('heading', { name: 'Recent incidents' }),
+		).toBeInTheDocument();
+		expect(
+			await screen.findByRole('link', { name: 'Resolved' }),
+		).toHaveAttribute('href', '/w/acme-status/incidents/i2');
+		expect(screen.getByRole('link', { name: 'Acknowledged' })).toHaveAttribute(
+			'href',
+			'/w/acme-status/incidents/i3',
+		);
+		const recentRequest = requests.find(
+			(params) => params.get('status') === 'all',
+		);
+		expect(recentRequest?.get('monitor_id')).toBe('m1');
+		expect(recentRequest?.get('limit')).toBe('5');
+	});
+
+	test('shows no incident banner when there are no active incidents', async () => {
+		useMonitorHandlers();
+		useIncidentHandlers([], []);
+
+		renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+
+		expect(await screen.findByText('No incidents yet')).toBeInTheDocument();
+		expect(screen.queryByText('Active incident')).not.toBeInTheDocument();
 	});
 });

@@ -197,3 +197,56 @@ export interface SecurityEventFilters {
 	kind?: string;
 	workspaceId?: string;
 }
+
+export interface Incident {
+	id: string;
+	workspace_id: string;
+	monitor_id: string;
+	monitor_name: string;
+	status: 'open' | 'acknowledged' | 'resolved';
+	started_at: string;
+	acknowledged_at: string | null;
+	acknowledged_by: string | null;
+	resolved_at: string | null;
+	last_notified_at: string | null;
+	reminder_count: number;
+}
+
+export interface IncidentEvent {
+	id: string;
+	kind: 'opened' | 'acknowledged' | 'resolved';
+	actor_user_id: string | null;
+	detail: unknown;
+	created_at: string;
+}
+
+export interface IncidentDetail {
+	incident: Incident;
+	events: IncidentEvent[];
+}
+
+export interface IncidentDelivery {
+	id: string;
+	event: 'opened' | 'reminder' | 'resolved';
+	sequence: number;
+	recipient: string;
+	status: 'pending' | 'sent' | 'failed' | 'skipped';
+	attempts: number;
+	last_error: string | null;
+	sent_at: string | null;
+	created_at: string;
+}
+
+export interface IncidentFilters {
+	status: 'active' | 'open' | 'acknowledged' | 'resolved' | 'all';
+	monitorId?: string;
+}
+
+export interface IncidentListResponse {
+	incidents: Incident[];
+	next_cursor?: string;
+}
+
+export interface IncidentDeliveryListResponse {
+	deliveries: IncidentDelivery[];
+}

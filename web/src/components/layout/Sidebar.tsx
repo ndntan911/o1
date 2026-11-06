@@ -35,6 +35,15 @@ export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 							Monitors
 						</Link>
 						<Link
+							to="/w/$workspaceSlug/incidents"
+							params={{ workspaceSlug: currentWorkspace.slug }}
+							className={linkClass}
+							activeProps={{ className: activeClass }}
+							onClick={onNavigate}
+						>
+							Incidents
+						</Link>
+						<Link
 							to="/w/$workspaceSlug/members"
 							params={{ workspaceSlug: currentWorkspace.slug }}
 							className={linkClass}

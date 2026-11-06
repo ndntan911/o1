@@ -1,6 +1,7 @@
 import type {
 	AdminMonitorFilters,
 	AdminWorkspaceFilters,
+	IncidentFilters,
 	ResultsWindow,
 	SecurityEventFilters,
 } from '@/lib/api/types';
@@ -21,4 +22,14 @@ export const queryKeys = {
 		['admin', 'monitors', filters] as const,
 	adminSecurityEvents: (filters: SecurityEventFilters) =>
 		['admin', 'security-events', filters] as const,
+	incidents: (workspaceId: string, filters: IncidentFilters) =>
+		['incidents', workspaceId, filters] as const,
+	incident: (workspaceId: string, incidentId: string) =>
+		['incident', workspaceId, incidentId] as const,
+	incidentDeliveries: (workspaceId: string, incidentId: string) =>
+		['incident-deliveries', workspaceId, incidentId] as const,
+	alertChannels: (workspaceId: string) =>
+		['alert-channels', workspaceId] as const,
+	monitorAlertChannel: (workspaceId: string, monitorId: string) =>
+		['monitor-alert-channel', workspaceId, monitorId] as const,
 };
