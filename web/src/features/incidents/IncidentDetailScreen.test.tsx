@@ -318,6 +318,89 @@ describe('IncidentDetailScreen', () => {
 		expect(screen.getAllByText('Failed').length).toBeGreaterThan(0);
 	});
 
+	test('groups deliveries by event and shows last_error', async () => {
+		server.use(
+			detailHandler({
+				incident: makeIncident(),
+				events: [makeEvent('opened', '2026-01-01T01:00:00Z')],
+			}),
+			http.get(deliveriesPath, () =>
+				HttpResponse.json({
+					deliveries: [
+						makeDelivery({
+							id: 'd1',
+							event: 'reminder',
+							sequence: 2,
+							recipient: 'reminder@example.com',
+							status: 'failed',
+							attempts: 3,
+							last_error: 'mailbox unavailable',
+						}),
+						makeDelivery({
+							id: 'd2',
+							recipient: 'opened@example.com',
+						}),
+						makeDelivery({
+							id: 'd3',
+							event: 'reminder',
+							sequence: 3,
+							recipient: 'oncall@example.com',
+							status: 'pending',
+							attempts: 1,
+							last_error: null,
+							sent_at: null,
+						}),
+					],
+				}),
+			),
+		);
+
+		renderWithProviders(
+			<IncidentDetailScreen
+				workspace={{ ...workspace, role: 'admin' }}
+				incidentId="i1"
+			/>,
+		);
+
+		expect(
+			await screen.findByRole('heading', { name: 'Alert deliveries' }),
+		).toBeInTheDocument();
+		expect(
+			await screen.findByRole('heading', { level: 3, name: 'Opened' }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole('heading', { level: 3, name: 'Reminder' }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole('heading', { level: 3, name: 'Resolved' }),
+		).not.toBeInTheDocument();
+
+		const openedTable = await screen.findByRole('table', {
+			name: 'Opened alert deliveries',
+		});
+		const reminderTable = screen.getByRole('table', {
+			name: 'Reminder alert deliveries',
+		});
+		expect(
+			within(openedTable).getByText('opened@example.com'),
+		).toBeInTheDocument();
+		expect(
+			within(openedTable).queryByText('reminder@example.com'),
+		).not.toBeInTheDocument();
+		expect(
+			within(reminderTable).getByText('reminder@example.com'),
+		).toBeInTheDocument();
+		expect(
+			within(reminderTable).getByText('oncall@example.com'),
+		).toBeInTheDocument();
+		expect(
+			within(reminderTable).getByText('mailbox unavailable'),
+		).toBeInTheDocument();
+		expect(
+			screen.getAllByRole('columnheader', { name: 'Last error' }),
+		).toHaveLength(2);
+	});
+
 	test('a non-admin does not request or render deliveries', async () => {
 		let deliveryRequests = 0;
 		server.use(

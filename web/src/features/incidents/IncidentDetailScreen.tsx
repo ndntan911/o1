@@ -45,6 +45,26 @@ const DELIVERY_STATUS_LABELS: Record<IncidentDelivery['status'], string> = {
 	skipped: 'Skipped',
 };
 
+const DELIVERY_EVENT_ORDER: IncidentDelivery['event'][] = [
+	'opened',
+	'reminder',
+	'resolved',
+];
+
+interface DeliveryGroup {
+	event: IncidentDelivery['event'];
+	deliveries: IncidentDelivery[];
+}
+
+function groupDeliveriesByEvent(
+	deliveries: IncidentDelivery[],
+): DeliveryGroup[] {
+	return DELIVERY_EVENT_ORDER.flatMap((event) => {
+		const matching = deliveries.filter((delivery) => delivery.event === event);
+		return matching.length > 0 ? [{ event, deliveries: matching }] : [];
+	});
+}
+
 function errorMessage(error: unknown): string {
 	if (isApiProblem(error)) {
 		return error.problem.detail ?? error.problem.title;
@@ -212,39 +232,46 @@ function IncidentDetailView({ workspace, detail }: IncidentDetailViewProps) {
 					) : deliveriesQuery.data.length === 0 ? (
 						<p className="text-sm text-muted-foreground">No deliveries</p>
 					) : (
-						<Table>
-							<TableCaption className="sr-only">
-								Alert deliveries for this incident
-							</TableCaption>
-							<TableHeader>
-								<TableRow>
-									<TableHead>Event</TableHead>
-									<TableHead>Recipient</TableHead>
-									<TableHead>Status</TableHead>
-									<TableHead>Attempts</TableHead>
-									<TableHead>Sent</TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{deliveriesQuery.data.map((delivery) => (
-									<TableRow key={delivery.id}>
-										<TableCell>
-											{DELIVERY_EVENT_LABELS[delivery.event]}
-										</TableCell>
-										<TableCell>{delivery.recipient}</TableCell>
-										<TableCell>
-											{DELIVERY_STATUS_LABELS[delivery.status]}
-										</TableCell>
-										<TableCell>{delivery.attempts}</TableCell>
-										<TableCell>
-											{delivery.sent_at
-												? formatRelativeTime(delivery.sent_at)
-												: '—'}
-										</TableCell>
-									</TableRow>
-								))}
-							</TableBody>
-						</Table>
+						groupDeliveriesByEvent(deliveriesQuery.data).map(
+							({ event, deliveries }) => (
+								<div key={event} className="space-y-2">
+									<h3 className="font-heading text-base font-medium">
+										{DELIVERY_EVENT_LABELS[event]}
+									</h3>
+									<Table>
+										<TableCaption className="sr-only">
+											{DELIVERY_EVENT_LABELS[event]} alert deliveries
+										</TableCaption>
+										<TableHeader>
+											<TableRow>
+												<TableHead>Recipient</TableHead>
+												<TableHead>Status</TableHead>
+												<TableHead>Attempts</TableHead>
+												<TableHead>Last error</TableHead>
+												<TableHead>Sent</TableHead>
+											</TableRow>
+										</TableHeader>
+										<TableBody>
+											{deliveries.map((delivery) => (
+												<TableRow key={delivery.id}>
+													<TableCell>{delivery.recipient}</TableCell>
+													<TableCell>
+														{DELIVERY_STATUS_LABELS[delivery.status]}
+													</TableCell>
+													<TableCell>{delivery.attempts}</TableCell>
+													<TableCell>{delivery.last_error ?? '—'}</TableCell>
+													<TableCell>
+														{delivery.sent_at
+															? formatRelativeTime(delivery.sent_at)
+															: '—'}
+													</TableCell>
+												</TableRow>
+											))}
+										</TableBody>
+									</Table>
+								</div>
+							),
+						)
 					)}
 				</div>
 			) : null}

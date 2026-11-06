@@ -234,3 +234,109 @@ func TestListSecurityEventsOrdersNewestFirst(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 }
+
+// TestSuspendWaitsForProbeLock holds the probe path's FOR KEY SHARE lock on a
+// workspace, then suspends it. A plain UPDATE (FOR NO KEY UPDATE) is compatible
+// with KEY SHARE and would commit while the probe is still in flight, so
+// Suspend must take FOR UPDATE first and block until the probe releases.
+func TestSuspendWaitsForProbeLock(t *testing.T) {
+	env := newTestEnv(t)
+	ws := env.createWorkspace(t, "Suspend Race")
+
+	assertWaitsForProbeLock(t, env, ws.ID, func(ctx context.Context) error {
+		return env.svc.Suspend(ctx, env.adminID, ws.ID, "abuse")
+	})
+
+	got, err := env.svc.GetWorkspace(context.Background(), ws.ID)
+	if err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	if got.SuspendedAt == nil {
+		t.Fatal("workspace was not suspended")
+	}
+}
+
+// TestUnsuspendWaitsForProbeLock covers the same serialization for clearing a
+// suspension.
+func TestUnsuspendWaitsForProbeLock(t *testing.T) {
+	env := newTestEnv(t)
+	ws := env.createWorkspace(t, "Unsuspend Race")
+	if err := env.svc.Suspend(context.Background(), env.adminID, ws.ID, "abuse"); err != nil {
+		t.Fatalf("suspend before test: %v", err)
+	}
+
+	assertWaitsForProbeLock(t, env, ws.ID, func(ctx context.Context) error {
+		return env.svc.Unsuspend(ctx, env.adminID, ws.ID)
+	})
+
+	got, err := env.svc.GetWorkspace(context.Background(), ws.ID)
+	if err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	if got.SuspendedAt != nil {
+		t.Fatal("workspace is still suspended")
+	}
+}
+
+// assertWaitsForProbeLock takes FOR KEY SHARE on the workspace, runs call
+// concurrently, and verifies call stays blocked until the lock is released.
+func assertWaitsForProbeLock(t *testing.T, env *testEnv, workspaceID uuid.UUID, call func(context.Context) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := env.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin probe tx: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	if _, err := tx.Exec(ctx, `SELECT id FROM workspaces WHERE id = $1 FOR KEY SHARE`, workspaceID); err != nil {
+		t.Fatalf("lock workspace for probe: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- call(context.Background())
+	}()
+
+	waitForWorkspaceRowLockWait(t, env.pool)
+
+	select {
+	case err := <-done:
+		t.Fatalf("call finished while the probe lock was held: %v", err)
+	default:
+	}
+
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("release probe lock: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("call after lock release: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("call did not finish after the probe lock was released")
+	}
+}
+
+func waitForWorkspaceRowLockWait(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting int
+		if err := pool.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("suspension did not block on the workspace row lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

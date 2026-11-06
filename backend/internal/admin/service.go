@@ -159,11 +159,16 @@ func (s *Service) Suspend(ctx context.Context, adminID, workspaceID uuid.UUID, r
 	}()
 	qtx := s.q.WithTx(tx)
 
-	if _, err := qtx.GetWorkspaceByID(ctx, workspaceID); err != nil {
+	// Lock the workspace row before changing its suspension state. The probe
+	// path holds FOR KEY SHARE while it rechecks suspension and records an
+	// incident; a plain UPDATE (FOR NO KEY UPDATE) is compatible with that
+	// lock, so suspend must take FOR UPDATE to serialize with the in-flight
+	// probe.
+	if _, err := qtx.LockWorkspace(ctx, workspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
-		return fmt.Errorf("load workspace: %w", err)
+		return fmt.Errorf("lock workspace: %w", err)
 	}
 	if err := qtx.SuspendWorkspace(ctx, sqlc.SuspendWorkspaceParams{
 		ID:              workspaceID,
@@ -193,11 +198,14 @@ func (s *Service) Unsuspend(ctx context.Context, adminID, workspaceID uuid.UUID)
 	}()
 	qtx := s.q.WithTx(tx)
 
-	if _, err := qtx.GetWorkspaceByID(ctx, workspaceID); err != nil {
+	// Lock the workspace row before changing its suspension state. See Suspend
+	// for why this must be FOR UPDATE rather than the plain UPDATE used by
+	// UnsuspendWorkspace.
+	if _, err := qtx.LockWorkspace(ctx, workspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
-		return fmt.Errorf("load workspace: %w", err)
+		return fmt.Errorf("lock workspace: %w", err)
 	}
 	if err := qtx.UnsuspendWorkspace(ctx, workspaceID); err != nil {
 		return fmt.Errorf("unsuspend workspace: %w", err)

@@ -146,6 +146,42 @@ func TestAlertWorker_SendsOpenedDelivery(t *testing.T) {
 	}
 }
 
+func TestAlertWorker_RedactsMonitorURLQueryAndFragment(t *testing.T) {
+	env := newWorkerEnv(t)
+	monitorID, workspaceID := env.createMonitor(
+		t, "https://example.com/health?token=secret#fragment", 1, 1, false, false)
+	channelID := env.attachEmailChannel(t, monitorID, workspaceID, "one@example.com")
+	fixture := createAlertFixture(t, env, monitorID, workspaceID, channelID, "opened", 0, time.Now().UTC())
+
+	sender := &alertTestSender{}
+	worker := newAlertWorkerForTest(env, sender)
+	if err := worker.Work(context.Background(), alertJob(fixture.deliveryID, 1, 5)); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	msgs := sender.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(msgs))
+	}
+	for _, body := range []struct {
+		name string
+		text string
+	}{
+		{"Text", msgs[0].Text},
+		{"HTML", msgs[0].HTML},
+	} {
+		if strings.Contains(body.text, "token=secret") {
+			t.Errorf("%s body leaked the query string: %q", body.name, body.text)
+		}
+		if strings.Contains(body.text, "fragment") || strings.Contains(body.text, "#") {
+			t.Errorf("%s body leaked the URL fragment: %q", body.name, body.text)
+		}
+		if !strings.Contains(body.text, "https://example.com/health") {
+			t.Errorf("%s body missing redacted URL: %q", body.name, body.text)
+		}
+	}
+}
+
 func TestAlertWorker_FailureRetriesThenMarksFailed(t *testing.T) {
 	env := newWorkerEnv(t)
 	monitorID, workspaceID := env.createMonitor(t, "https://example.com/health", 1, 1, false, false)
