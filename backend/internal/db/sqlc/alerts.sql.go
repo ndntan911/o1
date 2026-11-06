@@ -13,6 +13,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const attachMonitorsToChannel = `-- name: AttachMonitorsToChannel :exec
+INSERT INTO monitor_alert_channels (monitor_id, channel_id)
+SELECT m.id, $1::uuid
+FROM monitors m
+WHERE m.workspace_id = $2::uuid
+ON CONFLICT DO NOTHING
+`
+
+type AttachMonitorsToChannelParams struct {
+	ChannelID   uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+func (q *Queries) AttachMonitorsToChannel(ctx context.Context, arg AttachMonitorsToChannelParams) error {
+	_, err := q.db.Exec(ctx, attachMonitorsToChannel, arg.ChannelID, arg.WorkspaceID)
+	return err
+}
+
 const attachMonitorsToEmailChannel = `-- name: AttachMonitorsToEmailChannel :exec
 INSERT INTO monitor_alert_channels (monitor_id, channel_id)
 SELECT m.id, $1::uuid
@@ -29,6 +47,74 @@ type AttachMonitorsToEmailChannelParams struct {
 func (q *Queries) AttachMonitorsToEmailChannel(ctx context.Context, arg AttachMonitorsToEmailChannelParams) error {
 	_, err := q.db.Exec(ctx, attachMonitorsToEmailChannel, arg.ChannelID, arg.WorkspaceID)
 	return err
+}
+
+const countActiveAlertChannels = `-- name: CountActiveAlertChannels :one
+SELECT count(*) FROM alert_channels
+WHERE workspace_id=$1 AND kind=$2 AND deleted_at IS NULL
+`
+
+type CountActiveAlertChannelsParams struct {
+	WorkspaceID uuid.UUID
+	Kind        string
+}
+
+func (q *Queries) CountActiveAlertChannels(ctx context.Context, arg CountActiveAlertChannelsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveAlertChannels, arg.WorkspaceID, arg.Kind)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAllActiveAlertChannels = `-- name: CountAllActiveAlertChannels :one
+SELECT count(*) FROM alert_channels
+WHERE workspace_id=$1 AND deleted_at IS NULL
+`
+
+func (q *Queries) CountAllActiveAlertChannels(ctx context.Context, workspaceID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countAllActiveAlertChannels, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createAlertChannel = `-- name: CreateAlertChannel :one
+INSERT INTO alert_channels (id, workspace_id, kind, name, config, enabled)
+VALUES ($1,$2,$3,$4,$5,$6)
+RETURNING id, workspace_id, kind, name, config, enabled, created_at, updated_at, deleted_at
+`
+
+type CreateAlertChannelParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Kind        string
+	Name        string
+	Config      []byte
+	Enabled     bool
+}
+
+func (q *Queries) CreateAlertChannel(ctx context.Context, arg CreateAlertChannelParams) (AlertChannel, error) {
+	row := q.db.QueryRow(ctx, createAlertChannel,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.Kind,
+		arg.Name,
+		arg.Config,
+		arg.Enabled,
+	)
+	var i AlertChannel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Kind,
+		&i.Name,
+		&i.Config,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
 const createAlertDelivery = `-- name: CreateAlertDelivery :one
@@ -74,11 +160,67 @@ func (q *Queries) CreateAlertDelivery(ctx context.Context, arg CreateAlertDelive
 	return i, err
 }
 
+const getActiveAlertChannelByName = `-- name: GetActiveAlertChannelByName :one
+SELECT id, workspace_id, kind, name, config, enabled, created_at, updated_at, deleted_at FROM alert_channels
+WHERE workspace_id=$1 AND kind=$2 AND name=$3 AND deleted_at IS NULL
+`
+
+type GetActiveAlertChannelByNameParams struct {
+	WorkspaceID uuid.UUID
+	Kind        string
+	Name        string
+}
+
+func (q *Queries) GetActiveAlertChannelByName(ctx context.Context, arg GetActiveAlertChannelByNameParams) (AlertChannel, error) {
+	row := q.db.QueryRow(ctx, getActiveAlertChannelByName, arg.WorkspaceID, arg.Kind, arg.Name)
+	var i AlertChannel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Kind,
+		&i.Name,
+		&i.Config,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getAlertChannelByID = `-- name: GetAlertChannelByID :one
+SELECT id, workspace_id, kind, name, config, enabled, created_at, updated_at, deleted_at FROM alert_channels
+WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL
+`
+
+type GetAlertChannelByIDParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+func (q *Queries) GetAlertChannelByID(ctx context.Context, arg GetAlertChannelByIDParams) (AlertChannel, error) {
+	row := q.db.QueryRow(ctx, getAlertChannelByID, arg.ID, arg.WorkspaceID)
+	var i AlertChannel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Kind,
+		&i.Name,
+		&i.Config,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getAlertDelivery = `-- name: GetAlertDelivery :one
 SELECT d.id, d.incident_id, d.channel_id, d.event, d.sequence, d.recipient, d.status, d.attempts, d.last_error, d.sent_at, d.created_at, d.updated_at, i.status AS incident_status, i.started_at, i.resolved_at, i.acknowledged_at,
        m.name AS monitor_name, m.paused AS monitor_paused, m.url AS monitor_url,
        w.name AS workspace_name, w.slug AS workspace_slug, w.suspended_at,
-       c.kind AS channel_kind, c.config AS channel_config, c.enabled AS channel_enabled
+       c.kind AS channel_kind, c.config AS channel_config, c.enabled AS channel_enabled,
+       m.id AS monitor_id, c.name AS channel_name, c.deleted_at AS channel_deleted_at
 FROM alert_deliveries d
 JOIN incidents i ON i.id = d.incident_id
 JOIN monitors m ON m.id = i.monitor_id
@@ -88,31 +230,34 @@ WHERE d.id=$1
 `
 
 type GetAlertDeliveryRow struct {
-	ID             uuid.UUID
-	IncidentID     uuid.UUID
-	ChannelID      uuid.UUID
-	Event          string
-	Sequence       int32
-	Recipient      string
-	Status         string
-	Attempts       int32
-	LastError      *string
-	SentAt         *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	IncidentStatus string
-	StartedAt      time.Time
-	ResolvedAt     *time.Time
-	AcknowledgedAt *time.Time
-	MonitorName    string
-	MonitorPaused  bool
-	MonitorUrl     string
-	WorkspaceName  string
-	WorkspaceSlug  string
-	SuspendedAt    *time.Time
-	ChannelKind    string
-	ChannelConfig  []byte
-	ChannelEnabled bool
+	ID               uuid.UUID
+	IncidentID       uuid.UUID
+	ChannelID        uuid.UUID
+	Event            string
+	Sequence         int32
+	Recipient        string
+	Status           string
+	Attempts         int32
+	LastError        *string
+	SentAt           *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	IncidentStatus   string
+	StartedAt        time.Time
+	ResolvedAt       *time.Time
+	AcknowledgedAt   *time.Time
+	MonitorName      string
+	MonitorPaused    bool
+	MonitorUrl       string
+	WorkspaceName    string
+	WorkspaceSlug    string
+	SuspendedAt      *time.Time
+	ChannelKind      string
+	ChannelConfig    []byte
+	ChannelEnabled   bool
+	MonitorID        uuid.UUID
+	ChannelName      string
+	ChannelDeletedAt *time.Time
 }
 
 func (q *Queries) GetAlertDelivery(ctx context.Context, id uuid.UUID) (GetAlertDeliveryRow, error) {
@@ -144,13 +289,16 @@ func (q *Queries) GetAlertDelivery(ctx context.Context, id uuid.UUID) (GetAlertD
 		&i.ChannelKind,
 		&i.ChannelConfig,
 		&i.ChannelEnabled,
+		&i.MonitorID,
+		&i.ChannelName,
+		&i.ChannelDeletedAt,
 	)
 	return i, err
 }
 
 const getEmailAlertChannel = `-- name: GetEmailAlertChannel :one
-SELECT id, workspace_id, kind, name, config, enabled, created_at, updated_at FROM alert_channels
-WHERE workspace_id=$1 AND kind='email' AND name='Email'
+SELECT id, workspace_id, kind, name, config, enabled, created_at, updated_at, deleted_at FROM alert_channels
+WHERE workspace_id=$1 AND kind='email' AND name='Email' AND deleted_at IS NULL
 `
 
 func (q *Queries) GetEmailAlertChannel(ctx context.Context, workspaceID uuid.UUID) (AlertChannel, error) {
@@ -165,6 +313,7 @@ func (q *Queries) GetEmailAlertChannel(ctx context.Context, workspaceID uuid.UUI
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -176,7 +325,7 @@ SELECT m.id AS monitor_id,
        COALESCE(mac.enabled, false) AS monitor_enabled
 FROM monitors m
 LEFT JOIN alert_channels c
-  ON c.workspace_id = m.workspace_id AND c.kind='email' AND c.name='Email'
+  ON c.workspace_id = m.workspace_id AND c.kind='email' AND c.name='Email' AND c.deleted_at IS NULL
 LEFT JOIN monitor_alert_channels mac
   ON mac.monitor_id = m.id AND mac.channel_id = c.id
 WHERE m.id=$1 AND m.workspace_id=$2
@@ -207,7 +356,9 @@ func (q *Queries) GetMonitorAlertState(ctx context.Context, arg GetMonitorAlertS
 }
 
 const listAlertChannels = `-- name: ListAlertChannels :many
-SELECT id, workspace_id, kind, name, config, enabled, created_at, updated_at FROM alert_channels WHERE workspace_id=$1 ORDER BY created_at, id
+SELECT id, workspace_id, kind, name, config, enabled, created_at, updated_at, deleted_at FROM alert_channels
+WHERE workspace_id=$1 AND deleted_at IS NULL
+ORDER BY created_at, id
 `
 
 func (q *Queries) ListAlertChannels(ctx context.Context, workspaceID uuid.UUID) ([]AlertChannel, error) {
@@ -228,6 +379,7 @@ func (q *Queries) ListAlertChannels(ctx context.Context, workspaceID uuid.UUID) 
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -240,9 +392,9 @@ func (q *Queries) ListAlertChannels(ctx context.Context, workspaceID uuid.UUID) 
 }
 
 const listEnabledAlertChannelsForMonitor = `-- name: ListEnabledAlertChannelsForMonitor :many
-SELECT c.id, c.workspace_id, c.kind, c.name, c.config, c.enabled, c.created_at, c.updated_at FROM alert_channels c
+SELECT c.id, c.workspace_id, c.kind, c.name, c.config, c.enabled, c.created_at, c.updated_at, c.deleted_at FROM alert_channels c
 JOIN monitor_alert_channels mac ON mac.channel_id = c.id
-WHERE mac.monitor_id=$1 AND mac.enabled=true AND c.enabled=true
+WHERE mac.monitor_id=$1 AND mac.enabled=true AND c.enabled=true AND c.deleted_at IS NULL
 `
 
 func (q *Queries) ListEnabledAlertChannelsForMonitor(ctx context.Context, monitorID uuid.UUID) ([]AlertChannel, error) {
@@ -263,6 +415,61 @@ func (q *Queries) ListEnabledAlertChannelsForMonitor(ctx context.Context, monito
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMonitorAlertChannels = `-- name: ListMonitorAlertChannels :many
+SELECT c.id AS id,
+       c.kind,
+       c.name,
+       c.enabled AS channel_enabled,
+       COALESCE(mac.enabled, false) AS monitor_enabled
+FROM monitors m
+JOIN alert_channels c
+  ON c.workspace_id = m.workspace_id AND c.deleted_at IS NULL
+LEFT JOIN monitor_alert_channels mac
+  ON mac.monitor_id = m.id AND mac.channel_id = c.id
+WHERE m.id = $1::uuid AND m.workspace_id = $2::uuid
+ORDER BY c.created_at, c.id
+`
+
+type ListMonitorAlertChannelsParams struct {
+	MonitorID   uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+type ListMonitorAlertChannelsRow struct {
+	ID             uuid.UUID
+	Kind           string
+	Name           string
+	ChannelEnabled bool
+	MonitorEnabled bool
+}
+
+func (q *Queries) ListMonitorAlertChannels(ctx context.Context, arg ListMonitorAlertChannelsParams) ([]ListMonitorAlertChannelsRow, error) {
+	rows, err := q.db.Query(ctx, listMonitorAlertChannels, arg.MonitorID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMonitorAlertChannelsRow
+	for rows.Next() {
+		var i ListMonitorAlertChannelsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Name,
+			&i.ChannelEnabled,
+			&i.MonitorEnabled,
 		); err != nil {
 			return nil, err
 		}
@@ -300,12 +507,69 @@ func (q *Queries) MarkAlertDeliverySent(ctx context.Context, id uuid.UUID) error
 	return err
 }
 
+const softDeleteAlertChannel = `-- name: SoftDeleteAlertChannel :execrows
+UPDATE alert_channels
+SET deleted_at=now(), updated_at=now()
+WHERE id=$1 AND workspace_id=$2 AND kind <> 'email' AND deleted_at IS NULL
+`
+
+type SoftDeleteAlertChannelParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+}
+
+func (q *Queries) SoftDeleteAlertChannel(ctx context.Context, arg SoftDeleteAlertChannelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteAlertChannel, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateAlertChannel = `-- name: UpdateAlertChannel :one
+UPDATE alert_channels
+SET name=$3, config=$4, enabled=$5, updated_at=now()
+WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL
+RETURNING id, workspace_id, kind, name, config, enabled, created_at, updated_at, deleted_at
+`
+
+type UpdateAlertChannelParams struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Name        string
+	Config      []byte
+	Enabled     bool
+}
+
+func (q *Queries) UpdateAlertChannel(ctx context.Context, arg UpdateAlertChannelParams) (AlertChannel, error) {
+	row := q.db.QueryRow(ctx, updateAlertChannel,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Config,
+		arg.Enabled,
+	)
+	var i AlertChannel
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Kind,
+		&i.Name,
+		&i.Config,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const upsertEmailAlertChannel = `-- name: UpsertEmailAlertChannel :one
 INSERT INTO alert_channels (id, workspace_id, kind, name, config, enabled)
 VALUES ($1,$2,'email','Email',$3,$4)
-ON CONFLICT (workspace_id, kind, name)
+ON CONFLICT (workspace_id, kind, name) WHERE deleted_at IS NULL
 DO UPDATE SET config=EXCLUDED.config, enabled=EXCLUDED.enabled, updated_at=now()
-RETURNING id, workspace_id, kind, name, config, enabled, created_at, updated_at
+RETURNING id, workspace_id, kind, name, config, enabled, created_at, updated_at, deleted_at
 `
 
 type UpsertEmailAlertChannelParams struct {
@@ -332,6 +596,7 @@ func (q *Queries) UpsertEmailAlertChannel(ctx context.Context, arg UpsertEmailAl
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }

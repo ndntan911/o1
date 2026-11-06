@@ -71,6 +71,8 @@ SET last_notified_at=$2, updated_at=now()
 WHERE id=$1;
 
 -- name: ListIncidentDeliveries :many
-SELECT * FROM alert_deliveries
-WHERE incident_id=$1
-ORDER BY created_at, id;
+SELECT d.*, c.kind AS channel_kind, c.name AS channel_name
+FROM alert_deliveries d
+JOIN alert_channels c ON c.id = d.channel_id
+WHERE d.incident_id=$1
+ORDER BY d.created_at, d.id;

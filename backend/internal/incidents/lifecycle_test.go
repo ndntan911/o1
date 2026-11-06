@@ -407,7 +407,7 @@ func TestApplyProbeTransitionSkipsDuplicateRecipient(t *testing.T) {
 	}
 }
 
-func assertDeliveries(t *testing.T, deliveries []sqlc.AlertDelivery, event string, recipients map[string]bool) {
+func assertDeliveries(t *testing.T, deliveries []sqlc.ListIncidentDeliveriesRow, event string, recipients map[string]bool) {
 	t.Helper()
 	seen := make(map[string]bool)
 	for _, delivery := range deliveries {
@@ -429,7 +429,7 @@ func assertDeliveries(t *testing.T, deliveries []sqlc.AlertDelivery, event strin
 	}
 }
 
-func assertAlertJobs(t *testing.T, inserter *fakeInserter, deliveries []sqlc.AlertDelivery) {
+func assertAlertJobs(t *testing.T, inserter *fakeInserter, deliveries []sqlc.ListIncidentDeliveriesRow) {
 	t.Helper()
 	if len(inserter.jobs) != len(deliveries) {
 		t.Fatalf("jobs = %d, want %d", len(inserter.jobs), len(deliveries))

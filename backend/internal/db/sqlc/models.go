@@ -20,6 +20,7 @@ type AlertChannel struct {
 	Enabled     bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	DeletedAt   *time.Time
 }
 
 type AlertDelivery struct {

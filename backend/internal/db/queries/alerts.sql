@@ -1,18 +1,59 @@
 -- name: UpsertEmailAlertChannel :one
 INSERT INTO alert_channels (id, workspace_id, kind, name, config, enabled)
 VALUES ($1,$2,'email','Email',$3,$4)
-ON CONFLICT (workspace_id, kind, name)
+ON CONFLICT (workspace_id, kind, name) WHERE deleted_at IS NULL
 DO UPDATE SET config=EXCLUDED.config, enabled=EXCLUDED.enabled, updated_at=now()
 RETURNING *;
 
 -- name: GetEmailAlertChannel :one
 SELECT * FROM alert_channels
-WHERE workspace_id=$1 AND kind='email' AND name='Email';
+WHERE workspace_id=$1 AND kind='email' AND name='Email' AND deleted_at IS NULL;
 
 -- name: ListAlertChannels :many
-SELECT * FROM alert_channels WHERE workspace_id=$1 ORDER BY created_at, id;
+SELECT * FROM alert_channels
+WHERE workspace_id=$1 AND deleted_at IS NULL
+ORDER BY created_at, id;
+
+-- name: GetAlertChannelByID :one
+SELECT * FROM alert_channels
+WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL;
+
+-- name: GetActiveAlertChannelByName :one
+SELECT * FROM alert_channels
+WHERE workspace_id=$1 AND kind=$2 AND name=$3 AND deleted_at IS NULL;
+
+-- name: CreateAlertChannel :one
+INSERT INTO alert_channels (id, workspace_id, kind, name, config, enabled)
+VALUES ($1,$2,$3,$4,$5,$6)
+RETURNING *;
+
+-- name: UpdateAlertChannel :one
+UPDATE alert_channels
+SET name=$3, config=$4, enabled=$5, updated_at=now()
+WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: CountActiveAlertChannels :one
+SELECT count(*) FROM alert_channels
+WHERE workspace_id=$1 AND kind=$2 AND deleted_at IS NULL;
+
+-- name: CountAllActiveAlertChannels :one
+SELECT count(*) FROM alert_channels
+WHERE workspace_id=$1 AND deleted_at IS NULL;
+
+-- name: SoftDeleteAlertChannel :execrows
+UPDATE alert_channels
+SET deleted_at=now(), updated_at=now()
+WHERE id=$1 AND workspace_id=$2 AND kind <> 'email' AND deleted_at IS NULL;
 
 -- name: AttachMonitorsToEmailChannel :exec
+INSERT INTO monitor_alert_channels (monitor_id, channel_id)
+SELECT m.id, sqlc.arg('channel_id')::uuid
+FROM monitors m
+WHERE m.workspace_id = sqlc.arg('workspace_id')::uuid
+ON CONFLICT DO NOTHING;
+
+-- name: AttachMonitorsToChannel :exec
 INSERT INTO monitor_alert_channels (monitor_id, channel_id)
 SELECT m.id, sqlc.arg('channel_id')::uuid
 FROM monitors m
@@ -32,7 +73,7 @@ SELECT m.id AS monitor_id,
        COALESCE(mac.enabled, false) AS monitor_enabled
 FROM monitors m
 LEFT JOIN alert_channels c
-  ON c.workspace_id = m.workspace_id AND c.kind='email' AND c.name='Email'
+  ON c.workspace_id = m.workspace_id AND c.kind='email' AND c.name='Email' AND c.deleted_at IS NULL
 LEFT JOIN monitor_alert_channels mac
   ON mac.monitor_id = m.id AND mac.channel_id = c.id
 WHERE m.id=$1 AND m.workspace_id=$2;
@@ -40,7 +81,21 @@ WHERE m.id=$1 AND m.workspace_id=$2;
 -- name: ListEnabledAlertChannelsForMonitor :many
 SELECT c.* FROM alert_channels c
 JOIN monitor_alert_channels mac ON mac.channel_id = c.id
-WHERE mac.monitor_id=$1 AND mac.enabled=true AND c.enabled=true;
+WHERE mac.monitor_id=$1 AND mac.enabled=true AND c.enabled=true AND c.deleted_at IS NULL;
+
+-- name: ListMonitorAlertChannels :many
+SELECT c.id AS id,
+       c.kind,
+       c.name,
+       c.enabled AS channel_enabled,
+       COALESCE(mac.enabled, false) AS monitor_enabled
+FROM monitors m
+JOIN alert_channels c
+  ON c.workspace_id = m.workspace_id AND c.deleted_at IS NULL
+LEFT JOIN monitor_alert_channels mac
+  ON mac.monitor_id = m.id AND mac.channel_id = c.id
+WHERE m.id = sqlc.arg('monitor_id')::uuid AND m.workspace_id = sqlc.arg('workspace_id')::uuid
+ORDER BY c.created_at, c.id;
 
 -- name: CreateAlertDelivery :one
 INSERT INTO alert_deliveries (id, incident_id, channel_id, event, sequence, recipient)
@@ -52,7 +107,8 @@ RETURNING *;
 SELECT d.*, i.status AS incident_status, i.started_at, i.resolved_at, i.acknowledged_at,
        m.name AS monitor_name, m.paused AS monitor_paused, m.url AS monitor_url,
        w.name AS workspace_name, w.slug AS workspace_slug, w.suspended_at,
-       c.kind AS channel_kind, c.config AS channel_config, c.enabled AS channel_enabled
+       c.kind AS channel_kind, c.config AS channel_config, c.enabled AS channel_enabled,
+       m.id AS monitor_id, c.name AS channel_name, c.deleted_at AS channel_deleted_at
 FROM alert_deliveries d
 JOIN incidents i ON i.id = d.incident_id
 JOIN monitors m ON m.id = i.monitor_id

@@ -166,20 +166,39 @@ func (q *Queries) GetIncident(ctx context.Context, arg GetIncidentParams) (GetIn
 }
 
 const listIncidentDeliveries = `-- name: ListIncidentDeliveries :many
-SELECT id, incident_id, channel_id, event, sequence, recipient, status, attempts, last_error, sent_at, created_at, updated_at FROM alert_deliveries
-WHERE incident_id=$1
-ORDER BY created_at, id
+SELECT d.id, d.incident_id, d.channel_id, d.event, d.sequence, d.recipient, d.status, d.attempts, d.last_error, d.sent_at, d.created_at, d.updated_at, c.kind AS channel_kind, c.name AS channel_name
+FROM alert_deliveries d
+JOIN alert_channels c ON c.id = d.channel_id
+WHERE d.incident_id=$1
+ORDER BY d.created_at, d.id
 `
 
-func (q *Queries) ListIncidentDeliveries(ctx context.Context, incidentID uuid.UUID) ([]AlertDelivery, error) {
+type ListIncidentDeliveriesRow struct {
+	ID          uuid.UUID
+	IncidentID  uuid.UUID
+	ChannelID   uuid.UUID
+	Event       string
+	Sequence    int32
+	Recipient   string
+	Status      string
+	Attempts    int32
+	LastError   *string
+	SentAt      *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	ChannelKind string
+	ChannelName string
+}
+
+func (q *Queries) ListIncidentDeliveries(ctx context.Context, incidentID uuid.UUID) ([]ListIncidentDeliveriesRow, error) {
 	rows, err := q.db.Query(ctx, listIncidentDeliveries, incidentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AlertDelivery
+	var items []ListIncidentDeliveriesRow
 	for rows.Next() {
-		var i AlertDelivery
+		var i ListIncidentDeliveriesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.IncidentID,
@@ -193,6 +212,8 @@ func (q *Queries) ListIncidentDeliveries(ctx context.Context, incidentID uuid.UU
 			&i.SentAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ChannelKind,
+			&i.ChannelName,
 		); err != nil {
 			return nil, err
 		}

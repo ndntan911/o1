@@ -530,3 +530,76 @@ func TestIncidentSchema_OneActivePerMonitorAndDeliveryDedup(t *testing.T) {
 		t.Fatalf("duplicate delivery id error = %v, want pgx.ErrNoRows", err)
 	}
 }
+
+func TestAlertChannelSchema_SoftDeleteAndFilters(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	userID := testutil.CreateVerifiedUser(t, pool, "alert-schema@example.com", "correct horse battery staple")
+	wsID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, slug, created_by) VALUES ($1,'Alerts','alerts-schema',$2)`, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	monitorID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors (id, workspace_id, name, url, method, interval_seconds, timeout_seconds, created_by) VALUES ($1,$2,'API','https://example.com','GET',60,10,$3)`, monitorID, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitor_state (monitor_id) VALUES ($1)`, monitorID); err != nil {
+		t.Fatal(err)
+	}
+
+	q := sqlc.New(pool)
+	channelID := uuid.New()
+	channel, err := q.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{
+		ID: channelID, WorkspaceID: wsID, Kind: "webhook", Name: "Deploy",
+		Config: []byte(`{"url_enc":"v1:x","url_preview":"https://example.com/…"}`), Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpsertMonitorAlertChannel(ctx, sqlc.UpsertMonitorAlertChannelParams{
+		MonitorID: monitorID, ChannelID: channelID, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled, err := q.ListEnabledAlertChannelsForMonitor(ctx, monitorID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enabled) != 1 || enabled[0].ID != channelID {
+		t.Fatalf("enabled channels = %+v, want the webhook channel", enabled)
+	}
+
+	if rows, err := q.SoftDeleteAlertChannel(ctx, sqlc.SoftDeleteAlertChannelParams{
+		ID: channel.ID, WorkspaceID: wsID,
+	}); err != nil || rows != 1 {
+		t.Fatalf("soft delete rows = %d, err = %v", rows, err)
+	}
+	enabled, err = q.ListEnabledAlertChannelsForMonitor(ctx, monitorID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enabled) != 0 {
+		t.Fatalf("enabled channels after delete = %+v, want none", enabled)
+	}
+	if _, err := q.GetAlertChannelByID(ctx, sqlc.GetAlertChannelByIDParams{ID: channelID, WorkspaceID: wsID}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("get deleted channel error = %v, want pgx.ErrNoRows", err)
+	}
+
+	// A deleted active name can be reused.
+	if _, err := q.CreateAlertChannel(ctx, sqlc.CreateAlertChannelParams{
+		ID: uuid.New(), WorkspaceID: wsID, Kind: "webhook", Name: "Deploy",
+		Config: []byte(`{"url_enc":"v1:y","url_preview":"https://example.org/…"}`), Enabled: false,
+	}); err != nil {
+		t.Fatalf("reuse deleted name: %v", err)
+	}
+
+	// The email upsert still infers the partial unique index.
+	if _, err := q.UpsertEmailAlertChannel(ctx, sqlc.UpsertEmailAlertChannelParams{
+		ID: uuid.New(), WorkspaceID: wsID, Config: []byte(`{"recipients":["ops@example.com"]}`), Enabled: true,
+	}); err != nil {
+		t.Fatalf("upsert email channel: %v", err)
+	}
+}

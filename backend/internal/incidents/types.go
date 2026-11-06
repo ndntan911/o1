@@ -105,15 +105,18 @@ type IncidentDetail struct {
 // Delivery is the API-facing view of one alert delivery. It exposes delivery
 // state to workspace admins without leaking monitor secrets.
 type Delivery struct {
-	ID        uuid.UUID  `json:"id"`
-	Event     string     `json:"event"`
-	Sequence  int        `json:"sequence"`
-	Recipient string     `json:"recipient"`
-	Status    string     `json:"status"`
-	Attempts  int        `json:"attempts"`
-	LastError *string    `json:"last_error"`
-	SentAt    *time.Time `json:"sent_at"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID          uuid.UUID  `json:"id"`
+	ChannelID   uuid.UUID  `json:"channel_id"`
+	ChannelKind string     `json:"channel_kind"`
+	ChannelName string     `json:"channel_name"`
+	Event       string     `json:"event"`
+	Sequence    int        `json:"sequence"`
+	Recipient   string     `json:"recipient"`
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	LastError   *string    `json:"last_error"`
+	SentAt      *time.Time `json:"sent_at"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // IncidentFilter selects a page of incidents. Status accepts active, open,

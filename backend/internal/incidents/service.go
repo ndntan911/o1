@@ -228,15 +228,18 @@ func (s *Service) Deliveries(ctx context.Context, actorID, workspaceID, incident
 	out := make([]Delivery, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, Delivery{
-			ID:        row.ID,
-			Event:     row.Event,
-			Sequence:  int(row.Sequence),
-			Recipient: row.Recipient,
-			Status:    row.Status,
-			Attempts:  int(row.Attempts),
-			LastError: row.LastError,
-			SentAt:    row.SentAt,
-			CreatedAt: row.CreatedAt,
+			ID:          row.ID,
+			ChannelID:   row.ChannelID,
+			ChannelKind: row.ChannelKind,
+			ChannelName: row.ChannelName,
+			Event:       row.Event,
+			Sequence:    int(row.Sequence),
+			Recipient:   row.Recipient,
+			Status:      row.Status,
+			Attempts:    int(row.Attempts),
+			LastError:   row.LastError,
+			SentAt:      row.SentAt,
+			CreatedAt:   row.CreatedAt,
 		})
 	}
 	return out, nil
