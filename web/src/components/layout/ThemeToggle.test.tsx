@@ -121,6 +121,22 @@ describe('ThemeToggle', () => {
 		expect(localStorage.getItem('o1-theme')).toBeNull();
 	});
 
+	test('is keyboard operable', async () => {
+		mockSystemTheme(false);
+		const user = userEvent.setup();
+		renderToggle();
+
+		await user.tab();
+		expect(screen.getByRole('button', { name: 'Light' })).toHaveFocus();
+		await user.tab();
+		expect(screen.getByRole('button', { name: 'Dark' })).toHaveFocus();
+
+		await user.keyboard('{Enter}');
+
+		await waitFor(() => expect(document.documentElement).toHaveClass('dark'));
+		expect(localStorage.getItem('o1-theme')).toBe('dark');
+	});
+
 	test('choosing System persists the preference', async () => {
 		localStorage.setItem('o1-theme', 'dark');
 		mockSystemTheme(false);

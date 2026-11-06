@@ -29,7 +29,8 @@ export function ThemeToggle(): JSX.Element {
 					onClick={() => setTheme(value)}
 					className={cn(
 						'gap-1 px-1',
-						theme === value && 'bg-muted text-foreground',
+						theme === value &&
+							'bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground dark:hover:bg-primary/90 dark:hover:text-primary-foreground',
 					)}
 				>
 					<Icon aria-hidden="true" />

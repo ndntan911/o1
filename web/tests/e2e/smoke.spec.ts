@@ -36,6 +36,61 @@ async function expectNoSeriousA11yViolations(page: Page) {
 	).toEqual([]);
 }
 
+async function expectPressedThemeContrast(page: Page): Promise<void> {
+	const ratio = await page.evaluate(() => {
+		type Rgb = [number, number, number];
+
+		const canvas = document.createElement('canvas');
+		canvas.width = 1;
+		canvas.height = 1;
+		const context = canvas.getContext('2d');
+
+		function parseBackground(value: string): Rgb | null {
+			if (!context) return null;
+			context.clearRect(0, 0, 1, 1);
+			context.fillStyle = value;
+			context.fillRect(0, 0, 1, 1);
+			const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+			if (alpha === 0) return null;
+			return [red, green, blue];
+		}
+
+		function opaqueBackground(element: Element | null): Rgb {
+			let current = element;
+			while (current) {
+				const background = parseBackground(
+					getComputedStyle(current).backgroundColor,
+				);
+				if (background) return background;
+				current = current.parentElement;
+			}
+			return [255, 255, 255];
+		}
+
+		function luminance([red, green, blue]: Rgb): number {
+			const channel = (value: number) => {
+				const scaled = value / 255;
+				return scaled <= 0.03928
+					? scaled / 12.92
+					: ((scaled + 0.055) / 1.055) ** 2.4;
+			};
+			return (
+				0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+			);
+		}
+
+		const pressed = document.querySelector('[aria-pressed="true"]');
+		if (!pressed) throw new Error('No theme option is pressed');
+		const foreground = luminance(opaqueBackground(pressed));
+		const surface = luminance(opaqueBackground(pressed.parentElement));
+		const lighter = Math.max(foreground, surface);
+		const darker = Math.min(foreground, surface);
+		return (lighter + 0.05) / (darker + 0.05);
+	});
+
+	expect(ratio).toBeGreaterThanOrEqual(3);
+}
+
 async function registerThroughApiUnlessPresent(
 	request: APIRequestContext,
 	email: string,
@@ -135,11 +190,15 @@ test('register, verify, create a monitor, and administer the workspace', async (
 	// Theme: dark mode applies immediately, survives reload, and stays accessible.
 	await page.getByRole('button', { name: 'Dark', exact: true }).click();
 	await expect(page.locator('html')).toHaveClass(/dark/);
+	await expectPressedThemeContrast(page);
 	await page.reload();
 	await expect(
 		page.getByRole('heading', { name: 'Monitors', exact: true }),
 	).toBeVisible();
 	await expect(page.locator('html')).toHaveClass(/dark/);
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+		.toBe('dark');
 	await expectNoSeriousA11yViolations(page);
 	await page.getByRole('button', { name: 'System', exact: true }).click();
 	await expect
@@ -300,14 +359,60 @@ test('register, verify, create a monitor, and administer the workspace', async (
 		.click();
 	await expect(workspaceRow.getByText('Active', { exact: true })).toBeVisible();
 
-	// Mobile navigation stays reachable at a phone viewport.
+	// Mobile navigation stays reachable at a phone viewport, including the
+	// bottom-anchored theme control on a short screen.
 	await page.goto(`/w/${workspaceSlug}/monitors`);
 	await expect(
 		page.getByRole('heading', { name: 'Monitors', exact: true }),
 	).toBeVisible();
-	await page.setViewportSize({ width: 390, height: 844 });
+	await page.setViewportSize({ width: 320, height: 568 });
 	await page.getByRole('button', { name: 'Open navigation' }).click();
+	const navigation = page.getByRole('dialog');
 	await expect(
-		page.getByRole('dialog').locator(`a[href="/w/${workspaceSlug}/monitors"]`),
+		navigation.locator(`a[href="/w/${workspaceSlug}/monitors"]`),
 	).toBeVisible();
+	const themeGroup = navigation.getByRole('group', { name: 'Theme' });
+	await expect(themeGroup).toBeVisible();
+	await themeGroup.scrollIntoViewIfNeeded();
+	await navigation.getByRole('button', { name: 'Dark', exact: true }).click();
+	await expect(page.locator('html')).toHaveClass(/dark/);
+	await navigation.getByRole('button', { name: 'System', exact: true }).click();
+	await expect
+		.poll(() => page.evaluate(() => localStorage.getItem('o1-theme')))
+		.toBe('system');
+});
+
+// Pre-paint behavior is tested with the app's module scripts blocked, so only
+// the inline boot script can apply the theme.
+test('applies the stored theme before the app loads', async ({ page }) => {
+	await page.addInitScript(() => {
+		localStorage.setItem('o1-theme', 'dark');
+	});
+	await page.route('**/*.js', (route) => route.abort());
+
+	await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+	await expect(page.locator('html')).toHaveClass(/dark/);
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+		.toBe('dark');
+	await expect(page.locator('#root')).toBeEmpty();
+});
+
+test('ignores an invalid stored theme', async ({ page }) => {
+	await page.addInitScript(() => {
+		localStorage.setItem('o1-theme', 'blue');
+	});
+	await page.emulateMedia({ colorScheme: 'dark' });
+	await page.route('**/*.js', (route) => route.abort());
+
+	await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+	await expect
+		.poll(() => page.evaluate(() => localStorage.getItem('o1-theme')))
+		.toBeNull();
+	await expect(page.locator('html')).toHaveClass(/dark/);
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+		.toBe('dark');
 });
