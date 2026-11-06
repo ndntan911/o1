@@ -6,7 +6,7 @@ import {
 	type Page,
 } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { waitForVerificationLink } from './helpers';
+import { MailpitTimeoutError, waitForVerificationLink } from './helpers';
 
 const WORKSPACE_NAME = 'E2E Workspace';
 const MONITOR_NAME = 'Example';
@@ -91,21 +91,39 @@ test('register, verify, create a monitor, and administer the workspace', async (
 		page.getByText('Check your email', { exact: true }),
 	).toBeVisible();
 
-	// Email verification. If Mailpit is unavailable, verify directly in the
-	// development database instead of adding a product endpoint.
+	// Email verification. Only a Mailpit timeout may fall back to SQL
+	// verification; transport errors and failures in the verification UI
+	// itself must fail the test.
+	let verificationLink: string | undefined;
 	try {
-		const verificationLink = await waitForVerificationLink(request, email);
+		verificationLink = await waitForVerificationLink(request, email);
+	} catch (error) {
+		if (!(error instanceof MailpitTimeoutError)) throw error;
+		await registerThroughApiUnlessPresent(request, email, password);
+		composePsql(
+			`UPDATE users SET email_verified_at = now() WHERE email = '${email}'`,
+		);
+		test.info().annotations.push({
+			type: 'verification-fallback',
+			description:
+				'Mailpit had no verification email after 30s; used SQL verification and skipped /verify-email',
+		});
+		console.warn(
+			`Mailpit had no verification email for ${email} after 30s; using SQL verification fallback.`,
+		);
+		await page.goto('/login');
+	}
+
+	if (verificationLink) {
+		const expectedOrigin = new URL(
+			process.env.E2E_BASE_URL ?? 'http://localhost:5173',
+		).origin;
+		expect(new URL(verificationLink).origin).toBe(expectedOrigin);
 		await page.goto(verificationLink);
 		await expect(
 			page.getByText('Email verified', { exact: true }),
 		).toBeVisible();
 		await page.getByRole('link', { name: 'Sign in' }).click();
-	} catch {
-		await registerThroughApiUnlessPresent(request, email, password);
-		composePsql(
-			`UPDATE users SET email_verified_at = now() WHERE email = '${email}'`,
-		);
-		await page.goto('/login');
 	}
 
 	// Login, including an axe pass on /login.

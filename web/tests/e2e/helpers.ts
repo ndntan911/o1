@@ -26,6 +26,19 @@ interface MailpitMessageDetail {
 	HTML?: string;
 }
 
+/**
+ * Thrown only when Mailpit is reachable but no verification email (or link)
+ * appeared within the timeout. Transport and malformed-response errors are
+ * thrown as ordinary errors so the test fails instead of hiding them behind
+ * the SQL verification fallback.
+ */
+export class MailpitTimeoutError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'MailpitTimeoutError';
+	}
+}
+
 function sleep(milliseconds: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -64,43 +77,40 @@ export async function waitForVerificationLink(
 	let lastError = 'no message addressed to this recipient yet';
 
 	while (Date.now() < deadline) {
-		try {
-			const listResponse = await request.get(
-				`${MAILPIT_API}/messages?limit=50`,
+		const listResponse = await request.get(`${MAILPIT_API}/messages?limit=50`);
+		if (!listResponse.ok()) {
+			throw new Error(
+				`Mailpit messages endpoint returned ${listResponse.status()}`,
 			);
-			if (listResponse.ok()) {
-				const list = (await listResponse.json()) as MailpitMessagesResponse;
-				const message = (list.messages ?? []).find((candidate) =>
-					messageRecipients(candidate).includes(wanted),
-				);
+		}
 
-				if (message) {
-					const detailResponse = await request.get(
-						`${MAILPIT_API}/message/${encodeURIComponent(message.ID)}`,
-					);
-					if (detailResponse.ok()) {
-						const detail =
-							(await detailResponse.json()) as MailpitMessageDetail;
-						const link =
-							extractVerificationLink(detail.Text ?? '') ??
-							extractVerificationLink(detail.HTML ?? '');
-						if (link) return link;
-						lastError = 'the message did not contain a verification link';
-					} else {
-						lastError = `Mailpit message ${message.ID} returned ${detailResponse.status()}`;
-					}
-				}
-			} else {
-				lastError = `Mailpit messages endpoint returned ${listResponse.status()}`;
+		const list = (await listResponse.json()) as MailpitMessagesResponse;
+		const message = (list.messages ?? []).find((candidate) =>
+			messageRecipients(candidate).includes(wanted),
+		);
+
+		if (message) {
+			const detailResponse = await request.get(
+				`${MAILPIT_API}/message/${encodeURIComponent(message.ID)}`,
+			);
+			if (!detailResponse.ok()) {
+				throw new Error(
+					`Mailpit message ${message.ID} returned ${detailResponse.status()}`,
+				);
 			}
-		} catch (error) {
-			lastError = error instanceof Error ? error.message : String(error);
+
+			const detail = (await detailResponse.json()) as MailpitMessageDetail;
+			const link =
+				extractVerificationLink(detail.Text ?? '') ??
+				extractVerificationLink(detail.HTML ?? '');
+			if (link) return link;
+			lastError = 'the message did not contain a verification link';
 		}
 
 		await sleep(POLL_INTERVAL_MS);
 	}
 
-	throw new Error(
+	throw new MailpitTimeoutError(
 		`Timed out after ${TIMEOUT_MS / 1000}s waiting for a verification email for ${email}: ${lastError}`,
 	);
 }
