@@ -19,6 +19,7 @@ const (
 	CodeWorkspaceSuspended = "workspace_suspended"
 	CodeQuotaExceeded      = "quota_exceeded"
 	CodeMonitorRateLimited = "monitor_rate_limited"
+	CodeIncidentResolved   = "incident_resolved"
 	CodeInternalError      = "internal_error"
 )
 

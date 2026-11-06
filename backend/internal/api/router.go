@@ -19,6 +19,7 @@ import (
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
 	"o1/internal/httpx"
+	"o1/internal/incidents"
 	"o1/internal/monitors"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
@@ -37,6 +38,7 @@ type Dependencies struct {
 	AuthService      *auth.Service
 	WorkspaceService *workspaces.Service
 	MonitorService   *monitors.Service
+	IncidentService  *incidents.Service
 	AdminService     *admin.Service
 }
 
@@ -181,6 +183,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	if adminSvc == nil && deps.Pool != nil {
 		adminSvc = admin.NewService(deps.Pool, sqlc.New(deps.Pool))
 	}
+	incidentSvc := deps.IncidentService
+	if incidentSvc == nil && deps.Pool != nil {
+		incidentSvc = incidents.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
@@ -214,6 +220,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/resume", requireSession(http.HandlerFunc(monitors.ResumeHandler(monitorSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/results", requireSession(http.HandlerFunc(monitors.ResultsHandler(monitorSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/summary", requireSession(http.HandlerFunc(monitors.SummaryHandler(monitorSvc))))
+
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents", requireSession(http.HandlerFunc(incidents.ListHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}", requireSession(http.HandlerFunc(incidents.GetHandler(incidentSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/acknowledge", requireSession(http.HandlerFunc(incidents.AcknowledgeHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/deliveries", requireSession(http.HandlerFunc(incidents.DeliveriesHandler(incidentSvc))))
 
 	requireAdmin := auth.RequireAdmin
 	mux.Handle("GET /api/v1/admin/workspaces", requireSession(requireAdmin(http.HandlerFunc(admin.WorkspacesHandler(adminSvc)))))

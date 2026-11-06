@@ -5,6 +5,7 @@ package incidents
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,4 +47,57 @@ type AlertEmail struct {
 // EmailConfig is the alert channel configuration shape for email channels.
 type EmailConfig struct {
 	Recipients []string `json:"recipients"`
+}
+
+// Incident is the API-facing view of an incident. It deliberately omits
+// monitor secrets such as headers, bodies, and query strings.
+type Incident struct {
+	ID             uuid.UUID  `json:"id"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	MonitorID      uuid.UUID  `json:"monitor_id"`
+	MonitorName    string     `json:"monitor_name"`
+	Status         string     `json:"status"`
+	StartedAt      time.Time  `json:"started_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	AcknowledgedBy *uuid.UUID `json:"acknowledged_by"`
+	ResolvedAt     *time.Time `json:"resolved_at"`
+	LastNotifiedAt *time.Time `json:"last_notified_at"`
+	ReminderCount  int        `json:"reminder_count"`
+}
+
+// IncidentEvent is one entry in an incident timeline. Detail carries only
+// non-secret context such as previous and new probe status.
+type IncidentEvent struct {
+	ID          uuid.UUID       `json:"id"`
+	Kind        string          `json:"kind"`
+	ActorUserID *uuid.UUID      `json:"actor_user_id"`
+	Detail      json.RawMessage `json:"detail"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// IncidentDetail is the incident plus its timeline, ordered oldest first.
+type IncidentDetail struct {
+	Incident Incident        `json:"incident"`
+	Events   []IncidentEvent `json:"events"`
+}
+
+// Delivery is the API-facing view of one alert delivery. It exposes delivery
+// state to workspace admins without leaking monitor secrets.
+type Delivery struct {
+	ID        uuid.UUID  `json:"id"`
+	Event     string     `json:"event"`
+	Sequence  int        `json:"sequence"`
+	Recipient string     `json:"recipient"`
+	Status    string     `json:"status"`
+	Attempts  int        `json:"attempts"`
+	LastError *string    `json:"last_error"`
+	SentAt    *time.Time `json:"sent_at"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// IncidentFilter selects a page of incidents. Status accepts active, open,
+// acknowledged, resolved, or all; an empty status means active.
+type IncidentFilter struct {
+	Status    string
+	MonitorID *uuid.UUID
 }
