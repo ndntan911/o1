@@ -2,11 +2,13 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"o1/internal/db/sqlc"
@@ -452,5 +454,58 @@ func TestAdminQueries_FiltersSuspensionAndEvents(t *testing.T) {
 	}
 	if ws.SuspendedAt != nil || ws.SuspendedReason != nil || ws.SuspendedBy.Valid {
 		t.Fatalf("workspace still suspended after unsuspend: %+v", ws)
+	}
+}
+
+func TestIncidentSchema_OneActivePerMonitorAndDeliveryDedup(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+
+	q := sqlc.New(pool)
+	ctx := context.Background()
+	userID := testutil.CreateVerifiedUser(t, pool, "incident-schema@example.com", "correct horse battery staple")
+	wsID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, slug, created_by) VALUES ($1,'Acme','acme-schema',$2)`, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	monitorID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors (id, workspace_id, name, url, method, interval_seconds, timeout_seconds, created_by) VALUES ($1,$2,'API','https://example.com','GET',60,10,$3)`, monitorID, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitor_state (monitor_id) VALUES ($1)`, monitorID); err != nil {
+		t.Fatal(err)
+	}
+
+	incidentID := uuid.New()
+	if _, err := q.CreateIncident(ctx, sqlc.CreateIncidentParams{
+		ID: incidentID, WorkspaceID: wsID, MonitorID: monitorID,
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.CreateIncident(ctx, sqlc.CreateIncidentParams{
+		ID: uuid.New(), WorkspaceID: wsID, MonitorID: monitorID,
+		StartedAt: time.Now().UTC(),
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("second active incident error = %v, want pgx.ErrNoRows", err)
+	}
+
+	channelID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO alert_channels (id, workspace_id, kind, name, config) VALUES ($1,$2,'email','Email','{"recipients":["ops@example.com"]}')`, channelID, wsID); err != nil {
+		t.Fatal(err)
+	}
+	deliveryID := uuid.New()
+	insert := func() error {
+		_, err := q.CreateAlertDelivery(ctx, sqlc.CreateAlertDeliveryParams{
+			ID: deliveryID, IncidentID: incidentID, ChannelID: channelID,
+			Event: "opened", Sequence: 0, Recipient: "ops@example.com",
+		})
+		return err
+	}
+	if err := insert(); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert(); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("duplicate delivery error = %v, want pgx.ErrNoRows", err)
 	}
 }

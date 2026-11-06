@@ -11,6 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AlertChannel struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Kind        string
+	Name        string
+	Config      []byte
+	Enabled     bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type AlertDelivery struct {
+	ID         uuid.UUID
+	IncidentID uuid.UUID
+	ChannelID  uuid.UUID
+	Event      string
+	Sequence   int32
+	Recipient  string
+	Status     string
+	Attempts   int32
+	LastError  *string
+	SentAt     *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type EmailVerificationToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -18,6 +44,30 @@ type EmailVerificationToken struct {
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time
+}
+
+type Incident struct {
+	ID             uuid.UUID
+	WorkspaceID    uuid.UUID
+	MonitorID      uuid.UUID
+	Status         string
+	StartedAt      time.Time
+	AcknowledgedAt *time.Time
+	AcknowledgedBy pgtype.UUID
+	ResolvedAt     *time.Time
+	LastNotifiedAt *time.Time
+	ReminderCount  int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type IncidentEvent struct {
+	ID          uuid.UUID
+	IncidentID  uuid.UUID
+	Kind        string
+	ActorUserID pgtype.UUID
+	Detail      []byte
+	CreatedAt   time.Time
 }
 
 type Monitor struct {
@@ -38,6 +88,14 @@ type Monitor struct {
 	CreatedBy             uuid.UUID
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
+}
+
+type MonitorAlertChannel struct {
+	MonitorID uuid.UUID
+	ChannelID uuid.UUID
+	Enabled   bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type MonitorState struct {

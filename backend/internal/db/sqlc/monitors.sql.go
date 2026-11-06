@@ -247,6 +247,17 @@ func (q *Queries) GetMonitorForProbe(ctx context.Context, id uuid.UUID) (GetMoni
 	return i, err
 }
 
+const getMonitorPaused = `-- name: GetMonitorPaused :one
+SELECT paused FROM monitors WHERE id=$1
+`
+
+func (q *Queries) GetMonitorPaused(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, getMonitorPaused, id)
+	var paused bool
+	err := row.Scan(&paused)
+	return paused, err
+}
+
 const getMonitorState = `-- name: GetMonitorState :one
 SELECT monitor_id, status, consecutive_failures, consecutive_successes, last_checked_at, last_status_code, last_latency_ms, last_error, next_check_at, updated_at FROM monitor_state WHERE monitor_id = $1
 `
