@@ -17,6 +17,7 @@ import (
 	"o1/internal/config"
 	"o1/internal/db"
 	"o1/internal/db/sqlc"
+	"o1/internal/incidents"
 	"o1/internal/jobs"
 )
 
@@ -125,6 +126,29 @@ func (s *Scheduler) Tick(ctx context.Context) (int, error) {
 	return len(rows), nil
 }
 
+// enqueueReminders sends due incident reminders. It uses its own transaction
+// so a reminder failure cannot roll back or block the probe tick.
+func (s *Scheduler) enqueueReminders(ctx context.Context) (int, error) {
+	now := s.now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin reminder tick: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	q := s.q.WithTx(tx)
+	n, err := incidents.EnqueueReminders(ctx, tx, q, s.river, now)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue incident reminders: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit reminder tick: %w", err)
+	}
+	return n, nil
+}
+
 // Run ticks until ctx is canceled. Ticks are synchronous, so a slow tick
 // delays the next one rather than stacking. It also ensures probe partitions
 // at startup and once per day.
@@ -160,6 +184,20 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				"enqueued", n,
 				"duration", time.Since(start).String(),
 			)
+
+			reminded, err := s.enqueueReminders(ctx)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				// A missed reminder is retried on the next tick, so log it and
+				// keep the probe loop running.
+				s.logger.Log(ctx, slog.LevelError, "scheduler reminder tick failed", "error", err)
+				continue
+			}
+			if reminded > 0 {
+				s.logger.Log(ctx, slog.LevelDebug, "scheduler reminders", "enqueued", reminded)
+			}
 		}
 	}
 }

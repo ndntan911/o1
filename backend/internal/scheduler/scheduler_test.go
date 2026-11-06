@@ -147,6 +147,109 @@ func TestTick_DuplicateUniqueJobIsIgnored(t *testing.T) {
 	}
 }
 
+// addReminderIncident creates a monitor with an email alert channel and one
+// incident in the given status whose last notification is lastNotified.
+func (e *schedulerEnv) addReminderIncident(t *testing.T, status string, lastNotified time.Time) (monitorID, incidentID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	monitorID = e.addMonitor(t, "reminder "+uuid.NewString(), 60, false, false, time.Now().Add(time.Hour))
+
+	var workspaceID uuid.UUID
+	if err := e.pool.QueryRow(ctx, `SELECT workspace_id FROM monitors WHERE id = $1`, monitorID).Scan(&workspaceID); err != nil {
+		t.Fatalf("read monitor workspace: %v", err)
+	}
+	channelID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new channel id: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx, `
+		INSERT INTO alert_channels (id, workspace_id, kind, name, config)
+		VALUES ($1, $2, 'email', 'Email', '{"recipients":["reminder@example.com"]}')`,
+		channelID, workspaceID); err != nil {
+		t.Fatalf("insert alert channel: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx,
+		`INSERT INTO monitor_alert_channels (monitor_id, channel_id) VALUES ($1, $2)`,
+		monitorID, channelID); err != nil {
+		t.Fatalf("attach alert channel: %v", err)
+	}
+
+	incidentID, err = uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new incident id: %v", err)
+	}
+	var acknowledgedAt, resolvedAt *time.Time
+	switch status {
+	case "acknowledged":
+		acknowledgedAt = &lastNotified
+	case "resolved":
+		resolvedAt = &lastNotified
+	}
+	if _, err := e.pool.Exec(ctx, `
+		INSERT INTO incidents
+			(id, workspace_id, monitor_id, status, started_at, acknowledged_at,
+			 resolved_at, last_notified_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		incidentID, workspaceID, monitorID, status, lastNotified.Add(-time.Hour),
+		acknowledgedAt, resolvedAt, lastNotified); err != nil {
+		t.Fatalf("insert %s incident: %v", status, err)
+	}
+	return monitorID, incidentID
+}
+
+func TestEnqueueReminders_OnlyDueActiveIncidents(t *testing.T) {
+	env := newSchedulerEnv(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	env.sched.now = func() time.Time { return now }
+	due := now.Add(-31 * time.Minute)
+
+	_, dueIncidentID := env.addReminderIncident(t, "open", due)
+	env.addReminderIncident(t, "acknowledged", due)
+	env.addReminderIncident(t, "resolved", due)
+
+	// The probe tick runs first; the reminder pass then runs in its own
+	// transaction through the scheduler.
+	if _, err := env.sched.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	n, err := env.sched.enqueueReminders(context.Background())
+	if err != nil {
+		t.Fatalf("enqueueReminders: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("enqueueReminders = %d, want 1", n)
+	}
+
+	var deliveries int
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM alert_deliveries
+		WHERE event = 'reminder' AND incident_id = $1`, dueIncidentID).Scan(&deliveries); err != nil {
+		t.Fatalf("count reminder deliveries: %v", err)
+	}
+	if deliveries != 1 {
+		t.Fatalf("reminder deliveries = %d, want 1", deliveries)
+	}
+	var jobs int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river_job WHERE kind = 'alert'`).Scan(&jobs); err != nil {
+		t.Fatalf("count alert jobs: %v", err)
+	}
+	if jobs != 1 {
+		t.Fatalf("alert jobs = %d, want 1", jobs)
+	}
+
+	var reminderCount int
+	var lastNotified *time.Time
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT reminder_count, last_notified_at FROM incidents WHERE id = $1`,
+		dueIncidentID).Scan(&reminderCount, &lastNotified); err != nil {
+		t.Fatalf("read incident reminder state: %v", err)
+	}
+	if reminderCount != 1 || lastNotified == nil || !lastNotified.Equal(now) {
+		t.Fatalf("reminder state = %d/%v, want 1/%v", reminderCount, lastNotified, now)
+	}
+}
+
 func TestTick_AdvancesScheduleByInterval(t *testing.T) {
 	env := newSchedulerEnv(t)
 	fixed := time.Now().UTC().Truncate(time.Second)
