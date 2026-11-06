@@ -2,6 +2,7 @@ package incidents
 
 import "errors"
 
-// ErrInvalidChannelConfig is returned when an enabled alert channel has a
-// malformed configuration. Callers should roll back the probe transaction.
+// ErrInvalidChannelConfig identifies malformed alert channel configuration.
+// The probe lifecycle skips malformed channels instead of failing the probe
+// transaction; API validation can use this sentinel when rejecting config.
 var ErrInvalidChannelConfig = errors.New("invalid alert channel config")

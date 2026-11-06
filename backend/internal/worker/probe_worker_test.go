@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 	"golang.org/x/time/rate"
 
@@ -48,6 +50,14 @@ func (f *recordingInserter) snapshot() ([]river.JobArgs, []*river.InsertOpts) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]river.JobArgs(nil), f.jobs...), append([]*river.InsertOpts(nil), f.opts...)
+}
+
+type failingInserter struct {
+	err error
+}
+
+func (f failingInserter) InsertTx(context.Context, pgx.Tx, river.JobArgs, *river.InsertOpts) (*rivertype.JobInsertResult, error) {
+	return nil, f.err
 }
 
 type workerEnv struct {
@@ -305,6 +315,110 @@ func assertIncidentAlertCounts(t *testing.T, env *workerEnv, monitorID uuid.UUID
 	}
 }
 
+func TestProcess_RollsBackAllWritesWhenAlertInsertFails(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer target.Close()
+	monitorID, workspaceID := env.createMonitor(t, target.URL, 1, 1, false, false)
+	env.attachEmailChannel(t, monitorID, workspaceID, "one@example.com")
+	env.worker.SetJobInserter(failingInserter{err: errors.New("alert insert failed")})
+
+	args := jobs.ProbeArgs{MonitorID: monitorID, ScheduledFor: time.Now().UTC().Truncate(time.Second)}
+	if err := env.worker.Process(context.Background(), args); err == nil {
+		t.Fatal("Process succeeded, want alert insert failure")
+	}
+
+	if results := env.resultCount(t, monitorID); results != 0 {
+		t.Fatalf("probe results = %d, want 0 after rollback", results)
+	}
+	var status string
+	var failures int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT status, consecutive_failures FROM monitor_state WHERE monitor_id = $1`, monitorID).
+		Scan(&status, &failures); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if status != "unknown" || failures != 0 {
+		t.Fatalf("state = %s/%d, want unchanged unknown/0 after rollback", status, failures)
+	}
+	var incidents, events, deliveries int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM incidents WHERE monitor_id = $1`, monitorID).Scan(&incidents); err != nil {
+		t.Fatalf("count incidents: %v", err)
+	}
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM incident_events e
+		JOIN incidents i ON i.id = e.incident_id
+		WHERE i.monitor_id = $1`, monitorID).Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM alert_deliveries d
+		JOIN incidents i ON i.id = d.incident_id
+		WHERE i.monitor_id = $1`, monitorID).Scan(&deliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if incidents != 0 || events != 0 || deliveries != 0 {
+		t.Fatalf("incidents/events/deliveries = %d/%d/%d, want all 0 after rollback",
+			incidents, events, deliveries)
+	}
+}
+
+// TestAlertJobInsertWithoutRegisteredAlertWorker is a regression test for the
+// production River configuration: the probe worker inserts jobs of kind
+// "alert", but Task 2 does not register an alert worker yet. The client must
+// therefore set SkipUnknownJobCheck.
+func TestAlertJobInsertWithoutRegisteredAlertWorker(t *testing.T) {
+	env := newWorkerEnv(t)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, env.worker)
+	client, err := river.NewClient[pgx.Tx](riverpgxv5.New(env.pool), &river.Config{
+		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Workers:             workers,
+		SkipUnknownJobCheck: true,
+		Queues: map[string]river.QueueConfig{
+			"probe": {MaxWorkers: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create river client: %v", err)
+	}
+
+	ctx := context.Background()
+	tx, err := env.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	deliveryID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new delivery id: %v", err)
+	}
+	if _, err := client.InsertTx(ctx, tx, jobs.AlertArgs{DeliveryID: deliveryID}, &river.InsertOpts{
+		MaxAttempts: 5,
+		Queue:       "alert",
+	}); err != nil {
+		t.Fatalf("insert alert job: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var count int
+	if err := env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'alert' AND args->>'delivery_id' = $1`,
+		deliveryID.String()).Scan(&count); err != nil {
+		t.Fatalf("count alert jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("alert jobs = %d, want 1", count)
+	}
+}
+
 func TestProcess_ReplayDoesNotProbeAgain(t *testing.T) {
 	env := newWorkerEnv(t)
 	var calls atomic.Int32
@@ -528,6 +642,102 @@ func TestRecord_PausedStoresResultWithoutStateOrIncident(t *testing.T) {
 	}
 	if incidents != 0 {
 		t.Fatalf("incidents = %d, want 0 while paused", incidents)
+	}
+}
+
+func TestRecord_SuspendedStoresResultWithoutStateOrIncident(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	monitorID, workspaceID := env.createMonitor(t, target.URL, 1, 1, false, false)
+
+	q := sqlc.New(env.pool)
+	monitor, err := q.GetMonitorForProbe(context.Background(), monitorID)
+	if err != nil {
+		t.Fatalf("load monitor: %v", err)
+	}
+	// Simulate a suspension committing after the probe request was sent.
+	if _, err := env.pool.Exec(context.Background(),
+		`UPDATE workspaces SET suspended_at = now(), suspended_by = $1 WHERE id = $2`,
+		env.ownerID, workspaceID); err != nil {
+		t.Fatalf("suspend workspace: %v", err)
+	}
+
+	scheduledFor := time.Now().UTC().Truncate(time.Second)
+	result := probe.Result{Up: false, StatusCode: http.StatusInternalServerError, LatencyMS: 1}
+	if err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	if results := env.resultCount(t, monitorID); results != 1 {
+		t.Fatalf("results = %d, want 1 stored for audit", results)
+	}
+	var status string
+	var failures int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT status, consecutive_failures FROM monitor_state WHERE monitor_id = $1`, monitorID).
+		Scan(&status, &failures); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if status != "unknown" || failures != 0 {
+		t.Fatalf("state = %s/%d, want unchanged unknown/0", status, failures)
+	}
+	var incidents int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM incidents WHERE monitor_id = $1`, monitorID).Scan(&incidents); err != nil {
+		t.Fatalf("count incidents: %v", err)
+	}
+	if incidents != 0 {
+		t.Fatalf("incidents = %d, want 0 while suspended", incidents)
+	}
+}
+
+func TestRecord_PausedSSRFBlockStillAuditsSecurityEvent(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	monitorID, workspaceID := env.createMonitor(t, "http://example.com/health?token=super-secret", 1, 1, false, false)
+
+	q := sqlc.New(env.pool)
+	monitor, err := q.GetMonitorForProbe(context.Background(), monitorID)
+	if err != nil {
+		t.Fatalf("load monitor: %v", err)
+	}
+	if _, err := env.pool.Exec(context.Background(),
+		`UPDATE monitors SET paused = true WHERE id = $1`, monitorID); err != nil {
+		t.Fatalf("pause monitor: %v", err)
+	}
+
+	scheduledFor := time.Now().UTC().Truncate(time.Second)
+	result := probe.Result{
+		Up:           false,
+		ErrorClass:   "ssrf_blocked",
+		ErrorMessage: "blocked private address",
+	}
+	if err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	var events int
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM security_events
+		WHERE workspace_id = $1 AND kind = 'ssrf_blocked'`, workspaceID).Scan(&events); err != nil {
+		t.Fatalf("count security events: %v", err)
+	}
+	if events != 1 {
+		t.Fatalf("security events = %d, want 1 even when paused", events)
+	}
+	var status string
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT status FROM monitor_state WHERE monitor_id = $1`, monitorID).Scan(&status); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if status != "unknown" {
+		t.Fatalf("status = %q, want unchanged unknown", status)
 	}
 }
 

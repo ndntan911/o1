@@ -255,6 +255,153 @@ func TestApplyProbeTransition(t *testing.T) {
 		t.Fatalf("jobs after no-ops = %d, want 4", len(inserter.jobs))
 	}
 
+	// Once the monitor is up again, a later failure opens a new incident.
+	openAgain := open
+	openAgain.Previous = "up"
+	openAgain.Next = "down"
+	openAgain.At = at.Add(2 * time.Minute)
+	if err := incidents.ApplyProbeTransition(ctx, tx, q, inserter, openAgain); err != nil {
+		t.Fatalf("open after recovery: %v", err)
+	}
+	if got := countRows(t, tx, `SELECT count(*) FROM incidents WHERE monitor_id = $1`, monitorID); got != 2 {
+		t.Fatalf("incidents after up to down = %d, want 2", got)
+	}
+	second, err := q.GetActiveIncidentForMonitor(ctx, monitorID)
+	if err != nil {
+		t.Fatalf("get second active incident: %v", err)
+	}
+	if second.ID == incident.ID || second.Status != "open" {
+		t.Fatalf("second incident = id %s status %q", second.ID, second.Status)
+	}
+	secondEvents, err := q.ListIncidentEvents(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("list second incident events: %v", err)
+	}
+	if len(secondEvents) != 1 || secondEvents[0].Kind != "opened" {
+		t.Fatalf("second incident events = %+v", secondEvents)
+	}
+	var secondDetail map[string]string
+	if err := json.Unmarshal(secondEvents[0].Detail, &secondDetail); err != nil {
+		t.Fatalf("decode second opened detail: %v", err)
+	}
+	if secondDetail["previous_status"] != "up" || secondDetail["new_status"] != "down" {
+		t.Fatalf("second opened detail = %v", secondDetail)
+	}
+	secondDeliveries, err := q.ListIncidentDeliveries(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("list second incident deliveries: %v", err)
+	}
+	if len(secondDeliveries) != 2 {
+		t.Fatalf("second incident deliveries = %d, want 2", len(secondDeliveries))
+	}
+	if len(inserter.jobs) != 6 {
+		t.Fatalf("jobs after up to down = %d, want 6", len(inserter.jobs))
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+func TestApplyProbeTransitionSkipsMalformedChannelConfig(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	workspaceID, monitorID, channelID := createLifecycleFixtures(t, pool)
+	ctx := context.Background()
+
+	// Valid JSON but the wrong shape for EmailConfig. The incident must still
+	// open; only the malformed channel's deliveries are skipped.
+	if _, err := pool.Exec(ctx, `UPDATE alert_channels SET config = $1 WHERE id = $2`,
+		[]byte(`{"recipients":"not-a-list"}`), channelID); err != nil {
+		t.Fatalf("corrupt channel config: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	q := sqlc.New(pool).WithTx(tx)
+	inserter := &fakeInserter{}
+
+	if err := incidents.ApplyProbeTransition(ctx, tx, q, inserter, incidents.Transition{
+		WorkspaceID: workspaceID,
+		MonitorID:   monitorID,
+		Previous:    "unknown",
+		Next:        "down",
+		At:          time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("apply transition with malformed channel: %v", err)
+	}
+
+	if got := countRows(t, tx, `SELECT count(*) FROM incidents WHERE monitor_id = $1`, monitorID); got != 1 {
+		t.Fatalf("incidents = %d, want 1", got)
+	}
+	incident, err := q.GetActiveIncidentForMonitor(ctx, monitorID)
+	if err != nil {
+		t.Fatalf("get active incident: %v", err)
+	}
+	if got := countRows(t, tx, `SELECT count(*) FROM incident_events WHERE incident_id = $1`, incident.ID); got != 1 {
+		t.Fatalf("events = %d, want 1", got)
+	}
+	if got := countRows(t, tx, `SELECT count(*) FROM alert_deliveries WHERE incident_id = $1`, incident.ID); got != 0 {
+		t.Fatalf("deliveries = %d, want 0 for malformed channel", got)
+	}
+	if len(inserter.jobs) != 0 {
+		t.Fatalf("jobs = %d, want 0 for malformed channel", len(inserter.jobs))
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+func TestApplyProbeTransitionSkipsDuplicateRecipient(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	workspaceID, monitorID, channelID := createLifecycleFixtures(t, pool)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, `UPDATE alert_channels SET config = $1 WHERE id = $2`,
+		[]byte(`{"recipients":["dup@example.com","dup@example.com"]}`), channelID); err != nil {
+		t.Fatalf("set duplicate channel config: %v", err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	q := sqlc.New(pool).WithTx(tx)
+	inserter := &fakeInserter{}
+
+	if err := incidents.ApplyProbeTransition(ctx, tx, q, inserter, incidents.Transition{
+		WorkspaceID: workspaceID,
+		MonitorID:   monitorID,
+		Previous:    "unknown",
+		Next:        "down",
+		At:          time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("apply transition with duplicate recipient: %v", err)
+	}
+
+	incident, err := q.GetActiveIncidentForMonitor(ctx, monitorID)
+	if err != nil {
+		t.Fatalf("get active incident: %v", err)
+	}
+	deliveries, err := q.ListIncidentDeliveries(ctx, incident.ID)
+	if err != nil {
+		t.Fatalf("list deliveries: %v", err)
+	}
+	if len(deliveries) != 1 || deliveries[0].Recipient != "dup@example.com" {
+		t.Fatalf("deliveries = %+v, want one dup@example.com delivery", deliveries)
+	}
+	if len(inserter.jobs) != 1 {
+		t.Fatalf("jobs = %d, want 1 after delivery conflict", len(inserter.jobs))
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}

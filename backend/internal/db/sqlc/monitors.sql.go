@@ -302,6 +302,17 @@ func (q *Queries) GetMonitorStateForUpdate(ctx context.Context, monitorID uuid.U
 	return i, err
 }
 
+const getWorkspaceSuspended = `-- name: GetWorkspaceSuspended :one
+SELECT (suspended_at IS NOT NULL)::boolean AS suspended FROM workspaces WHERE id=$1
+`
+
+func (q *Queries) GetWorkspaceSuspended(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceSuspended, id)
+	var suspended bool
+	err := row.Scan(&suspended)
+	return suspended, err
+}
+
 const insertProbeResult = `-- name: InsertProbeResult :execrows
 INSERT INTO probe_results (
   id, monitor_id, workspace_id, scheduled_for, checked_at,

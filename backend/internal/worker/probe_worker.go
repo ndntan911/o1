@@ -215,13 +215,24 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		return nil
 	}
 
-	// A pause can commit while the probe is in flight. Keep the result for
-	// audit but do not advance state or open/resolve an incident.
+	// Audit an SSRF block even if a pause or suspension wins the race below.
+	if result.ErrorClass == "ssrf_blocked" {
+		if err := w.recordSSRFEvent(ctx, q, monitor, result); err != nil {
+			return err
+		}
+	}
+
+	// A pause or suspension can commit while the probe is in flight. Keep the
+	// result for audit but do not advance state or open/resolve an incident.
+	suspended, err := q.GetWorkspaceSuspended(ctx, monitor.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("check workspace suspended: %w", err)
+	}
 	paused, err := q.GetMonitorPaused(ctx, monitor.ID)
 	if err != nil {
 		return fmt.Errorf("check monitor paused: %w", err)
 	}
-	if paused {
+	if suspended || paused {
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit probe result: %w", err)
 		}
@@ -255,11 +266,6 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		At:          checkedAt,
 	}); err != nil {
 		return fmt.Errorf("apply incident transition: %w", err)
-	}
-	if result.ErrorClass == "ssrf_blocked" {
-		if err := w.recordSSRFEvent(ctx, q, monitor, result); err != nil {
-			return err
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit probe result: %w", err)

@@ -93,6 +93,9 @@ DELETE FROM monitors WHERE id = $1 AND workspace_id = $2;
 -- name: GetMonitorPaused :one
 SELECT paused FROM monitors WHERE id=$1;
 
+-- name: GetWorkspaceSuspended :one
+SELECT (suspended_at IS NOT NULL)::boolean AS suspended FROM workspaces WHERE id=$1;
+
 -- name: SetMonitorPaused :one
 UPDATE monitors
 SET paused = $3, updated_at = now()

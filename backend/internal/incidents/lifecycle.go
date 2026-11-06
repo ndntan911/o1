@@ -123,7 +123,9 @@ func enqueueDeliveries(ctx context.Context, tx pgx.Tx, q *sqlc.Queries, inserter
 		}
 		var config EmailConfig
 		if err := json.Unmarshal(channel.Config, &config); err != nil {
-			return fmt.Errorf("%w: channel %s: %v", ErrInvalidChannelConfig, channel.ID, err)
+			// A malformed channel must not fail monitoring. Skip its deliveries
+			// and continue with the remaining channels.
+			continue
 		}
 		for _, rawRecipient := range config.Recipients {
 			recipient := strings.TrimSpace(rawRecipient)

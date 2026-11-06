@@ -58,6 +58,11 @@ func run() error {
 	client, err := river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{
 		Logger:  rt.Logger,
 		Workers: workers,
+		// The probe worker inserts alert jobs, but the alert worker is added in
+		// Task 3. Without this flag River rejects the unregistered "alert" kind
+		// at insert time and rolls back every incident transition. Task 3 must
+		// remove this once the real alert worker is registered.
+		SkipUnknownJobCheck: true,
 		Queues: map[string]river.QueueConfig{
 			"probe": {MaxWorkers: rt.Config.WorkerConcurrency},
 		},
