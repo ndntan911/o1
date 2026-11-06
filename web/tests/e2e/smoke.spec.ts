@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import {
 	expect,
 	test,
@@ -6,7 +5,12 @@ import {
 	type Page,
 } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { MailpitTimeoutError, waitForVerificationLink } from './helpers';
+import {
+	composePsql,
+	MailpitTimeoutError,
+	seedIncident,
+	waitForVerificationLink,
+} from './helpers';
 
 const WORKSPACE_NAME = 'E2E Workspace';
 const MONITOR_NAME = 'Example';
@@ -30,30 +34,6 @@ async function expectNoSeriousA11yViolations(page: Page) {
 			})),
 		})),
 	).toEqual([]);
-}
-
-function composePsql(sql: string): void {
-	execFileSync(
-		'docker',
-		[
-			'compose',
-			'-f',
-			'../compose.yaml',
-			'exec',
-			'-T',
-			'postgres',
-			'psql',
-			'-U',
-			'o1',
-			'-d',
-			'o1',
-			'-v',
-			'ON_ERROR_STOP=1',
-			'-c',
-			sql,
-		],
-		{ stdio: 'pipe' },
-	);
 }
 
 async function registerThroughApiUnlessPresent(
@@ -178,6 +158,61 @@ test('register, verify, create a monitor, and administer the workspace', async (
 	await page.getByRole('button', { name: `Resume ${MONITOR_NAME}` }).click();
 	await expect(
 		page.getByRole('button', { name: `Pause ${MONITOR_NAME}` }),
+	).toBeVisible();
+
+	// Incident dashboard. Seed an open incident directly so the UI can be
+	// exercised without waiting for a probe to fail.
+	const seeded = seedIncident(MONITOR_NAME);
+	expect(seeded.workspaceSlug).toBe(workspaceSlug);
+
+	await page.goto(`/w/${workspaceSlug}/incidents`);
+	await expect(
+		page.getByRole('heading', { name: 'Incidents', exact: true }),
+	).toBeVisible();
+	const incidentRow = page
+		.getByRole('row')
+		.filter({ hasText: MONITOR_NAME })
+		.first();
+	await expect(incidentRow).toBeVisible();
+	await expect(incidentRow.getByText('Open', { exact: true })).toBeVisible();
+
+	await incidentRow
+		.getByRole('link', { name: `View ${MONITOR_NAME} incident` })
+		.click();
+	await expect(
+		page.getByRole('heading', {
+			name: `Incident: ${MONITOR_NAME}`,
+			exact: true,
+		}),
+	).toBeVisible();
+	const timeline = page.getByRole('list', { name: 'Incident timeline' });
+	await expect(timeline.getByText('Opened', { exact: true })).toBeVisible();
+
+	await page.getByRole('button', { name: 'Acknowledge', exact: true }).click();
+	await expect(
+		page.getByRole('button', { name: 'Acknowledge', exact: true }),
+	).toBeHidden();
+	await expect(
+		timeline.getByText('Acknowledged', { exact: true }),
+	).toBeVisible();
+
+	// Acknowledged incidents stay active and remain linked from the monitor.
+	await page.getByRole('link', { name: 'View monitor' }).click();
+	await page.reload();
+	await expect(
+		page.getByText('Active incident', { exact: true }),
+	).toBeVisible();
+	await expect(page.getByText(/Acknowledged incident started/)).toBeVisible();
+	await expect(
+		page.getByRole('link', { name: 'View incident' }),
+	).toHaveAttribute(
+		'href',
+		`/w/${workspaceSlug}/incidents/${seeded.incidentId}`,
+	);
+	await expect(
+		page
+			.getByRole('region', { name: 'Recent incidents' })
+			.getByRole('link', { name: 'Acknowledged', exact: true }),
 	).toBeVisible();
 
 	// Edit the monitor, then check the list screen with a populated row.

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import type { APIRequestContext } from '@playwright/test';
 
 const MAILPIT_API =
@@ -41,6 +42,92 @@ export class MailpitTimeoutError extends Error {
 
 function sleep(milliseconds: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+interface ComposePsqlOptions {
+	variables?: Record<string, string>;
+	tuplesOnly?: boolean;
+}
+
+/**
+ * Runs SQL against the Compose PostgreSQL service. Values passed through
+ * `variables` are bound with psql's `:'name'` quoting rather than interpolated
+ * into the SQL string.
+ */
+export function composePsql(
+	sql: string,
+	{ variables = {}, tuplesOnly = false }: ComposePsqlOptions = {},
+): string {
+	const args = [
+		'compose',
+		'-f',
+		'../compose.yaml',
+		'exec',
+		'-T',
+		'postgres',
+		'psql',
+		'-U',
+		'o1',
+		'-d',
+		'o1',
+		'-v',
+		'ON_ERROR_STOP=1',
+	];
+	for (const [name, value] of Object.entries(variables)) {
+		args.push('-v', `${name}=${value}`);
+	}
+	if (tuplesOnly) args.push('-tA');
+
+	return execFileSync('docker', args, {
+		stdio: 'pipe',
+		encoding: 'utf8',
+		input: sql,
+	});
+}
+
+export interface SeededIncident {
+	incidentId: string;
+	workspaceSlug: string;
+}
+
+/**
+ * Inserts an open incident and its opening timeline event directly through
+ * psql so the incident UI can be exercised without waiting for a probe to
+ * fail. Returns the incident id and the slug of the workspace that owns the
+ * named monitor.
+ */
+export function seedIncident(monitorName: string): SeededIncident {
+	const output = composePsql(
+		`WITH monitor AS (
+			SELECT m.id, m.workspace_id, w.slug
+			FROM monitors m
+			JOIN workspaces w ON w.id = m.workspace_id
+			WHERE m.name = :'monitor_name'
+			ORDER BY m.created_at DESC, m.id DESC
+			LIMIT 1
+		), incident AS (
+			INSERT INTO incidents (
+				id, workspace_id, monitor_id, status, started_at, last_notified_at
+			)
+			SELECT gen_random_uuid(), monitor.workspace_id, monitor.id, 'open', now(), now()
+			FROM monitor
+			RETURNING id
+		), event AS (
+			INSERT INTO incident_events (id, incident_id, kind, detail)
+			SELECT gen_random_uuid(), incident.id, 'opened', '{}'::jsonb
+			FROM incident
+		)
+		SELECT incident.id, monitor.slug
+		FROM incident
+		CROSS JOIN monitor;`,
+		{ variables: { monitor_name: monitorName }, tuplesOnly: true },
+	);
+
+	const [incidentId, workspaceSlug] = output.trim().split('|');
+	if (!incidentId || !workspaceSlug) {
+		throw new Error(`Could not seed an incident for monitor ${monitorName}`);
+	}
+	return { incidentId, workspaceSlug };
 }
 
 function decodeHtmlEntities(value: string): string {

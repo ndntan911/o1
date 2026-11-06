@@ -68,8 +68,8 @@ npm run build
 ```
 
 The Playwright smoke test drives the deployed stack through registration,
-email verification, workspace and monitor management, and administrator
-suspension. With Compose running:
+email verification, workspace and monitor management, incident
+acknowledgement, and administrator suspension. With Compose running:
 
 ```sh
 cd web
