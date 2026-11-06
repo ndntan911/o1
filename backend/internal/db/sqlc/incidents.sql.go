@@ -390,6 +390,22 @@ func (q *Queries) ResolveIncident(ctx context.Context, arg ResolveIncidentParams
 	return err
 }
 
+const touchIncidentReminder = `-- name: TouchIncidentReminder :exec
+UPDATE incidents
+SET last_notified_at=$2, updated_at=now()
+WHERE id=$1
+`
+
+type TouchIncidentReminderParams struct {
+	ID             uuid.UUID
+	LastNotifiedAt *time.Time
+}
+
+func (q *Queries) TouchIncidentReminder(ctx context.Context, arg TouchIncidentReminderParams) error {
+	_, err := q.db.Exec(ctx, touchIncidentReminder, arg.ID, arg.LastNotifiedAt)
+	return err
+}
+
 const updateIncidentReminder = `-- name: UpdateIncidentReminder :exec
 UPDATE incidents
 SET last_notified_at=$2, reminder_count=reminder_count+1, updated_at=now()

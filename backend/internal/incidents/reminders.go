@@ -27,8 +27,10 @@ const (
 // EnqueueReminders sends reminder alerts for open, unacknowledged incidents
 // whose last notification is older than the reminder interval. It must run
 // inside a transaction so the delivery rows, River jobs, and the incident's
-// reminder bookkeeping commit atomically. It returns the number of incidents
-// that produced at least one delivery.
+// reminder bookkeeping commit atomically. Incidents that produce no delivery
+// are still touched so they rotate out of the front of the batch without
+// consuming their reminder budget. It returns the number of incidents that
+// produced at least one delivery.
 func EnqueueReminders(ctx context.Context, tx pgx.Tx, q *sqlc.Queries, inserter JobInserter, now time.Time) (int, error) {
 	rows, err := q.ListIncidentsNeedingReminder(ctx, sqlc.ListIncidentsNeedingReminderParams{
 		MaxReminders: reminderMaxCount,
@@ -47,7 +49,15 @@ func EnqueueReminders(ctx context.Context, tx pgx.Tx, q *sqlc.Queries, inserter 
 		}
 		if inserted == 0 {
 			// No enabled channel or recipient means there is nothing to send.
-			// Do not advance the incident so a later fix can still remind.
+			// Still advance last_notified_at so the incident rotates to the
+			// back of the reminder batch instead of starving deliverable
+			// incidents forever. The reminder budget is not consumed.
+			if err := q.TouchIncidentReminder(ctx, sqlc.TouchIncidentReminderParams{
+				ID:             incident.ID,
+				LastNotifiedAt: &now,
+			}); err != nil {
+				return reminded, fmt.Errorf("touch incident reminder %s: %w", incident.ID, err)
+			}
 			continue
 		}
 		if err := q.UpdateIncidentReminder(ctx, sqlc.UpdateIncidentReminderParams{

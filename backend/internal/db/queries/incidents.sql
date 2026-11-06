@@ -65,6 +65,11 @@ UPDATE incidents
 SET last_notified_at=$2, reminder_count=reminder_count+1, updated_at=now()
 WHERE id=$1;
 
+-- name: TouchIncidentReminder :exec
+UPDATE incidents
+SET last_notified_at=$2, updated_at=now()
+WHERE id=$1;
+
 -- name: ListIncidentDeliveries :many
 SELECT * FROM alert_deliveries
 WHERE incident_id=$1

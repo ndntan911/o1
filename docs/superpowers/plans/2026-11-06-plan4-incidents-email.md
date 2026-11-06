@@ -592,7 +592,8 @@ In `reminders_test.go`, with a fake inserter and real DB:
 - A resolved incident creates nothing.
 - A paused monitor creates nothing.
 - A suspended workspace creates nothing.
-- An incident with no channel/recipients creates nothing and does **not** increment `reminder_count` or `last_notified_at`.
+- An incident with no channel/recipients creates nothing and does **not** increment `reminder_count`, but **does** advance `last_notified_at` so it rotates out of the batch.
+- A no-delivery incident and a deliverable incident in the same batch both get processed; the no-delivery one cannot starve the other.
 - Calling the function twice at the same `now` does not duplicate sequence 1.
 - `reminder_count = 10` creates nothing.
 
@@ -604,7 +605,7 @@ Expected: FAIL because `EnqueueReminders` does not exist.
 
 - [ ] **Step 3: Implement `EnqueueReminders`**
 
-Use a transaction-friendly function: `ListIncidentsNeedingReminder` with `max_reminders=10`, `before=now-30m`, `batch` from a constant (e.g. 100). For each incident, list enabled channels, parse recipients, insert deliveries with `sequence = reminder_count+1`; track whether any row was inserted; if so, call `UpdateIncidentReminder` and enqueue `AlertArgs` for each inserted delivery. Return the number of incidents that produced at least one delivery.
+Add a `TouchIncidentReminder :exec` query that updates only `last_notified_at` (not `reminder_count`), regenerate sqlc, and use it for eligible incidents that produced no delivery. Use `UpdateIncidentReminder` only when at least one delivery was inserted. Use a transaction-friendly function: `ListIncidentsNeedingReminder` with `max_reminders=10`, `before=now-30m`, `batch` from a constant (e.g. 100). For each incident, list enabled channels, parse recipients, insert deliveries with `sequence = reminder_count+1`; track whether any row was inserted; if so, call `UpdateIncidentReminder` and enqueue `AlertArgs` for each inserted delivery; otherwise call `TouchIncidentReminder`. Return the number of incidents that produced at least one delivery.
 
 - [ ] **Step 4: Wire the scheduler**
 

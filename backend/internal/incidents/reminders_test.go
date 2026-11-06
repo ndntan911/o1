@@ -49,8 +49,15 @@ func newReminderEnv(t *testing.T) *reminderEnv {
 	}
 }
 
-// addIncident inserts an incident with the given status and notification state.
+// addIncident inserts an incident on the env's default monitor with the given
+// status and notification state.
 func (e *reminderEnv) addIncident(t *testing.T, status string, lastNotifiedAt time.Time, reminderCount int) uuid.UUID {
+	t.Helper()
+	return e.addIncidentForMonitor(t, e.monitorID, status, lastNotifiedAt, reminderCount)
+}
+
+// addIncidentForMonitor inserts an incident on monitorID.
+func (e *reminderEnv) addIncidentForMonitor(t *testing.T, monitorID uuid.UUID, status string, lastNotifiedAt time.Time, reminderCount int) uuid.UUID {
 	t.Helper()
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -70,11 +77,33 @@ func (e *reminderEnv) addIncident(t *testing.T, status string, lastNotifiedAt ti
 			(id, workspace_id, monitor_id, status, started_at, acknowledged_at,
 			 resolved_at, last_notified_at, reminder_count)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		id, e.workspaceID, e.monitorID, status, lastNotifiedAt.Add(-time.Hour),
+		id, e.workspaceID, monitorID, status, lastNotifiedAt.Add(-time.Hour),
 		acknowledgedAt, resolvedAt, lastNotifiedAt, reminderCount); err != nil {
 		t.Fatalf("insert %s incident: %v", status, err)
 	}
 	return id
+}
+
+// addUndeliverableIncident creates a monitor without any alert channel and an
+// open incident on it. Such an incident can never produce a delivery.
+func (e *reminderEnv) addUndeliverableIncident(t *testing.T, lastNotifiedAt time.Time) uuid.UUID {
+	t.Helper()
+	monitorID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new monitor id: %v", err)
+	}
+	if _, err := e.tx.Exec(context.Background(), `
+		INSERT INTO monitors
+			(id, workspace_id, name, url, method, expected_status,
+			 interval_seconds, timeout_seconds, confirmation_threshold,
+			 recovery_threshold, paused, created_by)
+		SELECT $1, w.id, $2, 'https://example.com/health', 'GET', '200-299',
+			 60, 5, 1, 1, false, w.created_by
+		FROM workspaces w WHERE w.id = $3`,
+		monitorID, "undeliverable "+monitorID.String(), e.workspaceID); err != nil {
+		t.Fatalf("insert undeliverable monitor: %v", err)
+	}
+	return e.addIncidentForMonitor(t, monitorID, "open", lastNotifiedAt, 0)
 }
 
 func (e *reminderEnv) enqueue(t *testing.T, now time.Time) int {
@@ -204,7 +233,7 @@ func TestEnqueueReminders(t *testing.T) {
 		}
 	})
 
-	t.Run("no enabled channel does not advance the reminder", func(t *testing.T) {
+	t.Run("no enabled channel advances last_notified_at but not reminder_count", func(t *testing.T) {
 		env := newReminderEnv(t)
 		incidentID := env.addIncident(t, "open", due, 0)
 		if _, err := env.tx.Exec(ctx,
@@ -221,8 +250,12 @@ func TestEnqueueReminders(t *testing.T) {
 		if len(env.inserter.jobs) != 0 {
 			t.Fatalf("jobs = %d, want 0", len(env.inserter.jobs))
 		}
-		if count, lastNotified := env.reminderState(t, incidentID); count != 0 || !lastNotified.Equal(due) {
-			t.Fatalf("reminder state = %d/%v, want 0/%v", count, lastNotified, due)
+		count, lastNotified := env.reminderState(t, incidentID)
+		if count != 0 {
+			t.Fatalf("reminder_count = %d, want 0", count)
+		}
+		if lastNotified == nil || !lastNotified.Equal(now) {
+			t.Fatalf("last_notified_at = %v, want %v (rotated out of the batch)", lastNotified, now)
 		}
 	})
 
@@ -277,8 +310,53 @@ func TestEnqueueReminders(t *testing.T) {
 		if got := countRows(t, env.tx, `SELECT count(*) FROM alert_deliveries WHERE incident_id = $1`, incidentID); got != 0 {
 			t.Fatalf("deliveries = %d, want 0", got)
 		}
-		if count, lastNotified := env.reminderState(t, incidentID); count != 0 || !lastNotified.Equal(due) {
-			t.Fatalf("reminder state = %d/%v, want 0/%v", count, lastNotified, due)
+		count, lastNotified := env.reminderState(t, incidentID)
+		if count != 0 {
+			t.Fatalf("reminder_count = %d, want 0", count)
+		}
+		if lastNotified == nil || !lastNotified.Equal(now) {
+			t.Fatalf("last_notified_at = %v, want %v (rotated out of the batch)", lastNotified, now)
 		}
 	})
+}
+
+func TestEnqueueRemindersUndeliverableIncidentsDoNotStarve(t *testing.T) {
+	env := newReminderEnv(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ctx := context.Background()
+
+	// Fill the first batch past capacity with undeliverable incidents that are
+	// older than the deliverable one. Before the touch fix, these stayed at the
+	// front of the ORDER BY last_notified_at batch forever.
+	const reminderBatchSize = 100
+	oldest := now.Add(-2 * time.Hour)
+	for i := 0; i < reminderBatchSize+1; i++ {
+		env.addUndeliverableIncident(t, oldest.Add(time.Duration(i)*time.Second))
+	}
+	deliverableID := env.addIncident(t, "open", now.Add(-31*time.Minute), 0)
+
+	// First tick processes only undeliverable incidents; the deliverable one is
+	// still behind them.
+	if n := env.enqueue(t, now); n != 0 {
+		t.Fatalf("first EnqueueReminders = %d, want 0", n)
+	}
+	if got := countRows(t, env.tx, `SELECT count(*) FROM alert_deliveries WHERE incident_id = $1`, deliverableID); got != 0 {
+		t.Fatalf("deliverable deliveries after first tick = %d, want 0", got)
+	}
+
+	// The touched incidents rotated behind. The remaining undeliverable and the
+	// deliverable incident are now in the same batch, so neither starves.
+	if n := env.enqueue(t, now); n != 1 {
+		t.Fatalf("second EnqueueReminders = %d, want 1", n)
+	}
+	deliveries, err := env.q.ListIncidentDeliveries(ctx, deliverableID)
+	if err != nil {
+		t.Fatalf("list deliverable deliveries: %v", err)
+	}
+	if len(deliveries) != 2 {
+		t.Fatalf("deliverable deliveries = %d, want 2", len(deliveries))
+	}
+	if count, lastNotified := env.reminderState(t, deliverableID); count != 1 || lastNotified == nil || !lastNotified.Equal(now) {
+		t.Fatalf("deliverable reminder state = %d/%v, want 1/%v", count, lastNotified, now)
+	}
 }

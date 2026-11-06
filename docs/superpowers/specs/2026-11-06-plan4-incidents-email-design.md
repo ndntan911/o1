@@ -304,13 +304,18 @@ confirmation threshold is reached; it is not a special case.
   incident it:
   - Inserts reminder deliveries with `event='reminder'`, the next sequence, one
     per recipient of each enabled channel.
-  - Updates `last_notified_at=now()` and increments `reminder_count` **only when
-    at least one delivery row was actually inserted**. An incident with no
-    configured channel or no enabled recipients keeps its clock and budget
-    untouched.
-  - Enqueues the alert jobs.
+  - Updates `last_notified_at=now()` on every eligible tick, even when no
+    delivery was inserted, so permanently undeliverable incidents cannot occupy
+    the front of the reminder batch and starve deliverable ones.
+  - Increments `reminder_count` **only when at least one delivery row was
+    actually inserted**. The 10-reminder budget is therefore never consumed by
+    an incident with no configured channel, no enabled recipients, or malformed
+    channel config.
+  - Enqueues the alert jobs for inserted deliveries.
 - The unique key and the row update happen in one transaction, so two scheduler
   ticks cannot duplicate a reminder.
+- A newly configured channel may wait up to one reminder interval for its first
+  reminder. This is the deliberate trade-off for preventing batch starvation.
 - A paused monitor has no reminders. If it is resumed, the regular probe path
   resumes; existing incidents remain open and reminders continue after the next
   eligible tick.
