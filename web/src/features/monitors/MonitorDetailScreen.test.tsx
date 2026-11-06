@@ -2,7 +2,7 @@ import type { AnchorHTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { HttpResponse, http } from 'msw';
+import { HttpResponse, delay, http } from 'msw';
 import { server } from '@/test/msw/server';
 import { renderWithProviders } from '@/test/render';
 import type {
@@ -184,17 +184,13 @@ function useMonitorHandlers(
 }
 
 function useIncidentHandlers(
-	active: Incident[],
-	all: Incident[],
+	incidents: Incident[],
 	requests: URLSearchParams[] = [],
 ) {
 	server.use(
 		http.get(incidentsPath, ({ request }) => {
-			const params = new URL(request.url).searchParams;
-			requests.push(params);
-			return HttpResponse.json({
-				incidents: params.get('status') === 'active' ? active : all,
-			});
+			requests.push(new URL(request.url).searchParams);
+			return HttpResponse.json({ incidents });
 		}),
 	);
 
@@ -476,10 +472,27 @@ describe('MonitorDetailScreen', () => {
 		).not.toBeInTheDocument();
 	});
 
-	test('an active incident banner links to the incident', async () => {
+	test('an open incident banner links to the incident', async () => {
+		const incident = makeIncident();
+		useMonitorHandlers();
+		useIncidentHandlers([incident]);
+
+		renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+
+		expect(await screen.findByText('Active incident')).toBeInTheDocument();
+		expect(screen.getByText(/Open incident/)).toBeInTheDocument();
+		expect(screen.getByRole('link', { name: 'View incident' })).toHaveAttribute(
+			'href',
+			'/w/acme-status/incidents/i1',
+		);
+	});
+
+	test('an acknowledged incident banner links to the incident', async () => {
 		const incident = makeIncident({ status: 'acknowledged' });
 		useMonitorHandlers();
-		useIncidentHandlers([incident], [incident]);
+		useIncidentHandlers([incident]);
 
 		renderWithProviders(
 			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
@@ -493,7 +506,7 @@ describe('MonitorDetailScreen', () => {
 		);
 	});
 
-	test('renders the five most recent incidents for the monitor', async () => {
+	test('renders the five most recent incidents for the monitor with a single request', async () => {
 		const requests: URLSearchParams[] = [];
 		const recent = [
 			makeIncident({
@@ -504,7 +517,7 @@ describe('MonitorDetailScreen', () => {
 			makeIncident({ id: 'i3', status: 'acknowledged' }),
 		];
 		useMonitorHandlers();
-		useIncidentHandlers([], recent, requests);
+		useIncidentHandlers(recent, requests);
 
 		renderWithProviders(
 			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
@@ -520,16 +533,84 @@ describe('MonitorDetailScreen', () => {
 			'href',
 			'/w/acme-status/incidents/i3',
 		);
-		const recentRequest = requests.find(
-			(params) => params.get('status') === 'all',
-		);
-		expect(recentRequest?.get('monitor_id')).toBe('m1');
-		expect(recentRequest?.get('limit')).toBe('5');
+		await waitFor(() => expect(requests).toHaveLength(1));
+		expect(requests[0].get('status')).toBe('all');
+		expect(requests[0].get('monitor_id')).toBe('m1');
+		expect(requests[0].get('limit')).toBe('5');
 	});
 
-	test('shows no incident banner when there are no active incidents', async () => {
+	test('shows a loading skeleton while recent incidents load', async () => {
 		useMonitorHandlers();
-		useIncidentHandlers([], []);
+		server.use(
+			http.get(incidentsPath, async () => {
+				await delay(100);
+				return HttpResponse.json({ incidents: [] });
+			}),
+		);
+
+		const { container } = renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+
+		expect(
+			await screen.findByRole('status', { name: 'Loading incidents' }),
+		).toBeInTheDocument();
+		expect(
+			container.querySelector('[data-slot="skeleton"]'),
+		).toBeInTheDocument();
+	});
+
+	test('shows an inline incident error with retry', async () => {
+		let fail = true;
+		useMonitorHandlers();
+		server.use(
+			http.get(incidentsPath, () =>
+				fail
+					? problem('internal_error', 500, 'Internal Server Error')
+					: HttpResponse.json({ incidents: [] }),
+			),
+		);
+		const user = userEvent.setup();
+
+		renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+
+		expect(
+			await screen.findByText('Could not load incidents'),
+		).toBeInTheDocument();
+		expect(screen.queryByText('No incidents yet')).not.toBeInTheDocument();
+
+		fail = false;
+		await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+		expect(await screen.findByText('No incidents yet')).toBeInTheDocument();
+		expect(
+			screen.queryByText('Could not load incidents'),
+		).not.toBeInTheDocument();
+	});
+
+	test('shows no incident banner when only resolved incidents exist', async () => {
+		const resolved = makeIncident({
+			status: 'resolved',
+			resolved_at: new Date().toISOString(),
+		});
+		useMonitorHandlers();
+		useIncidentHandlers([resolved]);
+
+		renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+
+		expect(
+			await screen.findByRole('link', { name: 'Resolved' }),
+		).toHaveAttribute('href', '/w/acme-status/incidents/i1');
+		expect(screen.queryByText('Active incident')).not.toBeInTheDocument();
+	});
+
+	test('shows no incident banner and an empty state when there are no incidents', async () => {
+		useMonitorHandlers();
+		useIncidentHandlers([]);
 
 		renderWithProviders(
 			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,

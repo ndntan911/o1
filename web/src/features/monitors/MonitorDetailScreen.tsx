@@ -8,6 +8,7 @@ import { PageSkeleton } from '@/components/feedback/Skeletons';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useIncidents } from '@/features/incidents/hooks';
 import {
 	formatIncidentDuration,
@@ -126,11 +127,6 @@ function MonitorDetailView({
 
 	const summaryQuery = useSummary(workspace.id, monitorId, timeWindow);
 	const resultsQuery = useResults(workspace.id, monitorId, timeWindow);
-	const activeIncidentsQuery = useIncidents(
-		workspace.id,
-		{ status: 'active', monitorId },
-		1,
-	);
 	const recentIncidentsQuery = useIncidents(
 		workspace.id,
 		{ status: 'all', monitorId },
@@ -150,12 +146,12 @@ function MonitorDetailView({
 	const mutationPending = pause.isPending || resume.isPending;
 	const results =
 		resultsQuery.data?.pages.flatMap((page) => page.results) ?? [];
-	const activeIncident =
-		activeIncidentsQuery.data?.pages[0]?.incidents[0] ?? null;
 	const recentIncidents =
 		recentIncidentsQuery.data?.pages
 			.flatMap((page) => page.incidents)
 			.slice(0, 5) ?? [];
+	const activeIncident =
+		recentIncidents.find((incident) => incident.status !== 'resolved') ?? null;
 
 	function handleProblem(error: unknown) {
 		setProblem(problemFromError(error));
@@ -385,7 +381,27 @@ function MonitorDetailView({
 
 			<section className="space-y-3" aria-label="Recent incidents">
 				<h2 className="font-heading text-lg font-medium">Recent incidents</h2>
-				{recentIncidents.length === 0 ? (
+				{recentIncidentsQuery.isPending ? (
+					<div
+						role="status"
+						aria-label="Loading incidents"
+						className="space-y-2"
+					>
+						<Skeleton className="h-11 w-full" />
+						<Skeleton className="h-11 w-full" />
+					</div>
+				) : recentIncidentsQuery.isError && recentIncidents.length === 0 ? (
+					<ErrorPanel
+						title="Could not load incidents"
+						message={errorMessage(recentIncidentsQuery.error)}
+						problem={problemFromError(recentIncidentsQuery.error)}
+						onRetry={
+							isRetryable(recentIncidentsQuery.error)
+								? () => void recentIncidentsQuery.refetch()
+								: undefined
+						}
+					/>
+				) : recentIncidents.length === 0 ? (
 					<p className="text-sm text-muted-foreground">No incidents yet</p>
 				) : (
 					<ul className="space-y-2">
