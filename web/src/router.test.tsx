@@ -24,6 +24,13 @@ const memberMe: Me = {
 	],
 };
 
+const adminWorkspaceMe: Me = {
+	user: { id: 'u1', email: 'alice@example.com', is_admin: false },
+	workspaces: [
+		{ id: 'w1', name: 'Acme Status', slug: 'acme-status', role: 'admin' },
+	],
+};
+
 const detailSummary = {
 	window: '6h',
 	uptime: 0.99,
@@ -330,6 +337,13 @@ describe('router guards', () => {
 					return HttpResponse.json({ results: [] });
 				},
 			),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors/m1/alert-channel`, () =>
+				HttpResponse.json({
+					available: true,
+					channel_enabled: true,
+					enabled: true,
+				}),
+			),
 		);
 
 		const { router } = renderRouter('/w/acme-status/monitors/m1?window=6h');
@@ -360,6 +374,13 @@ describe('router guards', () => {
 			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors/m1/results`, () =>
 				HttpResponse.json({ results: [] }),
 			),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors/m1/alert-channel`, () =>
+				HttpResponse.json({
+					available: true,
+					channel_enabled: true,
+					enabled: true,
+				}),
+			),
 		);
 
 		renderRouter('/w/acme-status/monitors/m1?window=bogus');
@@ -369,5 +390,88 @@ describe('router guards', () => {
 		).toBeInTheDocument();
 		await waitFor(() => expect(summaryWindows).toContain('24h'));
 		expect(summaryWindows).not.toContain('bogus');
+	});
+
+	test('workspace admins see the Settings Alerts link', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () =>
+				HttpResponse.json(adminWorkspaceMe),
+			),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+
+		renderRouter('/w/acme-status/monitors');
+
+		expect(await screen.findByRole('link', { name: 'Alerts' })).toHaveAttribute(
+			'href',
+			'/w/acme-status/settings/alerts',
+		);
+		expect(screen.getByText('Settings')).toBeInTheDocument();
+	});
+
+	test('members do not see the Settings Alerts link', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+
+		renderRouter('/w/acme-status/monitors');
+
+		await screen.findByRole('link', { name: 'Monitors' });
+		expect(
+			screen.queryByRole('link', { name: 'Alerts' }),
+		).not.toBeInTheDocument();
+	});
+
+	test('a member is redirected away from alert settings', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+
+		const { router } = renderRouter('/w/acme-status/settings/alerts');
+
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe('/w/acme-status/monitors'),
+		);
+		expect(
+			screen.queryByRole('heading', { name: 'Alert settings' }),
+		).not.toBeInTheDocument();
+	});
+
+	test('a workspace admin can open alert settings', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () =>
+				HttpResponse.json(adminWorkspaceMe),
+			),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/alert-channels`, () =>
+				HttpResponse.json({
+					channels: [
+						{
+							id: 'c1',
+							kind: 'email',
+							name: 'Email',
+							enabled: true,
+							recipients: ['ops@example.com'],
+							created_at: '2026-01-01T00:00:00Z',
+							updated_at: '2026-01-01T00:00:00Z',
+						},
+					],
+				}),
+			),
+		);
+
+		renderRouter('/w/acme-status/settings/alerts');
+
+		expect(
+			await screen.findByRole('heading', { name: 'Alert settings' }),
+		).toBeInTheDocument();
+		expect(await screen.findByText('ops@example.com')).toBeInTheDocument();
 	});
 });

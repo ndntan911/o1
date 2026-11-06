@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router';
 import { UserMenu } from './UserMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import type { Me, Workspace } from '@/lib/api/types';
+import { canManageAlertChannels } from '@/lib/roles';
 
 export interface SidebarProps {
 	me: Me;
@@ -59,6 +60,23 @@ export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 					</p>
 				)}
 			</div>
+
+			{currentWorkspace && canManageAlertChannels(currentWorkspace.role) ? (
+				<div className="space-y-1">
+					<h2 className="px-2 text-xs font-medium text-muted-foreground">
+						Settings
+					</h2>
+					<Link
+						to="/w/$workspaceSlug/settings/alerts"
+						params={{ workspaceSlug: currentWorkspace.slug }}
+						className={linkClass}
+						activeProps={{ className: activeClass }}
+						onClick={onNavigate}
+					>
+						Alerts
+					</Link>
+				</div>
+			) : null}
 
 			{me.user.is_admin ? (
 				<div className="space-y-1">

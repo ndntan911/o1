@@ -81,8 +81,46 @@ To promote an administrator, register and verify the account, set
 `O1_BOOTSTRAP_ADMIN_EMAIL` to that address, then recreate the API service as
 described under [Administrator bootstrap](#administrator-bootstrap).
 
-The dashboard is not a status page. Incidents, alerts, and public status pages
-are later milestones.
+Incident history and email alerts are available in the dashboard. Public status
+pages and additional alert channels (such as webhooks) are later milestones.
+
+## Incidents and email alerts
+
+The probe worker opens an incident when a monitor crosses its confirmation
+threshold and resolves it after the configured recovery threshold. Incidents
+move through `open`, `acknowledged`, and `resolved`; open and acknowledged
+incidents are active and appear on the Incidents page and on their monitor's
+detail page. Resolved incidents remain in the history with their timeline and
+duration.
+
+Members can acknowledge an open incident from its detail page. Acknowledgement
+records who acknowledged it and when, stops further reminder emails, and leaves
+the incident active until the monitor recovers. Viewers can read incidents but
+cannot acknowledge them or change alert settings.
+
+Workspace admins configure alerting under **Settings → Alerts**. The email
+channel requires 1–20 unique, valid recipient addresses when enabled; an empty
+list is allowed only while email alerts are disabled. Saving the channel
+attaches it to every workspace monitor that does not have a per-monitor setting
+yet. Members can turn **Email alerts** off or on for an individual monitor from
+that monitor's detail page; the toggle is unavailable to viewers. When an admin
+disables the workspace email channel, the monitor page shows that email alerts
+are disabled for the workspace and disables the per-monitor switch. When no
+email channel exists yet, the monitor page explains that alerts are not
+configured and links admins to the settings screen.
+
+Each enabled incident sends an email to every recipient when it opens and when
+it resolves. While an incident is open and unacknowledged, reminders repeat
+every 30 minutes, up to 10 reminders per incident. Acknowledging the incident
+stops the reminder sequence. Admins can see the delivery status for each
+recipient on the incident detail page.
+
+Development uses Mailpit as the SMTP sink. Compose starts Mailpit at
+<http://localhost:8025>, where every alert email and its rendered content can be
+inspected. A production email sender is not implemented yet: only email channels
+are supported in Plan 4, the worker refuses to start with `O1_ENV=production`,
+and production delivery remains a later milestone. Other channels, paging
+integrations, and public status pages are outside the Plan 4 scope.
 
 ## Configuration
 

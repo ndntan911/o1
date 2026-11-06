@@ -8,7 +8,13 @@ import { PageSkeleton } from '@/components/feedback/Skeletons';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
+import {
+	useMonitorAlertChannel,
+	useSetMonitorAlertChannel,
+} from '@/features/alerts/hooks';
 import { useIncidents } from '@/features/incidents/hooks';
 import {
 	formatIncidentDuration,
@@ -24,7 +30,11 @@ import type {
 	Workspace,
 } from '@/lib/api/types';
 import { formatLatency, formatRelativeTime } from '@/lib/format';
-import { canManageMonitors } from '@/lib/roles';
+import {
+	canManageAlertChannels,
+	canManageMonitorAlerts,
+	canManageMonitors,
+} from '@/lib/roles';
 import {
 	useDeleteMonitor,
 	useMonitor,
@@ -135,7 +145,15 @@ function MonitorDetailView({
 	const pause = usePauseMonitor(workspace.id, monitorId);
 	const resume = useResumeMonitor(workspace.id, monitorId);
 	const remove = useDeleteMonitor(workspace.id, monitorId, workspace.slug);
+	const canManageAlerts = canManageMonitorAlerts(workspace.role);
+	const alertQuery = useMonitorAlertChannel(
+		workspace.id,
+		monitorId,
+		canManageAlerts,
+	);
+	const setAlert = useSetMonitorAlertChannel(workspace.id, monitorId);
 	const [problem, setProblem] = useState<ApiProblem | null>(null);
+	const [alertProblem, setAlertProblem] = useState<ApiProblem | null>(null);
 	const [deleteProblem, setDeleteProblem] = useState<ApiProblem | null>(null);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -152,6 +170,13 @@ function MonitorDetailView({
 			.slice(0, 5) ?? [];
 	const activeIncident =
 		recentIncidents.find((incident) => incident.status !== 'resolved') ?? null;
+	const alertState = alertQuery.data;
+	const alertSwitchDisabled =
+		alertQuery.isPending ||
+		alertQuery.isError ||
+		!alertState?.available ||
+		!alertState.channel_enabled ||
+		setAlert.isPending;
 
 	function handleProblem(error: unknown) {
 		setProblem(problemFromError(error));
@@ -162,6 +187,14 @@ function MonitorDetailView({
 		mutation.mutate(undefined, {
 			onError: handleProblem,
 			onSuccess: () => setProblem(null),
+		});
+	}
+
+	function runAlertToggle(enabled: boolean) {
+		setAlertProblem(null);
+		setAlert.mutate(enabled, {
+			onError: (error) => setAlertProblem(problemFromError(error)),
+			onSuccess: () => setAlertProblem(null),
 		});
 	}
 
@@ -290,6 +323,54 @@ function MonitorDetailView({
 						</Link>
 					</AlertDescription>
 				</Alert>
+			) : null}
+
+			{canManageAlerts ? (
+				<section
+					aria-label="Email alerts"
+					className="space-y-3 rounded-xl border p-4"
+				>
+					<div className="flex flex-wrap items-center justify-between gap-4">
+						<div className="space-y-1">
+							<Label htmlFor="monitor-email-alerts">Email alerts</Label>
+							<p className="text-sm text-muted-foreground">
+								Send incident emails for this monitor.
+							</p>
+						</div>
+						<Switch
+							id="monitor-email-alerts"
+							aria-label="Email alerts"
+							checked={alertState?.enabled ?? false}
+							disabled={alertSwitchDisabled}
+							onCheckedChange={runAlertToggle}
+						/>
+					</div>
+
+					{alertQuery.isError ? (
+						<ProblemAlert problem={problemFromError(alertQuery.error)} />
+					) : null}
+					{alertProblem ? <ProblemAlert problem={alertProblem} /> : null}
+
+					{alertState && !alertState.available ? (
+						<p className="text-sm text-muted-foreground">
+							Email alerts are not configured for this workspace.{' '}
+							{canManageAlertChannels(workspace.role) ? (
+								<Link
+									to="/w/$workspaceSlug/settings/alerts"
+									params={{ workspaceSlug: workspace.slug }}
+									className="font-medium underline underline-offset-4"
+								>
+									Configure email alerts
+								</Link>
+							) : null}
+						</p>
+					) : null}
+					{alertState?.available && !alertState.channel_enabled ? (
+						<p className="text-sm text-muted-foreground">
+							Email alerts are disabled for this workspace.
+						</p>
+					) : null}
+				</section>
 			) : null}
 
 			<div className="flex flex-wrap items-center justify-between gap-3">

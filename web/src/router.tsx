@@ -30,7 +30,7 @@ import {
 } from '@/lib/last-workspace';
 import { queryClient as appQueryClient } from '@/lib/query/client';
 import { meQueryOptions, useMe } from '@/lib/query/me';
-import { canManageMonitors } from '@/lib/roles';
+import { canManageAlertChannels, canManageMonitors } from '@/lib/roles';
 
 const WorkspaceListScreen = lazy(async () => {
 	const module = await import('@/features/workspaces/WorkspaceListScreen');
@@ -70,6 +70,11 @@ const IncidentsScreen = lazy(async () => {
 const IncidentDetailScreen = lazy(async () => {
 	const module = await import('@/features/incidents/IncidentDetailScreen');
 	return { default: module.IncidentDetailScreen };
+});
+
+const AlertSettingsScreen = lazy(async () => {
+	const module = await import('@/features/alerts/AlertSettingsScreen');
+	return { default: module.AlertSettingsScreen };
 });
 
 const AdminWorkspacesScreen = lazy(async () => {
@@ -324,6 +329,26 @@ const incidentDetailRoute = createRoute({
 	component: IncidentDetailRoute,
 });
 
+function AlertSettingsRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return <AlertSettingsScreen workspace={workspace} />;
+}
+
+const alertSettingsRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/settings/alerts',
+	beforeLoad: ({ context }) => {
+		if (!canManageAlertChannels(context.workspace.role)) {
+			throw redirect({
+				to: '/w/$workspaceSlug/monitors',
+				params: { workspaceSlug: context.workspace.slug },
+			});
+		}
+	},
+	component: AlertSettingsRoute,
+});
+
 function MembersRoute() {
 	const { workspace } = workspaceRoute.useRouteContext();
 
@@ -399,6 +424,7 @@ export const routeTree = rootRoute.addChildren([
 			monitorEditRoute,
 			incidentsRoute,
 			incidentDetailRoute,
+			alertSettingsRoute,
 			membersRoute,
 		]),
 		adminRoute.addChildren([

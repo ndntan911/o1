@@ -250,3 +250,19 @@ export interface IncidentListResponse {
 export interface IncidentDeliveryListResponse {
 	deliveries: IncidentDelivery[];
 }
+
+export interface AlertChannel {
+	id: string;
+	kind: 'email';
+	name: string;
+	enabled: boolean;
+	recipients: string[];
+	created_at: string;
+	updated_at: string;
+}
+
+export interface MonitorAlertState {
+	available: boolean;
+	channel_enabled: boolean;
+	enabled: boolean;
+}
