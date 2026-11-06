@@ -18,6 +18,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 	"golang.org/x/time/rate"
 
 	"o1/internal/db/sqlc"
@@ -28,11 +30,32 @@ import (
 	"o1/internal/workspaces"
 )
 
+type recordingInserter struct {
+	mu   sync.Mutex
+	jobs []river.JobArgs
+	opts []*river.InsertOpts
+}
+
+func (f *recordingInserter) InsertTx(_ context.Context, _ pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jobs = append(f.jobs, args)
+	f.opts = append(f.opts, opts)
+	return &rivertype.JobInsertResult{}, nil
+}
+
+func (f *recordingInserter) snapshot() ([]river.JobArgs, []*river.InsertOpts) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]river.JobArgs(nil), f.jobs...), append([]*river.InsertOpts(nil), f.opts...)
+}
+
 type workerEnv struct {
-	t       *testing.T
-	pool    *pgxpool.Pool
-	worker  *ProbeWorker
-	ownerID uuid.UUID
+	t        *testing.T
+	pool     *pgxpool.Pool
+	worker   *ProbeWorker
+	ownerID  uuid.UUID
+	inserter *recordingInserter
 }
 
 type staticResolver struct{}
@@ -57,11 +80,15 @@ func newWorkerEnv(t *testing.T) *workerEnv {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	q := sqlc.New(pool)
 	ownerID := testutil.CreateVerifiedUser(t, pool, "owner@example.com", "correct horse battery staple")
+	probeWorker := NewProbeWorker(pool, q, box, probe.NewProber(guard), rate.NewLimiter(rate.Inf, 1000), logger)
+	inserter := &recordingInserter{}
+	probeWorker.SetJobInserter(inserter)
 	return &workerEnv{
-		t:       t,
-		pool:    pool,
-		worker:  NewProbeWorker(pool, q, box, probe.NewProber(guard), rate.NewLimiter(rate.Inf, 1000), logger),
-		ownerID: ownerID,
+		t:        t,
+		pool:     pool,
+		worker:   probeWorker,
+		ownerID:  ownerID,
+		inserter: inserter,
 	}
 }
 
@@ -107,6 +134,30 @@ func (e *workerEnv) resultCount(t *testing.T, monitorID uuid.UUID) int {
 		t.Fatalf("count results: %v", err)
 	}
 	return n
+}
+
+func (e *workerEnv) attachEmailChannel(t *testing.T, monitorID, workspaceID uuid.UUID, recipients ...string) uuid.UUID {
+	t.Helper()
+	channelID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new channel id: %v", err)
+	}
+	config, err := json.Marshal(map[string][]string{"recipients": recipients})
+	if err != nil {
+		t.Fatalf("encode channel config: %v", err)
+	}
+	if _, err := e.pool.Exec(context.Background(), `
+		INSERT INTO alert_channels (id, workspace_id, kind, name, config)
+		VALUES ($1, $2, 'email', 'Email', $3)`,
+		channelID, workspaceID, config); err != nil {
+		t.Fatalf("insert alert channel: %v", err)
+	}
+	if _, err := e.pool.Exec(context.Background(), `
+		INSERT INTO monitor_alert_channels (monitor_id, channel_id)
+		VALUES ($1, $2)`, monitorID, channelID); err != nil {
+		t.Fatalf("attach alert channel: %v", err)
+	}
+	return channelID
 }
 
 // blockingTarget holds each probe request until want requests are in flight.
@@ -180,6 +231,77 @@ func TestProcess_RecordsResultAndTransitionsOnce(t *testing.T) {
 	}
 	if results := env.resultCount(t, monitorID); results != 1 || status != "up" || successes != 1 {
 		t.Fatalf("results/status/successes = %d/%s/%d", results, status, successes)
+	}
+}
+
+func TestProcess_OpensIncidentAndEnqueuesAlertOnce(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer target.Close()
+	monitorID, workspaceID := env.createMonitor(t, target.URL, 1, 1, false, false)
+	env.attachEmailChannel(t, monitorID, workspaceID, "one@example.com", "two@example.com")
+
+	args := jobs.ProbeArgs{MonitorID: monitorID, ScheduledFor: time.Now().UTC().Truncate(time.Second)}
+	if err := env.worker.Process(context.Background(), args); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	var status string
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT status FROM monitor_state WHERE monitor_id = $1`, monitorID).Scan(&status); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if status != "down" {
+		t.Fatalf("status = %q, want down", status)
+	}
+	assertIncidentAlertCounts(t, env, monitorID, 1, 2, 2)
+
+	// Replaying the same probe job must not duplicate the incident, delivery,
+	// or alert job.
+	if err := env.worker.Process(context.Background(), args); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	assertIncidentAlertCounts(t, env, monitorID, 1, 2, 2)
+
+	// A later probe that stays down is not a new transition.
+	next := args
+	next.ScheduledFor = args.ScheduledFor.Add(time.Minute)
+	if err := env.worker.Process(context.Background(), next); err != nil {
+		t.Fatalf("second down probe: %v", err)
+	}
+	assertIncidentAlertCounts(t, env, monitorID, 1, 2, 2)
+	if results := env.resultCount(t, monitorID); results != 2 {
+		t.Fatalf("results = %d, want 2", results)
+	}
+}
+
+func assertIncidentAlertCounts(t *testing.T, env *workerEnv, monitorID uuid.UUID, incidents, deliveries, jobsWanted int) {
+	t.Helper()
+	var gotIncidents, gotDeliveries int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM incidents WHERE monitor_id = $1`, monitorID).Scan(&gotIncidents); err != nil {
+		t.Fatalf("count incidents: %v", err)
+	}
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM alert_deliveries d
+		JOIN incidents i ON i.id = d.incident_id
+		WHERE i.monitor_id = $1`, monitorID).Scan(&gotDeliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	gotJobs, opts := env.inserter.snapshot()
+	if gotIncidents != incidents || gotDeliveries != deliveries || len(gotJobs) != jobsWanted {
+		t.Fatalf("incidents/deliveries/jobs = %d/%d/%d, want %d/%d/%d",
+			gotIncidents, gotDeliveries, len(gotJobs), incidents, deliveries, jobsWanted)
+	}
+	for i, args := range gotJobs {
+		if _, ok := args.(jobs.AlertArgs); !ok {
+			t.Fatalf("job %d type = %T, want jobs.AlertArgs", i, args)
+		}
+		if opts[i] == nil || opts[i].MaxAttempts != 5 || opts[i].Queue != "alert" {
+			t.Fatalf("job %d opts = %+v, want max 5 on alert queue", i, opts[i])
+		}
 	}
 }
 
@@ -358,6 +480,54 @@ func TestRecord_ConcurrentSameScheduleRecordsOnce(t *testing.T) {
 	}
 	if results := env.resultCount(t, monitorID); results != 1 {
 		t.Fatalf("results = %d, want 1", results)
+	}
+}
+
+func TestRecord_PausedStoresResultWithoutStateOrIncident(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	monitorID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
+
+	q := sqlc.New(env.pool)
+	monitor, err := q.GetMonitorForProbe(context.Background(), monitorID)
+	if err != nil {
+		t.Fatalf("load monitor: %v", err)
+	}
+	// Simulate a pause committing after the probe request was sent.
+	if _, err := env.pool.Exec(context.Background(),
+		`UPDATE monitors SET paused = true WHERE id = $1`, monitorID); err != nil {
+		t.Fatalf("pause monitor: %v", err)
+	}
+
+	scheduledFor := time.Now().UTC().Truncate(time.Second)
+	result := probe.Result{Up: false, StatusCode: http.StatusInternalServerError, LatencyMS: 1}
+	if err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	if results := env.resultCount(t, monitorID); results != 1 {
+		t.Fatalf("results = %d, want 1 stored for audit", results)
+	}
+	var status string
+	var failures int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT status, consecutive_failures FROM monitor_state WHERE monitor_id = $1`, monitorID).
+		Scan(&status, &failures); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if status != "unknown" || failures != 0 {
+		t.Fatalf("state = %s/%d, want unchanged unknown/0", status, failures)
+	}
+	var incidents int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM incidents WHERE monitor_id = $1`, monitorID).Scan(&incidents); err != nil {
+		t.Fatalf("count incidents: %v", err)
+	}
+	if incidents != 0 {
+		t.Fatalf("incidents = %d, want 0 while paused", incidents)
 	}
 }
 

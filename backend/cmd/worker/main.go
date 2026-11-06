@@ -65,6 +65,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create river client: %w", err)
 	}
+	probeWorker.SetJobInserter(client)
 	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("start river client: %w", err)
 	}

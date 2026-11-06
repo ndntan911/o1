@@ -16,6 +16,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"o1/internal/db/sqlc"
+	"o1/internal/incidents"
 	"o1/internal/jobs"
 	"o1/internal/monitors"
 	"o1/internal/probe"
@@ -29,12 +30,13 @@ const jobTimeout = 30 * time.Second
 type ProbeWorker struct {
 	river.WorkerDefaults[jobs.ProbeArgs]
 
-	pool    *pgxpool.Pool
-	q       *sqlc.Queries
-	box     *secretbox.Box
-	prober  *probe.Prober
-	limiter *rate.Limiter
-	logger  *slog.Logger
+	pool     *pgxpool.Pool
+	q        *sqlc.Queries
+	box      *secretbox.Box
+	prober   *probe.Prober
+	limiter  *rate.Limiter
+	logger   *slog.Logger
+	inserter incidents.JobInserter
 }
 
 // NewProbeWorker builds a ProbeWorker.
@@ -43,6 +45,13 @@ func NewProbeWorker(pool *pgxpool.Pool, q *sqlc.Queries, box *secretbox.Box, pro
 		logger = slog.Default()
 	}
 	return &ProbeWorker{pool: pool, q: q, box: box, prober: prober, limiter: limiter, logger: logger}
+}
+
+// SetJobInserter wires the River client used to enqueue alert jobs. The client
+// needs its workers at construction, so this is called after NewClient and
+// before Start.
+func (w *ProbeWorker) SetJobInserter(inserter incidents.JobInserter) {
+	w.inserter = inserter
 }
 
 // Timeout bounds each job run.
@@ -206,6 +215,19 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		return nil
 	}
 
+	// A pause can commit while the probe is in flight. Keep the result for
+	// audit but do not advance state or open/resolve an incident.
+	paused, err := q.GetMonitorPaused(ctx, monitor.ID)
+	if err != nil {
+		return fmt.Errorf("check monitor paused: %w", err)
+	}
+	if paused {
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit probe result: %w", err)
+		}
+		return nil
+	}
+
 	previous := state.Status
 	next := Advance(State{
 		Status:    previous,
@@ -224,6 +246,15 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		LastError:            errorText,
 	}); err != nil {
 		return fmt.Errorf("update monitor state: %w", err)
+	}
+	if err := incidents.ApplyProbeTransition(ctx, tx, q, w.inserter, incidents.Transition{
+		WorkspaceID: monitor.WorkspaceID,
+		MonitorID:   monitor.ID,
+		Previous:    previous,
+		Next:        next.Status,
+		At:          checkedAt,
+	}); err != nil {
+		return fmt.Errorf("apply incident transition: %w", err)
 	}
 	if result.ErrorClass == "ssrf_blocked" {
 		if err := w.recordSSRFEvent(ctx, q, monitor, result); err != nil {
