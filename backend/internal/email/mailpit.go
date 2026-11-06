@@ -2,7 +2,11 @@ package email
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/smtp"
 	"strings"
@@ -10,9 +14,6 @@ import (
 )
 
 const (
-	// multipartBoundary separates the alternative text/HTML body parts. It is
-	// fixed and cannot appear inside our generated bodies.
-	multipartBoundary = "o1-mail-boundary"
 	// defaultSMTPTimeout bounds one delivery when the caller supplies no
 	// deadline.
 	defaultSMTPTimeout = 30 * time.Second
@@ -41,6 +42,9 @@ func (s *MailpitSender) Send(ctx context.Context, msg Message) (err error) {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.validate(msg); err != nil {
 		return err
 	}
 	defer func() {
@@ -112,22 +116,70 @@ func (s *MailpitSender) Send(ctx context.Context, msg Message) (err error) {
 	return nil
 }
 
+// validate rejects header injection attempts before any network I/O.
+func (s *MailpitSender) validate(msg Message) error {
+	for _, field := range []string{s.from, msg.To, msg.Subject} {
+		if strings.ContainsAny(field, "\r\n") {
+			return errors.New("email: message header contains CR/LF")
+		}
+	}
+	return nil
+}
+
 // render builds the RFC 5322 message with a text/plain and a text/html
-// alternative part.
+// alternative part. Header values are defensively stripped even though Send
+// rejects CR/LF, and each message gets a fresh random boundary.
 func (s *MailpitSender) render(msg Message) []byte {
+	from := sanitizeHeader(s.from)
+	to := sanitizeHeader(msg.To)
+	subject := sanitizeHeader(msg.Subject)
+	subject = mime.QEncoding.Encode("utf-8", subject)
+	boundary := newBoundary(msg.Text, msg.HTML)
+
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", s.from)
-	fmt.Fprintf(&b, "To: %s\r\n", msg.To)
-	fmt.Fprintf(&b, "Subject: %s\r\n", msg.Subject)
+	fmt.Fprintf(&b, "From: %s\r\n", from)
+	fmt.Fprintf(&b, "To: %s\r\n", to)
+	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&b, "MIME-Version: 1.0\r\n")
-	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=%s\r\n", multipartBoundary)
+	fmt.Fprintf(&b, "Content-Type: multipart/alternative; boundary=%s\r\n", boundary)
 	fmt.Fprintf(&b, "\r\n")
-	fmt.Fprintf(&b, "--%s\r\n", multipartBoundary)
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
 	fmt.Fprintf(&b, "Content-Type: text/plain; charset=utf-8\r\n\r\n")
 	fmt.Fprintf(&b, "%s\r\n", msg.Text)
-	fmt.Fprintf(&b, "--%s\r\n", multipartBoundary)
+	fmt.Fprintf(&b, "--%s\r\n", boundary)
 	fmt.Fprintf(&b, "Content-Type: text/html; charset=utf-8\r\n\r\n")
 	fmt.Fprintf(&b, "%s\r\n", msg.HTML)
-	fmt.Fprintf(&b, "--%s--\r\n", multipartBoundary)
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
 	return []byte(b.String())
+}
+
+func sanitizeHeader(value string) string {
+	value = strings.ReplaceAll(value, "\r", "")
+	value = strings.ReplaceAll(value, "\n", "")
+	return strings.TrimSpace(value)
+}
+
+// newBoundary returns a cryptographically random boundary that does not occur
+// in either generated body part, so user-controlled text cannot terminate the
+// multipart message early.
+func newBoundary(bodies ...string) string {
+	for {
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			// crypto/rand failures are effectively unrecoverable, but keeping
+			// mail flowing is preferable to a crash in a best-effort sender.
+			return fmt.Sprintf("o1-%x", time.Now().UnixNano())
+		}
+		boundary := "o1-" + hex.EncodeToString(raw[:])
+		collides := false
+		for _, body := range bodies {
+			if strings.Contains(body, boundary) {
+				collides = true
+				break
+			}
+		}
+		if !collides {
+			return boundary
+		}
+	}
 }

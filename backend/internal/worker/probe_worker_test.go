@@ -20,7 +20,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 	"golang.org/x/time/rate"
 
@@ -363,59 +362,6 @@ func TestProcess_RollsBackAllWritesWhenAlertInsertFails(t *testing.T) {
 	if incidents != 0 || events != 0 || deliveries != 0 {
 		t.Fatalf("incidents/events/deliveries = %d/%d/%d, want all 0 after rollback",
 			incidents, events, deliveries)
-	}
-}
-
-// TestAlertJobInsertWithoutRegisteredAlertWorker is a regression test for the
-// production River configuration: the probe worker inserts jobs of kind
-// "alert", but Task 2 does not register an alert worker yet. The client must
-// therefore set SkipUnknownJobCheck.
-func TestAlertJobInsertWithoutRegisteredAlertWorker(t *testing.T) {
-	env := newWorkerEnv(t)
-	workers := river.NewWorkers()
-	river.AddWorker(workers, env.worker)
-	client, err := river.NewClient[pgx.Tx](riverpgxv5.New(env.pool), &river.Config{
-		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Workers:             workers,
-		SkipUnknownJobCheck: true,
-		Queues: map[string]river.QueueConfig{
-			"probe": {MaxWorkers: 1},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create river client: %v", err)
-	}
-
-	ctx := context.Background()
-	tx, err := env.pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin tx: %v", err)
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-	deliveryID, err := uuid.NewV7()
-	if err != nil {
-		t.Fatalf("new delivery id: %v", err)
-	}
-	if _, err := client.InsertTx(ctx, tx, jobs.AlertArgs{DeliveryID: deliveryID}, &river.InsertOpts{
-		MaxAttempts: 5,
-		Queue:       "alert",
-	}); err != nil {
-		t.Fatalf("insert alert job: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-
-	var count int
-	if err := env.pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'alert' AND args->>'delivery_id' = $1`,
-		deliveryID.String()).Scan(&count); err != nil {
-		t.Fatalf("count alert jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("alert jobs = %d, want 1", count)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"o1/internal/app"
 	"o1/internal/db/sqlc"
+	"o1/internal/email"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
 	"o1/internal/worker"
@@ -41,6 +42,12 @@ func run() error {
 	}
 	defer rt.Close()
 
+	// Only the Mailpit development sender exists today. Refuse to start in
+	// production rather than silently dropping incident alert mail.
+	if rt.Config.Env == "production" {
+		return fmt.Errorf("no production email sender configured: Resend support is not implemented yet")
+	}
+
 	box, err := secretbox.New(rt.Config.EncryptionKey)
 	if err != nil {
 		return fmt.Errorf("create secret box: %w", err)
@@ -51,20 +58,19 @@ func run() error {
 
 	q := sqlc.New(rt.Pool)
 	probeWorker := worker.NewProbeWorker(rt.Pool, q, box, prober, limiter, rt.Logger)
+	sender := email.NewMailpitSender(rt.Config.SMTPAddr, rt.Config.EmailFrom)
+	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, rt.Config, rt.Logger)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, probeWorker)
+	river.AddWorker(workers, alertWorker)
 
 	client, err := river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{
 		Logger:  rt.Logger,
 		Workers: workers,
-		// The probe worker inserts alert jobs, but the alert worker is added in
-		// Task 3. Without this flag River rejects the unregistered "alert" kind
-		// at insert time and rolls back every incident transition. Task 3 must
-		// remove this once the real alert worker is registered.
-		SkipUnknownJobCheck: true,
 		Queues: map[string]river.QueueConfig{
 			"probe": {MaxWorkers: rt.Config.WorkerConcurrency},
+			"alert": {MaxWorkers: 4},
 		},
 	})
 	if err != nil {

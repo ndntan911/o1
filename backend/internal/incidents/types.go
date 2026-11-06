@@ -28,6 +28,21 @@ type JobInserter interface {
 	InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
 }
 
+// AlertEmail carries the values needed to render one incident alert. MonitorURL
+// must already be redacted, and Recipient is the single delivery recipient.
+type AlertEmail struct {
+	WorkspaceName string
+	WorkspaceSlug string
+	MonitorName   string
+	MonitorURL    string // already redacted
+	Event         string // opened, reminder, resolved
+	Sequence      int
+	IncidentID    uuid.UUID
+	StartedAt     time.Time
+	BaseURL       string
+	Recipient     string
+}
+
 // EmailConfig is the alert channel configuration shape for email channels.
 type EmailConfig struct {
 	Recipients []string `json:"recipients"`
