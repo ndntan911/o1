@@ -14,7 +14,7 @@ import (
 )
 
 const acknowledgeIncident = `-- name: AcknowledgeIncident :exec
-UPDATE incidents SET status='acknowledged', acknowledged_at=$2, acknowledged_by=$3, updated_at=now()
+UPDATE incidents SET status='acknowledged', acknowledged_at=COALESCE($2, now()), acknowledged_by=$3, updated_at=now()
 WHERE id=$1 AND resolved_at IS NULL AND acknowledged_at IS NULL
 `
 
@@ -376,7 +376,7 @@ func (q *Queries) ListIncidentsNeedingReminder(ctx context.Context, arg ListInci
 }
 
 const resolveIncident = `-- name: ResolveIncident :exec
-UPDATE incidents SET status='resolved', resolved_at=$2, updated_at=now()
+UPDATE incidents SET status='resolved', resolved_at=COALESCE($2, now()), updated_at=now()
 WHERE id=$1 AND resolved_at IS NULL
 `
 

@@ -490,22 +490,43 @@ func TestIncidentSchema_OneActivePerMonitorAndDeliveryDedup(t *testing.T) {
 		t.Fatalf("second active incident error = %v, want pgx.ErrNoRows", err)
 	}
 
+	// Resolving the first incident must free the partial unique index for a
+	// new open incident on the same monitor. A plain UNIQUE (monitor_id) would
+	// reject this insert.
+	if err := q.ResolveIncident(ctx, sqlc.ResolveIncidentParams{
+		ID: incidentID, ResolvedAt: ptr(time.Now().UTC()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.CreateIncident(ctx, sqlc.CreateIncidentParams{
+		ID: uuid.New(), WorkspaceID: wsID, MonitorID: monitorID,
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("incident after resolution: %v", err)
+	}
+
 	channelID := uuid.New()
 	if _, err := pool.Exec(ctx, `INSERT INTO alert_channels (id, workspace_id, kind, name, config) VALUES ($1,$2,'email','Email','{"recipients":["ops@example.com"]}')`, channelID, wsID); err != nil {
 		t.Fatal(err)
 	}
 	deliveryID := uuid.New()
-	insert := func() error {
+	insert := func(id uuid.UUID, recipient string) error {
 		_, err := q.CreateAlertDelivery(ctx, sqlc.CreateAlertDeliveryParams{
-			ID: deliveryID, IncidentID: incidentID, ChannelID: channelID,
-			Event: "opened", Sequence: 0, Recipient: "ops@example.com",
+			ID: id, IncidentID: incidentID, ChannelID: channelID,
+			Event: "opened", Sequence: 0, Recipient: recipient,
 		})
 		return err
 	}
-	if err := insert(); err != nil {
+	if err := insert(deliveryID, "ops@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if err := insert(); !errors.Is(err, pgx.ErrNoRows) {
+	// Same dedup key, fresh id: this must conflict on the delivery UNIQUE
+	// constraint, not on the primary key.
+	if err := insert(uuid.New(), "ops@example.com"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("duplicate delivery error = %v, want pgx.ErrNoRows", err)
+	}
+	// Same id, different key: this exercises the primary-key conflict path.
+	if err := insert(deliveryID, "other@example.com"); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("duplicate delivery id error = %v, want pgx.ErrNoRows", err)
 	}
 }

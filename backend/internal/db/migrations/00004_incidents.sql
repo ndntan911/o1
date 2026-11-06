@@ -11,7 +11,9 @@ CREATE TABLE incidents (
   last_notified_at timestamptz,
   reminder_count integer NOT NULL DEFAULT 0 CHECK (reminder_count >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (status <> 'resolved' OR resolved_at IS NOT NULL),
+  CHECK (status <> 'acknowledged' OR acknowledged_at IS NOT NULL)
 );
 
 -- At most one unresolved incident per monitor. This is the database-level
@@ -79,7 +81,7 @@ CREATE TABLE alert_deliveries (
 CREATE INDEX alert_deliveries_incident_created_idx
   ON alert_deliveries (incident_id, created_at, id);
 CREATE INDEX alert_deliveries_pending_idx
-  ON alert_deliveries (status, created_at)
+  ON alert_deliveries (created_at)
   WHERE status = 'pending';
 
 -- +goose Down
