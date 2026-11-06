@@ -25,6 +25,8 @@ interface LatencyPoint {
 	latency: number;
 }
 
+const axisTick = { fontSize: 12, fill: 'var(--muted-foreground)' };
+
 function toPoints(results: ProbeResult[]): LatencyPoint[] {
 	return results
 		.map((result) => {
@@ -62,14 +64,18 @@ export function LatencyChart({ results }: LatencyChartProps) {
 						data={points}
 						margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
 					>
-						<XAxis dataKey="label" tick={{ fontSize: 12 }} minTickGap={24} />
-						<YAxis
-							tick={{ fontSize: 12 }}
-							width={56}
-							unit=" ms"
-							domain={[0, 'auto']}
+						<XAxis dataKey="label" tick={axisTick} minTickGap={24} />
+						<YAxis tick={axisTick} width={56} unit=" ms" domain={[0, 'auto']} />
+						<Tooltip
+							contentStyle={{
+								backgroundColor: 'var(--popover)',
+								borderColor: 'var(--border)',
+								color: 'var(--popover-foreground)',
+								borderRadius: 'var(--radius-md)',
+							}}
+							labelStyle={{ color: 'var(--popover-foreground)' }}
+							itemStyle={{ color: 'var(--popover-foreground)' }}
 						/>
-						<Tooltip />
 						<Line
 							type="monotone"
 							dataKey="latency"

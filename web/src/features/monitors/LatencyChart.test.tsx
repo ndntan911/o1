@@ -9,7 +9,12 @@ interface CapturedPoint {
 	latency: number;
 }
 
-const captured = vi.hoisted(() => ({ points: [] as CapturedPoint[] }));
+const captured = vi.hoisted(() => ({
+	points: [] as CapturedPoint[],
+	xAxis: undefined as Record<string, unknown> | undefined,
+	yAxis: undefined as Record<string, unknown> | undefined,
+	tooltip: undefined as Record<string, unknown> | undefined,
+}));
 
 vi.mock('recharts', () => ({
 	ResponsiveContainer: ({ children }: { children?: ReactNode }) => (
@@ -25,9 +30,18 @@ vi.mock('recharts', () => ({
 		captured.points = data ?? [];
 		return <div data-testid="line-chart">{children}</div>;
 	},
-	XAxis: () => null,
-	YAxis: () => null,
-	Tooltip: () => null,
+	XAxis: (props: Record<string, unknown>) => {
+		captured.xAxis = props;
+		return null;
+	},
+	YAxis: (props: Record<string, unknown>) => {
+		captured.yAxis = props;
+		return null;
+	},
+	Tooltip: (props: Record<string, unknown>) => {
+		captured.tooltip = props;
+		return null;
+	},
 	Line: () => null,
 }));
 
@@ -73,6 +87,24 @@ describe('LatencyChart', () => {
 		expect(
 			screen.getByRole('heading', { name: 'Latency' }),
 		).toBeInTheDocument();
+	});
+
+	test('uses theme tokens for axes and tooltip', () => {
+		render(<LatencyChart results={[result('one', EARLIER, 100)]} />);
+
+		expect(captured.xAxis?.tick).toEqual({
+			fontSize: 12,
+			fill: 'var(--muted-foreground)',
+		});
+		expect(captured.yAxis?.tick).toEqual({
+			fontSize: 12,
+			fill: 'var(--muted-foreground)',
+		});
+		expect(captured.tooltip?.contentStyle).toMatchObject({
+			backgroundColor: 'var(--popover)',
+			borderColor: 'var(--border)',
+			color: 'var(--popover-foreground)',
+		});
 	});
 
 	test('shows an empty state when there are no points', () => {
