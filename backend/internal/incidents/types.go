@@ -57,6 +57,8 @@ type AlertChannel struct {
 	Name       string    `json:"name"`
 	Enabled    bool      `json:"enabled"`
 	Recipients []string  `json:"recipients"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // MonitorAlertState is a monitor's per-channel alert switch. Available is

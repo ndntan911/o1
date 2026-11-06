@@ -480,6 +480,8 @@ func alertChannelFromRow(row sqlc.AlertChannel) (AlertChannel, error) {
 		Name:       row.Name,
 		Enabled:    row.Enabled,
 		Recipients: cfg.Recipients,
+		CreatedAt:  row.CreatedAt,
+		UpdatedAt:  row.UpdatedAt,
 	}, nil
 }
 

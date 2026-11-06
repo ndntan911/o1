@@ -316,11 +316,13 @@ func monitorAlertChannelPath(workspaceID, monitorID uuid.UUID) string {
 }
 
 type alertChannelJSON struct {
-	ID         string   `json:"id"`
-	Kind       string   `json:"kind"`
-	Name       string   `json:"name"`
-	Enabled    bool     `json:"enabled"`
-	Recipients []string `json:"recipients"`
+	ID         string    `json:"id"`
+	Kind       string    `json:"kind"`
+	Name       string    `json:"name"`
+	Enabled    bool      `json:"enabled"`
+	Recipients []string  `json:"recipients"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type alertChannelListJSON struct {
@@ -577,6 +579,23 @@ func TestAlertChannelHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("put requires an admin role", func(t *testing.T) {
+		body := alertChannelPutJSON{
+			Recipients: []string{"ops@example.com"},
+			Enabled:    true,
+		}
+		resp, data := env.doJSON(member, http.MethodPut, alertChannelPath(wsID, "/email"), body)
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, data); got.Code != "forbidden" {
+			t.Fatalf("member problem = %+v", got)
+		}
+		resp, data = env.doJSON(viewer, http.MethodPut, alertChannelPath(wsID, "/email"), body)
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, data); got.Code != "forbidden" {
+			t.Fatalf("viewer problem = %+v", got)
+		}
+	})
+
 	t.Run("put normalizes dedupes and attaches every monitor", func(t *testing.T) {
 		resp, _ := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
 			Recipients: []string{"  Ops@Example.com ", "ops@example.com", "dev@example.com"},
@@ -596,6 +615,9 @@ func TestAlertChannelHandlers(t *testing.T) {
 		channel := list.Channels[0]
 		if channel.Kind != "email" || channel.Name != "Email" || !channel.Enabled {
 			t.Fatalf("channel = %+v", channel)
+		}
+		if channel.CreatedAt.IsZero() || channel.UpdatedAt.IsZero() {
+			t.Fatalf("channel timestamps = %+v, want created_at and updated_at", channel)
 		}
 		want := []string{"ops@example.com", "dev@example.com"}
 		if len(channel.Recipients) != len(want) {
@@ -651,6 +673,17 @@ func TestAlertChannelHandlers(t *testing.T) {
 				}
 			})
 		}
+
+		t.Run("missing enabled is rejected", func(t *testing.T) {
+			resp, body := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), map[string]any{
+				"recipients": []string{"ops@example.com"},
+			})
+			requireIncidentStatus(t, resp, http.StatusBadRequest)
+			problem := incidentProblem(t, body)
+			if problem.Code != "validation_error" || problem.Fields["enabled"] == "" {
+				t.Fatalf("problem = %+v, want enabled validation error", problem)
+			}
+		})
 
 		resp, _ := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
 			Recipients: []string{},
@@ -772,6 +805,38 @@ func TestMonitorAlertHandlers(t *testing.T) {
 		state = decodeIncidentJSON[monitorAlertChannelJSON](t, body)
 		if !state.Enabled {
 			t.Fatalf("state after enable = %+v", state)
+		}
+	})
+
+	t.Run("put preserves an explicitly disabled monitor", func(t *testing.T) {
+		resp, _ := env.doJSON(member, http.MethodPatch, monitorAlertChannelPath(wsID, monitorID), map[string]bool{"enabled": false})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+
+		resp, _ = env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
+			Recipients: []string{"ops@example.com", "oncall@example.com"},
+			Enabled:    true,
+		})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+
+		resp, body := env.do(member, http.MethodGet, monitorAlertChannelPath(wsID, monitorID))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		state := decodeIncidentJSON[monitorAlertChannelJSON](t, body)
+		if !state.Available || !state.ChannelEnabled || state.Enabled {
+			t.Fatalf("state after channel update = %+v, want available, channel enabled, monitor disabled", state)
+		}
+
+		var enabled bool
+		if err := env.pool.QueryRow(ctx, `
+			SELECT mac.enabled
+			FROM monitor_alert_channels mac
+			JOIN alert_channels c ON c.id = mac.channel_id
+			WHERE mac.monitor_id = $1 AND c.workspace_id = $2
+			  AND c.kind = 'email' AND c.name = 'Email'`,
+			monitorID, wsID).Scan(&enabled); err != nil {
+			t.Fatalf("load join row: %v", err)
+		}
+		if enabled {
+			t.Fatal("join row enabled = true after channel update, want false")
 		}
 	})
 

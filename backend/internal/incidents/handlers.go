@@ -31,7 +31,7 @@ type alertChannelListResponse struct {
 // alertChannelPutRequest is the PUT /alert-channels/email body.
 type alertChannelPutRequest struct {
 	Recipients []string `json:"recipients"`
-	Enabled    bool     `json:"enabled"`
+	Enabled    *bool    `json:"enabled"`
 }
 
 // monitorAlertRequest is the PATCH /monitors/{monitorID}/alert-channel body.
@@ -182,7 +182,11 @@ func PutEmailChannelHandler(svc *Service) http.HandlerFunc {
 		if !decodeIncidentBody(w, r, &in) {
 			return
 		}
-		if _, err := svc.PutEmailChannel(r.Context(), principal.UserID, workspaceID, in.Recipients, in.Enabled); err != nil {
+		if in.Enabled == nil {
+			incidentFieldsProblem(w, map[string]string{"enabled": "enabled is required"})
+			return
+		}
+		if _, err := svc.PutEmailChannel(r.Context(), principal.UserID, workspaceID, in.Recipients, *in.Enabled); err != nil {
 			incidentServiceError(w, err)
 			return
 		}
