@@ -5,6 +5,27 @@
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>o1</title>
+		<script>
+			(function () {
+				try {
+					var key = 'o1-theme';
+					var valid = ['light', 'dark', 'system'];
+					var stored = localStorage.getItem(key);
+					if (stored !== null && valid.indexOf(stored) === -1) {
+						localStorage.removeItem(key);
+						stored = null;
+					}
+					var dark =
+						stored === 'dark' ||
+						(stored !== 'light' &&
+							window.matchMedia('(prefers-color-scheme: dark)').matches);
+					document.documentElement.classList.toggle('dark', dark);
+					document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+				} catch (error) {
+					// localStorage can be unavailable; fall back to the light tokens.
+				}
+			})();
+		</script>
 	</head>
 	<body>
 		<div id="root"></div>
