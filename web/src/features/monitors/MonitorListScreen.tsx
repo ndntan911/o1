@@ -39,6 +39,12 @@ import {
 } from './hooks';
 import { statusLabel, statusVariant } from './status';
 
+const PAGE_PROBLEM_CODES = new Set([
+	'quota_exceeded',
+	'monitor_rate_limited',
+	'workspace_suspended',
+]);
+
 const DESKTOP_QUERY = '(min-width: 768px)';
 
 function useIsDesktop(): boolean {
@@ -193,10 +199,14 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 	}, [monitors, search]);
 
 	const canManage = canManageMonitors(workspace.role);
-	const mutationProblem = problem;
 	const listProblem = monitorsQuery.isError
 		? problemFromError(monitorsQuery.error)
 		: null;
+	const listPageProblem =
+		listProblem && PAGE_PROBLEM_CODES.has(listProblem.code)
+			? listProblem
+			: null;
+	const mutationProblem = problem ?? listPageProblem;
 
 	function handleProblem(error: unknown) {
 		setProblem(problemFromError(error));
@@ -236,11 +246,13 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 			{monitorsQuery.isPending ? (
 				<PageSkeleton />
 			) : monitorsQuery.isError && monitors.length === 0 ? (
-				<ErrorPanel
-					message={errorMessage(monitorsQuery.error)}
-					problem={listProblem ?? undefined}
-					onRetry={() => void monitorsQuery.refetch()}
-				/>
+				listPageProblem ? null : (
+					<ErrorPanel
+						message={errorMessage(monitorsQuery.error)}
+						problem={listProblem ?? undefined}
+						onRetry={() => void monitorsQuery.refetch()}
+					/>
+				)
 			) : monitors.length === 0 ? (
 				<EmptyState
 					title="No monitors yet"

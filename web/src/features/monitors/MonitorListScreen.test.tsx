@@ -103,13 +103,14 @@ function makeMonitor(overrides: Partial<Monitor> = {}): Monitor {
 const listPath = `${ORIGIN}/api/v1/workspaces/${workspace.id}/monitors`;
 const monitorPath = (id = 'm1') => `${listPath}/${id}`;
 
-function problem(code: string, status: number, title: string) {
+function problem(code: string, status: number, title: string, detail?: string) {
 	return HttpResponse.json(
 		{
 			type: 'about:blank',
 			title,
 			status,
 			code,
+			...(detail ? { detail } : {}),
 		},
 		{
 			status,
@@ -458,6 +459,45 @@ describe('MonitorListScreen', () => {
 		expect(screen.getAllByRole('link', { name: 'New monitor' })).toHaveLength(
 			1,
 		);
+	});
+
+	test.each([
+		['workspace_suspended', 403, 'Workspace suspended'],
+		['quota_exceeded', 409, 'Monitor quota reached'],
+		['monitor_rate_limited', 429, 'Too many monitors created'],
+	] as const)(
+		'a %s list error shows the specific page-level alert',
+		async (code, status, title) => {
+			const detail = `${title} detail`;
+			server.use(
+				http.get(listPath, () => problem(code, status, title, detail)),
+			);
+
+			renderWithProviders(<MonitorListScreen workspace={workspace} />);
+
+			const alert = await screen.findByRole('alert');
+			expect(within(alert).getByText(title)).toBeInTheDocument();
+			expect(within(alert).getByText(detail)).toBeInTheDocument();
+			expect(within(alert).getByText(`Code: ${code}`)).toBeInTheDocument();
+			expect(
+				screen.queryByRole('button', { name: 'Try again' }),
+			).not.toBeInTheDocument();
+		},
+	);
+
+	test('a non-page list error shows the generic retry panel', async () => {
+		server.use(
+			http.get(listPath, () =>
+				problem('internal_error', 500, 'Internal Server Error'),
+			),
+		);
+
+		renderWithProviders(<MonitorListScreen workspace={workspace} />);
+
+		expect(await screen.findByText('Code: internal_error')).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Try again' }),
+		).toBeInTheDocument();
 	});
 
 	test('a failed background refetch keeps stale rows and shows a retry banner', async () => {

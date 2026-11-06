@@ -2021,8 +2021,8 @@ export function buildUpdatePayload(
 
 `defaultMonitorValues()` returns
 `{ name: '', url: '', method: 'GET', expected_status: '2xx',
-interval_seconds: 300, timeout_seconds: 10, confirmation_threshold: 1,
-recovery_threshold: 1, headers: [], body: '', content_type: '' }`. The backend
+interval_seconds: 60, timeout_seconds: 10, confirmation_threshold: 2,
+recovery_threshold: 2, headers: [], body: '', content_type: '' }`. The backend
 rejects zero intervals, timeouts, and thresholds, so these defaults are
 required for a valid create.
 

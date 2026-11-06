@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import { ErrorPanel } from '@/components/feedback/ErrorPanel';
 import { PageSkeleton } from '@/components/feedback/Skeletons';
 import { isApiProblem } from '@/lib/api/client';
+import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
 import type { Monitor, Workspace } from '@/lib/api/types';
 import {
@@ -78,6 +79,9 @@ export function MonitorEditScreen({
 							? (monitorQuery.error.problem.detail ??
 								monitorQuery.error.problem.title)
 							: 'Please try again.'
+				}
+				problem={
+					monitorQuery.error ? problemFromError(monitorQuery.error) : undefined
 				}
 				onRetry={notFound ? undefined : () => void monitorQuery.refetch()}
 			/>

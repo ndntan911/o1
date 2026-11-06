@@ -148,6 +148,21 @@ describe('MembersScreen', () => {
 		expect(calls).toEqual([{ email: 'new@example.com', role: 'member' }]);
 	});
 
+	test('a failed member load shows the problem code and retry action', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/workspaces/${workspace.id}/members`, () =>
+				problem('internal_error', 500, 'Could not load members'),
+			),
+		);
+
+		renderWithProviders(<MembersScreen workspace={workspace} />);
+
+		expect(await screen.findByText('Code: internal_error')).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Try again' }),
+		).toBeInTheDocument();
+	});
+
 	test('a 404 not_found shows No account with that email', async () => {
 		server.use(
 			membersHandler(),

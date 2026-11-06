@@ -222,6 +222,23 @@ describe('MonitorEditScreen', () => {
 		expect(harness.navigate).not.toHaveBeenCalled();
 	});
 
+	test('a failed monitor load shows the problem code and retry action', async () => {
+		server.use(
+			http.get(monitorPath, () =>
+				problem('internal_error', 500, 'Could not load monitor'),
+			),
+		);
+
+		renderWithProviders(
+			<MonitorEditScreen workspace={workspace} monitorId={monitor.id} />,
+		);
+
+		expect(await screen.findByText('Code: internal_error')).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Try again' }),
+		).toBeInTheDocument();
+	});
+
 	test('shows a page-level alert for quota errors', async () => {
 		server.use(
 			http.get(monitorPath, () => HttpResponse.json(monitor)),

@@ -13,6 +13,7 @@ import {
 	TableRow,
 } from '@/components/ui/table';
 import { isApiProblem } from '@/lib/api/client';
+import { problemFromError } from '@/lib/api/problem-from-error';
 import type { Role, Workspace } from '@/lib/api/types';
 import { assignableRoles } from '@/lib/roles';
 import { AddMemberDialog, type AssignableRole } from './AddMemberDialog';
@@ -60,6 +61,7 @@ export function MembersScreen({ workspace }: MembersScreenProps) {
 			) : members.isError ? (
 				<ErrorPanel
 					message={errorMessage(members.error)}
+					problem={problemFromError(members.error)}
 					onRetry={() => void members.refetch()}
 				/>
 			) : members.data.length === 0 ? (
