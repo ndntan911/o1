@@ -326,6 +326,14 @@ const adminWorkspacesRoute = createRoute({
 	component: AdminWorkspacesScreen,
 });
 
+const adminIndexRoute = createRoute({
+	getParentRoute: () => adminRoute,
+	path: '/',
+	beforeLoad: () => {
+		throw redirect({ to: '/admin/workspaces' });
+	},
+});
+
 const adminMonitorsRoute = createRoute({
 	getParentRoute: () => adminRoute,
 	path: '/monitors',
@@ -357,6 +365,7 @@ export const routeTree = rootRoute.addChildren([
 			membersRoute,
 		]),
 		adminRoute.addChildren([
+			adminIndexRoute,
 			adminWorkspacesRoute,
 			adminMonitorsRoute,
 			adminSecurityEventsRoute,

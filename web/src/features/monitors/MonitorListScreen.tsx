@@ -26,6 +26,7 @@ import {
 	TableRow,
 } from '@/components/ui/table';
 import { isApiProblem } from '@/lib/api/client';
+import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
 import type { Monitor, Workspace } from '@/lib/api/types';
 import { formatLatency, formatRelativeTime, formatUptime } from '@/lib/format';
@@ -37,12 +38,6 @@ import {
 	useResumeMonitor,
 } from './hooks';
 import { statusLabel, statusVariant } from './status';
-
-const PAGE_PROBLEM_CODES = new Set([
-	'quota_exceeded',
-	'monitor_rate_limited',
-	'workspace_suspended',
-]);
 
 const DESKTOP_QUERY = '(min-width: 768px)';
 
@@ -60,11 +55,6 @@ function useIsDesktop(): boolean {
 	}, []);
 
 	return isDesktop;
-}
-
-function pageProblem(error: unknown): ApiProblem | null {
-	if (!isApiProblem(error)) return null;
-	return PAGE_PROBLEM_CODES.has(error.problem.code) ? error.problem : null;
 }
 
 function errorMessage(error: unknown): string {
@@ -88,20 +78,39 @@ interface MonitorActionsProps {
 	workspace: Workspace;
 	monitor: Monitor;
 	onProblem: (error: unknown) => void;
+	onClearProblem: () => void;
 }
 
 function MonitorActions({
 	workspace,
 	monitor,
 	onProblem,
+	onClearProblem,
 }: MonitorActionsProps) {
 	const [confirmOpen, setConfirmOpen] = useState(false);
+	const [deleteProblem, setDeleteProblem] = useState<ApiProblem | null>(null);
 	const pause = usePauseMonitor(workspace.id, monitor.id);
 	const resume = useResumeMonitor(workspace.id, monitor.id);
 	const remove = useDeleteMonitor(workspace.id, monitor.id, workspace.slug);
 	const paused = monitor.paused || monitor.status === 'paused';
 	const mutation = paused ? resume : pause;
 	const busy = pause.isPending || resume.isPending;
+
+	function runPauseResume() {
+		onClearProblem();
+		mutation.mutate(undefined, {
+			onError: onProblem,
+			onSuccess: onClearProblem,
+		});
+	}
+
+	function runDelete() {
+		setDeleteProblem(null);
+		remove.mutate(undefined, {
+			onError: (error) => setDeleteProblem(problemFromError(error)),
+			onSuccess: () => setDeleteProblem(null),
+		});
+	}
 
 	return (
 		<div className="flex items-center justify-end gap-1">
@@ -122,7 +131,7 @@ function MonitorActions({
 						size="icon-sm"
 						aria-label={`${paused ? 'Resume' : 'Pause'} ${monitor.name}`}
 						disabled={busy}
-						onClick={() => mutation.mutate(undefined, { onError: onProblem })}
+						onClick={runPauseResume}
 					>
 						{paused ? <PlayIcon aria-hidden /> : <PauseIcon aria-hidden />}
 					</Button>
@@ -132,7 +141,10 @@ function MonitorActions({
 						size="icon-sm"
 						aria-label={`Delete ${monitor.name}`}
 						disabled={remove.isPending}
-						onClick={() => setConfirmOpen(true)}
+						onClick={() => {
+							setDeleteProblem(null);
+							setConfirmOpen(true);
+						}}
 					>
 						<Trash2Icon aria-hidden />
 					</Button>
@@ -142,8 +154,12 @@ function MonitorActions({
 						description="This permanently deletes the monitor and its results."
 						confirmLabel="Delete monitor"
 						pending={remove.isPending}
-						onConfirm={() => remove.mutate(undefined, { onError: onProblem })}
-						onOpenChange={setConfirmOpen}
+						problem={deleteProblem}
+						onConfirm={runDelete}
+						onOpenChange={(open) => {
+							setConfirmOpen(open);
+							if (!open) setDeleteProblem(null);
+						}}
 					/>
 				</>
 			) : null}
@@ -177,12 +193,13 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 	}, [monitors, search]);
 
 	const canManage = canManageMonitors(workspace.role);
-	const mutationProblem = problem ?? pageProblem(monitorsQuery.error);
-	const listProblem = pageProblem(monitorsQuery.error);
+	const mutationProblem = problem;
+	const listProblem = monitorsQuery.isError
+		? problemFromError(monitorsQuery.error)
+		: null;
 
 	function handleProblem(error: unknown) {
-		const next = pageProblem(error);
-		if (next) setProblem(next);
+		setProblem(problemFromError(error));
 	}
 
 	return (
@@ -219,12 +236,11 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 			{monitorsQuery.isPending ? (
 				<PageSkeleton />
 			) : monitorsQuery.isError && monitors.length === 0 ? (
-				listProblem ? null : (
-					<ErrorPanel
-						message={errorMessage(monitorsQuery.error)}
-						onRetry={() => void monitorsQuery.refetch()}
-					/>
-				)
+				<ErrorPanel
+					message={errorMessage(monitorsQuery.error)}
+					problem={listProblem ?? undefined}
+					onRetry={() => void monitorsQuery.refetch()}
+				/>
 			) : monitors.length === 0 ? (
 				<EmptyState
 					title="No monitors yet"
@@ -304,6 +320,7 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 												workspace={workspace}
 												monitor={monitor}
 												onProblem={handleProblem}
+												onClearProblem={() => setProblem(null)}
 											/>
 										</TableCell>
 									</TableRow>
@@ -347,6 +364,7 @@ export function MonitorListScreen({ workspace }: MonitorListScreenProps) {
 											workspace={workspace}
 											monitor={monitor}
 											onProblem={handleProblem}
+											onClearProblem={() => setProblem(null)}
 										/>
 									</CardFooter>
 								</Card>

@@ -4,7 +4,13 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { server } from '@/test/msw/server';
-import { renderWithProviders } from '@/test/render';
+import { createTestQueryClient, renderWithProviders } from '@/test/render';
+import { queryKeys } from '@/lib/query/keys';
+import {
+	getWorkspaceSuspended,
+	markWorkspaceSuspended,
+	resetWorkspaceStatusForTests,
+} from '@/lib/workspace-status';
 import { LoginScreen } from './LoginScreen';
 
 const ORIGIN = 'http://localhost:5173';
@@ -48,6 +54,7 @@ function problem(code: string, status: number, detail: string) {
 describe('LoginScreen', () => {
 	beforeEach(() => {
 		navigate.mockReset();
+		resetWorkspaceStatusForTests();
 	});
 
 	test('shows a validation error and makes no request for a malformed email', async () => {
@@ -102,6 +109,44 @@ describe('LoginScreen', () => {
 				password: 'correct horse battery staple',
 			},
 		]);
+	});
+
+	test('a successful login drops cached non-me queries and clears suspension', async () => {
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login`, () =>
+				HttpResponse.json({
+					user: { id: 'u2', email: 'bob@example.com' },
+				}),
+			),
+		);
+		const queryClient = createTestQueryClient();
+		const staleMonitorsKey = queryKeys.monitors('w1');
+		const meKey = queryKeys.me;
+		const meData = {
+			user: { id: 'u1', email: 'alice@example.com', is_admin: false },
+			workspaces: [],
+		};
+		queryClient.setQueryData(staleMonitorsKey, {
+			pages: [],
+			pageParams: [],
+		});
+		queryClient.setQueryData(meKey, meData);
+		markWorkspaceSuspended();
+		const user = userEvent.setup();
+
+		renderWithProviders(<LoginScreen redirectTo="/" />, { queryClient });
+
+		await user.type(screen.getByLabelText('Email'), 'bob@example.com');
+		await user.type(
+			screen.getByLabelText('Password'),
+			'correct horse battery staple',
+		);
+		await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+		expect(queryClient.getQueryData(staleMonitorsKey)).toBeUndefined();
+		expect(queryClient.getQueryData(meKey)).toEqual(meData);
+		expect(getWorkspaceSuspended()).toBe(false);
 	});
 
 	test('maps invalid credentials to a specific message', async () => {

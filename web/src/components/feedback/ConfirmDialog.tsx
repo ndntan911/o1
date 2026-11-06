@@ -1,3 +1,4 @@
+import { ProblemAlert } from '@/components/feedback/ProblemAlert';
 import { Button } from '@/components/ui/button';
 import {
 	Dialog,
@@ -7,6 +8,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from '@/components/ui/dialog';
+import type { ApiProblem } from '@/lib/api/problems';
 
 export interface ConfirmDialogProps {
 	open: boolean;
@@ -14,6 +16,7 @@ export interface ConfirmDialogProps {
 	description?: string;
 	confirmLabel: string;
 	pending?: boolean;
+	problem?: ApiProblem | null;
 	onConfirm: () => void;
 	onOpenChange: (open: boolean) => void;
 }
@@ -24,6 +27,7 @@ export function ConfirmDialog({
 	description,
 	confirmLabel,
 	pending = false,
+	problem,
 	onConfirm,
 	onOpenChange,
 }: ConfirmDialogProps) {
@@ -36,6 +40,7 @@ export function ConfirmDialog({
 						<DialogDescription>{description}</DialogDescription>
 					) : null}
 				</DialogHeader>
+				{problem ? <ProblemAlert problem={problem} /> : null}
 				<DialogFooter>
 					<Button
 						type="button"

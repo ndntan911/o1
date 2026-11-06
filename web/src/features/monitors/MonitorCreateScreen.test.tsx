@@ -63,10 +63,10 @@ const created: Monitor = {
 	has_body: false,
 	content_type: null,
 	expected_status: '2xx',
-	interval_seconds: 300,
+	interval_seconds: 60,
 	timeout_seconds: 10,
-	confirmation_threshold: 1,
-	recovery_threshold: 1,
+	confirmation_threshold: 2,
+	recovery_threshold: 2,
 	paused: false,
 	status: 'unknown',
 	last_check: null,
@@ -110,10 +110,10 @@ describe('MonitorCreateScreen', () => {
 			method: 'GET',
 			headers: {},
 			expected_status: '2xx',
-			interval_seconds: 300,
+			interval_seconds: 60,
 			timeout_seconds: 10,
-			confirmation_threshold: 1,
-			recovery_threshold: 1,
+			confirmation_threshold: 2,
+			recovery_threshold: 2,
 		});
 		expect(creates[0]).not.toHaveProperty('body');
 		expect(creates[0]).not.toHaveProperty('content_type');

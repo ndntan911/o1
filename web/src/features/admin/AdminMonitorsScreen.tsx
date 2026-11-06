@@ -15,6 +15,7 @@ import {
 	TableRow,
 } from '@/components/ui/table';
 import { isApiProblem } from '@/lib/api/client';
+import { problemFromError } from '@/lib/api/problem-from-error';
 import type { AdminMonitorFilters } from '@/lib/api/types';
 import { formatLatency, formatRelativeTime } from '@/lib/format';
 import { statusLabel, statusVariant } from '@/features/monitors/status';
@@ -71,6 +72,7 @@ export function AdminMonitorsScreen() {
 			) : monitorsQuery.isError && monitors.length === 0 ? (
 				<ErrorPanel
 					message={errorMessage(monitorsQuery.error)}
+					problem={problemFromError(monitorsQuery.error)}
 					onRetry={() => void monitorsQuery.refetch()}
 				/>
 			) : monitors.length === 0 ? (

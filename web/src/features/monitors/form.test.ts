@@ -37,10 +37,10 @@ describe('defaultMonitorValues', () => {
 			url: '',
 			method: 'GET',
 			expected_status: '2xx',
-			interval_seconds: 300,
+			interval_seconds: 60,
 			timeout_seconds: 10,
-			confirmation_threshold: 1,
-			recovery_threshold: 1,
+			confirmation_threshold: 2,
+			recovery_threshold: 2,
 			headers: [],
 			body: '',
 			content_type: '',
@@ -107,10 +107,10 @@ describe('buildCreatePayload', () => {
 			body: '{"ping":true}',
 			content_type: 'application/json',
 			expected_status: '2xx',
-			interval_seconds: 300,
+			interval_seconds: 60,
 			timeout_seconds: 10,
-			confirmation_threshold: 1,
-			recovery_threshold: 1,
+			confirmation_threshold: 2,
+			recovery_threshold: 2,
 		});
 	});
 

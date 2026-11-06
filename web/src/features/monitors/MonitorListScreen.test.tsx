@@ -311,6 +311,7 @@ describe('MonitorListScreen', () => {
 		expect(await screen.findByText('Paused')).toBeInTheDocument();
 		expect(await screen.findByText('Up')).toBeInTheDocument();
 		expect(screen.queryByText('Paused')).not.toBeInTheDocument();
+		expect(screen.getByText('Code: forbidden')).toBeInTheDocument();
 	});
 
 	test('resume optimistically clears paused, calls POST /resume, and refetches', async () => {
@@ -402,6 +403,30 @@ describe('MonitorListScreen', () => {
 			to: '/w/$workspaceSlug/monitors',
 			params: { workspaceSlug: workspace.slug },
 		});
+	});
+
+	test('a failed delete keeps the dialog open and shows the error', async () => {
+		server.use(
+			listHandler({ monitors: [makeMonitor()] }),
+			http.delete(monitorPath(), () =>
+				problem('internal_error', 500, 'Internal Server Error'),
+			),
+		);
+		const user = userEvent.setup();
+
+		renderWithProviders(<MonitorListScreen workspace={workspace} />);
+		await screen.findByText('API');
+
+		await user.click(screen.getByRole('button', { name: 'Delete API' }));
+		await user.click(screen.getByRole('button', { name: 'Delete monitor' }));
+
+		const dialog = await screen.findByRole('dialog');
+		expect(
+			within(dialog).getByRole('heading', { name: 'Delete API?' }),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).getByText('Code: internal_error'),
+		).toBeInTheDocument();
 	});
 
 	test('a viewer sees no New monitor, pause, or delete controls', async () => {

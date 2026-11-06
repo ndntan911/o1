@@ -12,6 +12,7 @@ import { isApiProblem } from '@/lib/api/client';
 import type { ApiProblem } from '@/lib/api/problems';
 import { applyProblemToForm } from '@/lib/forms';
 import { queryKeys } from '@/lib/query/keys';
+import { clearWorkspaceSuspended } from '@/lib/workspace-status';
 import { login, resendVerification } from './api';
 import { safeRedirect } from './guards';
 import { loginSchema, type LoginValues } from './schemas';
@@ -47,6 +48,14 @@ export function LoginScreen({ redirectTo }: LoginScreenProps) {
 		setResendState('idle');
 		try {
 			await login(values);
+			// A session-expiry logout only evicts `me`, so remove every other
+			// cached query before showing the new session. Otherwise a fresh
+			// non-`me` request can briefly display user A's data to user B in
+			// the same tab.
+			queryClient.removeQueries({
+				predicate: (query) => query.queryKey[0] !== 'me',
+			});
+			clearWorkspaceSuspended();
 			await queryClient.invalidateQueries({ queryKey: queryKeys.me });
 			await navigate({ to: safeRedirect(redirectTo) });
 		} catch (error) {

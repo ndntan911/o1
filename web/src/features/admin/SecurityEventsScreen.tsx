@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { isApiProblem } from '@/lib/api/client';
+import { problemFromError } from '@/lib/api/problem-from-error';
 import type { SecurityEventFilters } from '@/lib/api/types';
 import { formatRelativeTime } from '@/lib/format';
 import { SECURITY_EVENT_KINDS } from './api';
@@ -70,6 +71,7 @@ export function SecurityEventsScreen() {
 			) : eventsQuery.isError && events.length === 0 ? (
 				<ErrorPanel
 					message={errorMessage(eventsQuery.error)}
+					problem={problemFromError(eventsQuery.error)}
 					onRetry={() => void eventsQuery.refetch()}
 				/>
 			) : events.length === 0 ? (

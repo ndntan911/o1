@@ -1,32 +1,19 @@
-# React + TypeScript + Vite
+# o1 dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The React dashboard for o1. See the [root README](../README.md) for the project
+overview, architecture, configuration, and backend setup.
 
-Currently, two official plugins are available:
+## Commands
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Run these from `web/`:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm run dev          # start Vite against the Compose API
+npm test -- --run    # run the unit and component tests once
+npm run lint         # ESLint
+npm run typecheck    # TypeScript project references and e2e config
+npm run build        # typecheck and production build
+npm run e2e          # Playwright smoke tests (requires the Compose stack)
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+`npm run format` and `npm run format:check` run Prettier.

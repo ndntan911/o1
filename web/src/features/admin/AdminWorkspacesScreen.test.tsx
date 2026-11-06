@@ -210,4 +210,45 @@ describe('AdminWorkspacesScreen', () => {
 
 		await waitFor(() => expect(recorded.unsuspends).toEqual(['w2']));
 	});
+
+	test('a failed unsuspend keeps the dialog open and shows the error', async () => {
+		const user = userEvent.setup();
+		setupHandlers();
+		server.use(
+			http.post(`${ORIGIN}/api/v1/admin/workspaces/:id/unsuspend`, () =>
+				HttpResponse.json(
+					{
+						type: 'about:blank',
+						title: 'Internal Server Error',
+						status: 500,
+						code: 'internal_error',
+					},
+					{
+						status: 500,
+						headers: { 'Content-Type': 'application/problem+json' },
+					},
+				),
+			),
+		);
+
+		renderWithProviders(<AdminWorkspacesScreen />);
+		const suspendedRow = await screen.findByRole('row', {
+			name: /Beta Status/,
+		});
+
+		await user.click(
+			within(suspendedRow).getByRole('button', { name: 'Unsuspend' }),
+		);
+		await user.click(
+			screen.getByRole('button', { name: 'Unsuspend workspace' }),
+		);
+
+		const dialog = await screen.findByRole('dialog');
+		expect(
+			within(dialog).getByRole('heading', { name: 'Unsuspend Beta Status?' }),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).getByText('Code: internal_error'),
+		).toBeInTheDocument();
+	});
 });

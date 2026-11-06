@@ -1,6 +1,6 @@
 import type { AnchorHTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { server } from '@/test/msw/server';
@@ -316,8 +316,36 @@ describe('MonitorDetailScreen', () => {
 		});
 	});
 
+	test('a failed delete keeps the dialog open and shows the error', async () => {
+		useMonitorHandlers();
+		server.use(
+			http.delete(monitorPath, () =>
+				problem('internal_error', 500, 'Internal Server Error'),
+			),
+		);
+		const user = userEvent.setup();
+
+		renderWithProviders(
+			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
+		);
+		await screen.findByRole('heading', { name: 'API' });
+
+		await user.click(screen.getByRole('button', { name: 'Delete' }));
+		await user.click(screen.getByRole('button', { name: 'Delete monitor' }));
+
+		const dialog = await screen.findByRole('dialog');
+		expect(
+			within(dialog).getByRole('heading', { name: 'Delete API?' }),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).getByText('Code: internal_error'),
+		).toBeInTheDocument();
+		expect(harness.navigate).not.toHaveBeenCalled();
+	});
+
 	test('a 5xx monitor error offers a retry', async () => {
 		let fail = true;
+		useMonitorHandlers();
 		server.use(
 			http.get(monitorPath, () =>
 				fail

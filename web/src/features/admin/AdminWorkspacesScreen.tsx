@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { ConfirmDialog } from '@/components/feedback/ConfirmDialog';
 import { EmptyState } from '@/components/feedback/EmptyState';
 import { ErrorPanel } from '@/components/feedback/ErrorPanel';
-import { ProblemAlert } from '@/components/feedback/ProblemAlert';
 import { PageSkeleton } from '@/components/feedback/Skeletons';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -17,6 +16,7 @@ import {
 	TableRow,
 } from '@/components/ui/table';
 import { isApiProblem } from '@/lib/api/client';
+import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
 import type { AdminWorkspace, AdminWorkspaceFilters } from '@/lib/api/types';
 import { useAdminWorkspaces, useUnsuspendWorkspace } from './hooks';
@@ -39,17 +39,6 @@ function errorMessage(error: unknown): string {
 	return 'Please try again.';
 }
 
-function unexpectedProblem(error: unknown): ApiProblem {
-	if (isApiProblem(error)) return error.problem;
-	return {
-		type: 'about:blank',
-		title: 'Something went wrong',
-		status: 0,
-		code: 'internal_error',
-		detail: 'Please try again.',
-	};
-}
-
 export function AdminWorkspacesScreen() {
 	const [search, setSearch] = useState('');
 	const debouncedSearch = useDebouncedValue(search.trim(), 300);
@@ -60,7 +49,9 @@ export function AdminWorkspacesScreen() {
 	const [unsuspendTarget, setUnsuspendTarget] = useState<AdminWorkspace | null>(
 		null,
 	);
-	const [problem, setProblem] = useState<ApiProblem | null>(null);
+	const [unsuspendProblem, setUnsuspendProblem] = useState<ApiProblem | null>(
+		null,
+	);
 
 	const filters: AdminWorkspaceFilters = {
 		query: debouncedSearch,
@@ -76,7 +67,7 @@ export function AdminWorkspacesScreen() {
 	);
 
 	function handleProblem(error: unknown) {
-		setProblem(unexpectedProblem(error));
+		setUnsuspendProblem(problemFromError(error));
 	}
 
 	return (
@@ -109,13 +100,12 @@ export function AdminWorkspacesScreen() {
 				</div>
 			</div>
 
-			{problem ? <ProblemAlert problem={problem} /> : null}
-
 			{workspacesQuery.isPending ? (
 				<PageSkeleton />
 			) : workspacesQuery.isError && workspaces.length === 0 ? (
 				<ErrorPanel
 					message={errorMessage(workspacesQuery.error)}
+					problem={problemFromError(workspacesQuery.error)}
 					onRetry={() => void workspacesQuery.refetch()}
 				/>
 			) : workspaces.length === 0 ? (
@@ -167,7 +157,10 @@ export function AdminWorkspacesScreen() {
 														type="button"
 														variant="outline"
 														size="sm"
-														onClick={() => setUnsuspendTarget(workspace)}
+														onClick={() => {
+															setUnsuspendProblem(null);
+															setUnsuspendTarget(workspace);
+														}}
 													>
 														Unsuspend
 													</Button>
@@ -221,15 +214,23 @@ export function AdminWorkspacesScreen() {
 				description="Members will be able to change monitors again."
 				confirmLabel="Unsuspend workspace"
 				pending={unsuspend.isPending}
+				problem={unsuspendProblem}
 				onConfirm={() => {
 					if (!unsuspendTarget) return;
+					setUnsuspendProblem(null);
 					unsuspend.mutate(unsuspendTarget.id, {
-						onSuccess: () => setUnsuspendTarget(null),
+						onSuccess: () => {
+							setUnsuspendProblem(null);
+							setUnsuspendTarget(null);
+						},
 						onError: handleProblem,
 					});
 				}}
 				onOpenChange={(open) => {
-					if (!open) setUnsuspendTarget(null);
+					if (!open) {
+						setUnsuspendTarget(null);
+						setUnsuspendProblem(null);
+					}
 				}}
 			/>
 		</section>

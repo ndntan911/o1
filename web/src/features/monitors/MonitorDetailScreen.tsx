@@ -8,6 +8,7 @@ import { PageSkeleton } from '@/components/feedback/Skeletons';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { isApiProblem } from '@/lib/api/client';
+import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
 import type {
 	Monitor,
@@ -34,16 +35,6 @@ const LatencyChart = lazy(async () => {
 	const module = await import('./LatencyChart');
 	return { default: module.LatencyChart };
 });
-
-function unexpectedProblem(): ApiProblem {
-	return {
-		type: 'about:blank',
-		title: 'Something went wrong',
-		status: 0,
-		code: 'internal_error',
-		detail: 'Please try again.',
-	};
-}
 
 function errorMessage(error: unknown): string {
 	if (isApiProblem(error)) {
@@ -92,6 +83,7 @@ export function MonitorDetailScreen({
 						? 'This monitor may have been deleted.'
 						: errorMessage(monitorQuery.error)
 				}
+				problem={problemFromError(monitorQuery.error)}
 				onRetry={
 					!notFound && isRetryable(monitorQuery.error)
 						? () => void monitorQuery.refetch()
@@ -132,6 +124,7 @@ function MonitorDetailView({
 	const resume = useResumeMonitor(workspace.id, monitorId);
 	const remove = useDeleteMonitor(workspace.id, monitorId, workspace.slug);
 	const [problem, setProblem] = useState<ApiProblem | null>(null);
+	const [deleteProblem, setDeleteProblem] = useState<ApiProblem | null>(null);
 	const [confirmOpen, setConfirmOpen] = useState(false);
 
 	const paused = monitor.paused || monitor.status === 'paused';
@@ -143,7 +136,23 @@ function MonitorDetailView({
 		resultsQuery.data?.pages.flatMap((page) => page.results) ?? [];
 
 	function handleProblem(error: unknown) {
-		setProblem(isApiProblem(error) ? error.problem : unexpectedProblem());
+		setProblem(problemFromError(error));
+	}
+
+	function runPauseResume() {
+		setProblem(null);
+		mutation.mutate(undefined, {
+			onError: handleProblem,
+			onSuccess: () => setProblem(null),
+		});
+	}
+
+	function runDelete() {
+		setDeleteProblem(null);
+		remove.mutate(undefined, {
+			onError: (error) => setDeleteProblem(problemFromError(error)),
+			onSuccess: () => setDeleteProblem(null),
+		});
 	}
 
 	function selectWindow(next: ResultsWindow) {
@@ -211,9 +220,7 @@ function MonitorDetailView({
 							size="sm"
 							aria-label={`${paused ? 'Resume' : 'Pause'} ${monitor.name}`}
 							disabled={mutationPending}
-							onClick={() =>
-								mutation.mutate(undefined, { onError: handleProblem })
-							}
+							onClick={runPauseResume}
 						>
 							{paused ? <PlayIcon aria-hidden /> : <PauseIcon aria-hidden />}
 						</Button>
@@ -231,7 +238,10 @@ function MonitorDetailView({
 							variant="destructive"
 							size="sm"
 							disabled={remove.isPending}
-							onClick={() => setConfirmOpen(true)}
+							onClick={() => {
+								setDeleteProblem(null);
+								setConfirmOpen(true);
+							}}
 						>
 							<Trash2Icon aria-hidden />
 							Delete
@@ -268,6 +278,7 @@ function MonitorDetailView({
 				<ErrorPanel
 					title="Could not load summary"
 					message={errorMessage(summaryQuery.error)}
+					problem={problemFromError(summaryQuery.error)}
 					onRetry={
 						isRetryable(summaryQuery.error)
 							? () => void summaryQuery.refetch()
@@ -294,6 +305,7 @@ function MonitorDetailView({
 				<ErrorPanel
 					title="Could not load results"
 					message={errorMessage(resultsQuery.error)}
+					problem={problemFromError(resultsQuery.error)}
 					onRetry={
 						isRetryable(resultsQuery.error)
 							? () => void resultsQuery.refetch()
@@ -310,6 +322,7 @@ function MonitorDetailView({
 						<ErrorPanel
 							title="Could not refresh results"
 							message={errorMessage(resultsQuery.error)}
+							problem={problemFromError(resultsQuery.error)}
 							onRetry={
 								isRetryable(resultsQuery.error)
 									? () => void resultsQuery.refetch()
@@ -332,8 +345,12 @@ function MonitorDetailView({
 				description="This permanently deletes the monitor and its results."
 				confirmLabel="Delete monitor"
 				pending={remove.isPending}
-				onConfirm={() => remove.mutate(undefined, { onError: handleProblem })}
-				onOpenChange={setConfirmOpen}
+				problem={deleteProblem}
+				onConfirm={runDelete}
+				onOpenChange={(open) => {
+					setConfirmOpen(open);
+					if (!open) setDeleteProblem(null);
+				}}
 			/>
 		</section>
 	);

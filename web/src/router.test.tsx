@@ -202,6 +202,28 @@ describe('router guards', () => {
 		expect(router.state.location.searchStr).toBe('?redirect=%2Fworkspaces');
 	});
 
+	test('the admin root redirects to the workspaces page', async () => {
+		const adminMe: Me = {
+			user: { id: 'u1', email: 'admin@example.com', is_admin: true },
+			workspaces: [],
+		};
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(adminMe)),
+			http.get(`${ORIGIN}/api/v1/admin/workspaces`, () =>
+				HttpResponse.json({ workspaces: [] }),
+			),
+		);
+
+		const { router } = renderRouter('/admin');
+
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe('/admin/workspaces'),
+		);
+		expect(
+			await screen.findByRole('heading', { name: 'Workspaces' }),
+		).toBeInTheDocument();
+	});
+
 	test('a member can open the new monitor form', async () => {
 		const memberMe: Me = {
 			user: { id: 'u1', email: 'alice@example.com', is_admin: false },
