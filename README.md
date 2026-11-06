@@ -84,6 +84,9 @@ described under [Administrator bootstrap](#administrator-bootstrap).
 Incident history and email alerts are available in the dashboard. Public status
 pages and additional alert channels (such as webhooks) are later milestones.
 
+The dashboard supports Light, Dark, and System appearance. The choice is stored
+in the browser, and System follows the operating system preference.
+
 ## Incidents and email alerts
 
 The probe worker opens an incident when a monitor crosses its confirmation

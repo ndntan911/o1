@@ -132,6 +132,20 @@ test('register, verify, create a monitor, and administer the workspace', async (
 	const workspaceSlug = new URL(page.url()).pathname.split('/')[2];
 	expect(workspaceSlug).toBeTruthy();
 
+	// Theme: dark mode applies immediately, survives reload, and stays accessible.
+	await page.getByRole('button', { name: 'Dark', exact: true }).click();
+	await expect(page.locator('html')).toHaveClass(/dark/);
+	await page.reload();
+	await expect(
+		page.getByRole('heading', { name: 'Monitors', exact: true }),
+	).toBeVisible();
+	await expect(page.locator('html')).toHaveClass(/dark/);
+	await expectNoSeriousA11yViolations(page);
+	await page.getByRole('button', { name: 'System', exact: true }).click();
+	await expect
+		.poll(() => page.evaluate(() => localStorage.getItem('o1-theme')))
+		.toBe('system');
+
 	// Monitor creation.
 	await page.getByRole('link', { name: 'New monitor', exact: true }).click();
 	await expect(
