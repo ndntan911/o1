@@ -1,6 +1,7 @@
 package incidents
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -20,6 +21,22 @@ type incidentListResponse struct {
 // deliveryListResponse wraps an incident's alert deliveries.
 type deliveryListResponse struct {
 	Deliveries []Delivery `json:"deliveries"`
+}
+
+// alertChannelListResponse wraps a workspace's alert channels.
+type alertChannelListResponse struct {
+	Channels []AlertChannel `json:"channels"`
+}
+
+// alertChannelPutRequest is the PUT /alert-channels/email body.
+type alertChannelPutRequest struct {
+	Recipients []string `json:"recipients"`
+	Enabled    bool     `json:"enabled"`
+}
+
+// monitorAlertRequest is the PATCH /monitors/{monitorID}/alert-channel body.
+type monitorAlertRequest struct {
+	Enabled *bool `json:"enabled"`
 }
 
 // ListHandler returns GET /workspaces/{workspaceID}/incidents.
@@ -124,6 +141,102 @@ func DeliveriesHandler(svc *Service) http.HandlerFunc {
 	}
 }
 
+// AlertChannelsHandler returns GET /workspaces/{workspaceID}/alert-channels.
+func AlertChannelsHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !incidentServiceAvailable(w, svc) {
+			return
+		}
+		principal, ok := incidentPrincipal(w, r)
+		if !ok {
+			return
+		}
+		workspaceID, ok := incidentWorkspaceID(w, r)
+		if !ok {
+			return
+		}
+		channels, err := svc.ListAlertChannels(r.Context(), principal.UserID, workspaceID)
+		if err != nil {
+			incidentServiceError(w, err)
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, alertChannelListResponse{Channels: channels})
+	}
+}
+
+// PutEmailChannelHandler returns PUT /workspaces/{workspaceID}/alert-channels/email.
+func PutEmailChannelHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !incidentServiceAvailable(w, svc) {
+			return
+		}
+		principal, ok := incidentPrincipal(w, r)
+		if !ok {
+			return
+		}
+		workspaceID, ok := incidentWorkspaceID(w, r)
+		if !ok {
+			return
+		}
+		var in alertChannelPutRequest
+		if !decodeIncidentBody(w, r, &in) {
+			return
+		}
+		if _, err := svc.PutEmailChannel(r.Context(), principal.UserID, workspaceID, in.Recipients, in.Enabled); err != nil {
+			incidentServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// MonitorAlertChannelHandler returns
+// GET /workspaces/{workspaceID}/monitors/{monitorID}/alert-channel.
+func MonitorAlertChannelHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !incidentServiceAvailable(w, svc) {
+			return
+		}
+		principal, workspaceID, monitorID, ok := monitorAlertIDs(w, r)
+		if !ok {
+			return
+		}
+		state, err := svc.GetMonitorAlertState(r.Context(), principal.UserID, workspaceID, monitorID)
+		if err != nil {
+			incidentServiceError(w, err)
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, state)
+	}
+}
+
+// SetMonitorAlertChannelHandler returns
+// PATCH /workspaces/{workspaceID}/monitors/{monitorID}/alert-channel.
+func SetMonitorAlertChannelHandler(svc *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !incidentServiceAvailable(w, svc) {
+			return
+		}
+		principal, workspaceID, monitorID, ok := monitorAlertIDs(w, r)
+		if !ok {
+			return
+		}
+		var in monitorAlertRequest
+		if !decodeIncidentBody(w, r, &in) {
+			return
+		}
+		if in.Enabled == nil {
+			incidentFieldsProblem(w, map[string]string{"enabled": "enabled is required"})
+			return
+		}
+		if err := svc.SetMonitorAlert(r.Context(), principal.UserID, workspaceID, monitorID, *in.Enabled); err != nil {
+			incidentServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // incidentServiceAvailable guards handlers when the router has no
 // database-backed incident service.
 func incidentServiceAvailable(w http.ResponseWriter, svc *Service) bool {
@@ -172,6 +285,35 @@ func incidentIDs(w http.ResponseWriter, r *http.Request) (auth.Principal, uuid.U
 	return principal, workspaceID, incidentID, true
 }
 
+// monitorAlertIDs parses the workspace and monitor path IDs plus principal.
+func monitorAlertIDs(w http.ResponseWriter, r *http.Request) (auth.Principal, uuid.UUID, uuid.UUID, bool) {
+	principal, ok := incidentPrincipal(w, r)
+	if !ok {
+		return auth.Principal{}, uuid.Nil, uuid.Nil, false
+	}
+	workspaceID, ok := incidentWorkspaceID(w, r)
+	if !ok {
+		return auth.Principal{}, uuid.Nil, uuid.Nil, false
+	}
+	monitorID, err := uuid.Parse(r.PathValue("monitorID"))
+	if err != nil {
+		incidentProblem(w, http.StatusBadRequest, httpx.CodeValidationError, "Invalid monitor id")
+		return auth.Principal{}, uuid.Nil, uuid.Nil, false
+	}
+	return principal, workspaceID, monitorID, true
+}
+
+// decodeIncidentBody decodes one JSON request body, rejecting unknown fields.
+func decodeIncidentBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		incidentProblem(w, http.StatusBadRequest, httpx.CodeValidationError, "Invalid request body")
+		return false
+	}
+	return true
+}
+
 // incidentLimit parses and validates the limit query parameter.
 func incidentLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 	raw := r.URL.Query().Get("limit")
@@ -205,7 +347,11 @@ func incidentCursor(w http.ResponseWriter, r *http.Request) (*httpx.PageCursor, 
 
 // incidentServiceError maps service errors onto problem responses.
 func incidentServiceError(w http.ResponseWriter, err error) {
+	var validation *ValidationError
+
 	switch {
+	case errors.As(err, &validation):
+		incidentFieldsProblem(w, validation.Fields)
 	case errors.Is(err, ErrSuspended):
 		httpx.WriteProblem(w, httpx.Problem{
 			Type:   "about:blank",
@@ -221,6 +367,8 @@ func incidentServiceError(w http.ResponseWriter, err error) {
 			Status: http.StatusConflict,
 			Code:   httpx.CodeIncidentResolved,
 		})
+	case errors.Is(err, ErrAlertChannelMissing):
+		incidentProblem(w, http.StatusNotFound, "alert_channel_missing", "Alert Channel Missing")
 	case errors.Is(err, ErrNotFound):
 		incidentProblem(w, http.StatusNotFound, httpx.CodeNotFound, "Not Found")
 	case errors.Is(err, ErrForbidden):

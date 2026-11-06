@@ -698,3 +698,47 @@ func decryptHeaders(t *testing.T, env *testEnv, monitorID uuid.UUID) map[string]
 	}
 	return headers
 }
+
+func TestCreate_AttachesEmailChannel(t *testing.T) {
+	env := newTestEnv(t)
+	ws := env.createWorkspace(t, "owner@example.com")
+
+	// Creating a monitor without a workspace channel still succeeds.
+	before, err := env.svc.Create(context.Background(), env.ownerID, ws, validInput(0))
+	if err != nil {
+		t.Fatalf("create monitor without channel: %v", err)
+	}
+	var joins int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM monitor_alert_channels WHERE monitor_id = $1`, before.ID).Scan(&joins); err != nil {
+		t.Fatalf("count join rows: %v", err)
+	}
+	if joins != 0 {
+		t.Fatalf("join rows without channel = %d, want 0", joins)
+	}
+
+	channelID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new channel id: %v", err)
+	}
+	if _, err := env.pool.Exec(context.Background(), `
+		INSERT INTO alert_channels (id, workspace_id, kind, name, config)
+		VALUES ($1, $2, 'email', 'Email', '{"recipients":["ops@example.com"]}')`,
+		channelID, ws); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	created, err := env.svc.Create(context.Background(), env.ownerID, ws, validInput(1))
+	if err != nil {
+		t.Fatalf("create monitor with channel: %v", err)
+	}
+	var enabled bool
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT enabled FROM monitor_alert_channels WHERE monitor_id = $1 AND channel_id = $2`,
+		created.ID, channelID).Scan(&enabled); err != nil {
+		t.Fatalf("load join row: %v", err)
+	}
+	if !enabled {
+		t.Fatal("monitor alert channel enabled = false, want true")
+	}
+}

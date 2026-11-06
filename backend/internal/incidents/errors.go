@@ -2,6 +2,8 @@ package incidents
 
 import (
 	"errors"
+	"sort"
+	"strings"
 
 	"o1/internal/workspaces"
 )
@@ -31,3 +33,27 @@ var (
 	// alert channel.
 	ErrAlertChannelMissing = errors.New("alert channel missing")
 )
+
+// ValidationError reports invalid input with one message per JSON field.
+type ValidationError struct {
+	Fields map[string]string
+}
+
+// Error renders the field errors in a stable order.
+func (e *ValidationError) Error() string {
+	fields := make([]string, 0, len(e.Fields))
+	for field := range e.Fields {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	parts := make([]string, 0, len(fields))
+	for _, field := range fields {
+		parts = append(parts, field+": "+e.Fields[field])
+	}
+	return "validation error: " + strings.Join(parts, "; ")
+}
+
+// Is reports ValidationError as ErrValidation so errors.Is works.
+func (e *ValidationError) Is(target error) bool {
+	return target == ErrValidation
+}

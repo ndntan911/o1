@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -238,6 +240,256 @@ func (s *Service) Deliveries(ctx context.Context, actorID, workspaceID, incident
 		})
 	}
 	return out, nil
+}
+
+const (
+	// maxAlertRecipients bounds the email recipient list.
+	maxAlertRecipients = 20
+	// maxRecipientLength bounds one email address.
+	maxRecipientLength = 320
+)
+
+// ListAlertChannels returns every alert channel in a workspace. Only admins
+// may see channel configuration because it contains recipient addresses.
+func (s *Service) ListAlertChannels(ctx context.Context, actorID, workspaceID uuid.UUID) ([]AlertChannel, error) {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleAdmin); err != nil {
+		return nil, err
+	}
+	rows, err := s.q.ListAlertChannels(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list alert channels: %w", err)
+	}
+	out := make([]AlertChannel, 0, len(rows))
+	for _, row := range rows {
+		channel, err := alertChannelFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, channel)
+	}
+	return out, nil
+}
+
+// GetEmailChannel returns the workspace email channel. A missing channel is
+// reported as ErrNotFound.
+func (s *Service) GetEmailChannel(ctx context.Context, actorID, workspaceID uuid.UUID) (AlertChannel, error) {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleAdmin); err != nil {
+		return AlertChannel{}, err
+	}
+	row, err := s.q.GetEmailAlertChannel(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AlertChannel{}, ErrNotFound
+		}
+		return AlertChannel{}, fmt.Errorf("load email alert channel: %w", err)
+	}
+	return alertChannelFromRow(row)
+}
+
+// PutEmailChannel authorizes an admin, normalizes recipients, and upserts the
+// workspace email channel. On every save it attaches every monitor in the
+// workspace that has no join row yet; existing rows keep their per-monitor
+// switch. Suspended workspaces cannot change alert settings.
+func (s *Service) PutEmailChannel(ctx context.Context, actorID, workspaceID uuid.UUID, recipients []string, enabled bool) (AlertChannel, error) {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleAdmin); err != nil {
+		return AlertChannel{}, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return AlertChannel{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	locked, err := qtx.LockWorkspace(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AlertChannel{}, ErrNotFound
+		}
+		return AlertChannel{}, fmt.Errorf("lock workspace: %w", err)
+	}
+	if locked.SuspendedAt != nil {
+		return AlertChannel{}, ErrSuspended
+	}
+
+	normalized, err := normalizeRecipients(recipients, enabled)
+	if err != nil {
+		return AlertChannel{}, err
+	}
+	config, err := json.Marshal(EmailConfig{Recipients: normalized})
+	if err != nil {
+		return AlertChannel{}, fmt.Errorf("encode email channel config: %w", err)
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return AlertChannel{}, fmt.Errorf("new alert channel id: %w", err)
+	}
+	row, err := qtx.UpsertEmailAlertChannel(ctx, sqlc.UpsertEmailAlertChannelParams{
+		ID:          id,
+		WorkspaceID: workspaceID,
+		Config:      config,
+		Enabled:     enabled,
+	})
+	if err != nil {
+		return AlertChannel{}, fmt.Errorf("upsert email alert channel: %w", err)
+	}
+	if err := qtx.AttachMonitorsToEmailChannel(ctx, sqlc.AttachMonitorsToEmailChannelParams{
+		ChannelID:   row.ID,
+		WorkspaceID: workspaceID,
+	}); err != nil {
+		return AlertChannel{}, fmt.Errorf("attach monitors to email channel: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AlertChannel{}, fmt.Errorf("commit email alert channel: %w", err)
+	}
+	return alertChannelFromRow(row)
+}
+
+// GetMonitorAlertState returns a monitor's alert switch. It never includes
+// channel recipients; available is false when the workspace has no email
+// channel.
+func (s *Service) GetMonitorAlertState(ctx context.Context, actorID, workspaceID, monitorID uuid.UUID) (MonitorAlertState, error) {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleMember); err != nil {
+		return MonitorAlertState{}, err
+	}
+	row, err := s.q.GetMonitorAlertState(ctx, sqlc.GetMonitorAlertStateParams{
+		ID:          monitorID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return MonitorAlertState{}, ErrNotFound
+		}
+		return MonitorAlertState{}, fmt.Errorf("load monitor alert state: %w", err)
+	}
+	return monitorAlertState(row), nil
+}
+
+// SetMonitorAlert toggles a monitor's row for the workspace email channel.
+// Missing channels return ErrAlertChannelMissing; suspended workspaces reject
+// the write.
+func (s *Service) SetMonitorAlert(ctx context.Context, actorID, workspaceID, monitorID uuid.UUID, enabled bool) error {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleMember); err != nil {
+		return err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	locked, err := qtx.LockWorkspace(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock workspace: %w", err)
+	}
+	if locked.SuspendedAt != nil {
+		return ErrSuspended
+	}
+
+	state, err := qtx.GetMonitorAlertState(ctx, sqlc.GetMonitorAlertStateParams{
+		ID:          monitorID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load monitor alert state: %w", err)
+	}
+	if !state.ChannelID.Valid {
+		return ErrAlertChannelMissing
+	}
+	if err := qtx.UpsertMonitorAlertChannel(ctx, sqlc.UpsertMonitorAlertChannelParams{
+		MonitorID: monitorID,
+		ChannelID: uuid.UUID(state.ChannelID.Bytes),
+		Enabled:   enabled,
+	}); err != nil {
+		return fmt.Errorf("upsert monitor alert channel: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit monitor alert channel: %w", err)
+	}
+	return nil
+}
+
+// normalizeRecipients trims, lowercases, validates, and dedupes email
+// addresses while preserving first-seen order. Enabled channels require at
+// least one recipient; empty lists are only allowed when alerts are disabled.
+func normalizeRecipients(raw []string, enabled bool) ([]string, error) {
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		address := strings.ToLower(strings.TrimSpace(entry))
+		if address == "" {
+			continue
+		}
+		if len(address) > maxRecipientLength {
+			return nil, &ValidationError{Fields: map[string]string{
+				"recipients": fmt.Sprintf("recipient addresses must be at most %d characters", maxRecipientLength),
+			}}
+		}
+		parsed, err := mail.ParseAddress(address)
+		if err != nil || parsed.Address != address {
+			return nil, &ValidationError{Fields: map[string]string{
+				"recipients": fmt.Sprintf("%q is not a valid email address", address),
+			}}
+		}
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		out = append(out, address)
+	}
+	if len(out) > maxAlertRecipients {
+		return nil, &ValidationError{Fields: map[string]string{
+			"recipients": fmt.Sprintf("at most %d recipients are allowed", maxAlertRecipients),
+		}}
+	}
+	if enabled && len(out) == 0 {
+		return nil, &ValidationError{Fields: map[string]string{
+			"recipients": "at least one recipient is required when email alerts are enabled",
+		}}
+	}
+	return out, nil
+}
+
+// alertChannelFromRow decodes the channel config into the API view.
+func alertChannelFromRow(row sqlc.AlertChannel) (AlertChannel, error) {
+	var cfg EmailConfig
+	if len(row.Config) > 0 {
+		if err := json.Unmarshal(row.Config, &cfg); err != nil {
+			return AlertChannel{}, fmt.Errorf("decode alert channel config: %w", err)
+		}
+	}
+	if cfg.Recipients == nil {
+		cfg.Recipients = []string{}
+	}
+	return AlertChannel{
+		ID:         row.ID,
+		Kind:       row.Kind,
+		Name:       row.Name,
+		Enabled:    row.Enabled,
+		Recipients: cfg.Recipients,
+	}, nil
+}
+
+// monitorAlertState converts the database row to the API view.
+func monitorAlertState(row sqlc.GetMonitorAlertStateRow) MonitorAlertState {
+	return MonitorAlertState{
+		Available:      row.ChannelID.Valid,
+		ChannelEnabled: row.ChannelEnabled,
+		Enabled:        row.MonitorEnabled,
+	}
 }
 
 // incidentStatusFilter maps an API status to the query's active-only flag and

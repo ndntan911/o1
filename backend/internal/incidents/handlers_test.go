@@ -3,12 +3,14 @@ package incidents_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +136,32 @@ func (e *incidentAPIEnv) do(c *http.Client, method, path string) (*http.Response
 	if method != http.MethodGet {
 		req.Header.Set("Origin", e.cfg.AppBaseURL)
 	}
+	resp, err := c.Do(req)
+	if err != nil {
+		e.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		e.t.Fatalf("read response body: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		e.t.Fatalf("close response body: %v", err)
+	}
+	return resp, body
+}
+
+func (e *incidentAPIEnv) doJSON(c *http.Client, method, path string, payload any) (*http.Response, []byte) {
+	e.t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		e.t.Fatalf("encode request body: %v", err)
+	}
+	req, err := http.NewRequest(method, e.server.URL+path, strings.NewReader(string(data)))
+	if err != nil {
+		e.t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", e.cfg.AppBaseURL)
 	resp, err := c.Do(req)
 	if err != nil {
 		e.t.Fatalf("%s %s: %v", method, path, err)
@@ -277,6 +305,51 @@ func (e *incidentAPIEnv) insertDelivery(workspaceID, incidentID uuid.UUID) uuid.
 
 func incidentPath(workspaceID uuid.UUID, suffix string) string {
 	return "/api/v1/workspaces/" + workspaceID.String() + "/incidents" + suffix
+}
+
+func alertChannelPath(workspaceID uuid.UUID, suffix string) string {
+	return "/api/v1/workspaces/" + workspaceID.String() + "/alert-channels" + suffix
+}
+
+func monitorAlertChannelPath(workspaceID, monitorID uuid.UUID) string {
+	return "/api/v1/workspaces/" + workspaceID.String() + "/monitors/" + monitorID.String() + "/alert-channel"
+}
+
+type alertChannelJSON struct {
+	ID         string   `json:"id"`
+	Kind       string   `json:"kind"`
+	Name       string   `json:"name"`
+	Enabled    bool     `json:"enabled"`
+	Recipients []string `json:"recipients"`
+}
+
+type alertChannelListJSON struct {
+	Channels []alertChannelJSON `json:"channels"`
+}
+
+type monitorAlertChannelJSON struct {
+	Available      bool `json:"available"`
+	ChannelEnabled bool `json:"channel_enabled"`
+	Enabled        bool `json:"enabled"`
+}
+
+type alertChannelPutJSON struct {
+	Recipients []string `json:"recipients"`
+	Enabled    bool     `json:"enabled"`
+}
+
+func (e *incidentAPIEnv) channelJoinCount(workspaceID uuid.UUID) int {
+	e.t.Helper()
+	var count int
+	if err := e.pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM monitor_alert_channels mac
+		JOIN alert_channels c ON c.id = mac.channel_id
+		WHERE c.workspace_id = $1 AND c.kind = 'email' AND c.name = 'Email'`,
+		workspaceID).Scan(&count); err != nil {
+		e.t.Fatalf("count monitor alert channels: %v", err)
+	}
+	return count
 }
 
 func TestIncidentHandlers(t *testing.T) {
@@ -466,5 +539,264 @@ func TestIncidentHandlers(t *testing.T) {
 
 		resp, _ = env.do(admin, http.MethodGet, incidentPath(wsID, "/"+otherIncident.String()+"/deliveries"))
 		requireIncidentStatus(t, resp, http.StatusNotFound)
+	})
+}
+
+func TestAlertChannelHandlers(t *testing.T) {
+	env := newIncidentAPIEnv(t)
+	ctx := context.Background()
+
+	wsID, _ := env.createWorkspace("Alerts")
+	_ = env.addMember(wsID, "channel-viewer@example.com", "viewer")
+	_ = env.addMember(wsID, "channel-member@example.com", "member")
+	adminID := env.addMember(wsID, "channel-admin@example.com", "admin")
+	env.insertMonitor(wsID, "Alerts A", adminID)
+	env.insertMonitor(wsID, "Alerts B", adminID)
+
+	viewer := env.client("channel-viewer@example.com")
+	member := env.client("channel-member@example.com")
+	admin := env.client("channel-admin@example.com")
+
+	t.Run("list is admin only and starts empty", func(t *testing.T) {
+		resp, body := env.do(admin, http.MethodGet, alertChannelPath(wsID, ""))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		list := decodeIncidentJSON[alertChannelListJSON](t, body)
+		if len(list.Channels) != 0 {
+			t.Fatalf("channels = %+v, want none", list.Channels)
+		}
+
+		resp, body = env.do(member, http.MethodGet, alertChannelPath(wsID, ""))
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, body); got.Code != "forbidden" {
+			t.Fatalf("member problem = %+v", got)
+		}
+		resp, body = env.do(viewer, http.MethodGet, alertChannelPath(wsID, ""))
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, body); got.Code != "forbidden" {
+			t.Fatalf("viewer problem = %+v", got)
+		}
+	})
+
+	t.Run("put normalizes dedupes and attaches every monitor", func(t *testing.T) {
+		resp, _ := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
+			Recipients: []string{"  Ops@Example.com ", "ops@example.com", "dev@example.com"},
+			Enabled:    true,
+		})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+		if got := env.channelJoinCount(wsID); got != 2 {
+			t.Fatalf("monitor alert rows = %d, want 2", got)
+		}
+
+		resp, body := env.do(admin, http.MethodGet, alertChannelPath(wsID, ""))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		list := decodeIncidentJSON[alertChannelListJSON](t, body)
+		if len(list.Channels) != 1 {
+			t.Fatalf("channels = %+v, want 1", list.Channels)
+		}
+		channel := list.Channels[0]
+		if channel.Kind != "email" || channel.Name != "Email" || !channel.Enabled {
+			t.Fatalf("channel = %+v", channel)
+		}
+		want := []string{"ops@example.com", "dev@example.com"}
+		if len(channel.Recipients) != len(want) {
+			t.Fatalf("recipients = %+v, want %+v", channel.Recipients, want)
+		}
+		for i := range want {
+			if channel.Recipients[i] != want[i] {
+				t.Fatalf("recipients = %+v, want %+v", channel.Recipients, want)
+			}
+		}
+
+		// Upserting again must not duplicate join rows.
+		resp, _ = env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
+			Recipients: []string{"ops@example.com"},
+			Enabled:    true,
+		})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+		if got := env.channelJoinCount(wsID); got != 2 {
+			t.Fatalf("monitor alert rows after second put = %d, want 2", got)
+		}
+	})
+
+	t.Run("put validates recipients", func(t *testing.T) {
+		many := make([]string, 21)
+		for i := range many {
+			many[i] = fmt.Sprintf("person%d@example.com", i)
+		}
+		longAddress := strings.Repeat("a", 320) + "@example.com"
+
+		cases := []struct {
+			name       string
+			recipients []string
+			enabled    bool
+		}{
+			{name: "no recipients when enabled", recipients: nil, enabled: true},
+			{name: "too many recipients", recipients: many, enabled: true},
+			{name: "invalid address", recipients: []string{"not-an-email"}, enabled: true},
+			{name: "address too long", recipients: []string{longAddress}, enabled: true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				resp, body := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
+					Recipients: tc.recipients,
+					Enabled:    tc.enabled,
+				})
+				requireIncidentStatus(t, resp, http.StatusBadRequest)
+				problem := incidentProblem(t, body)
+				if problem.Code != "validation_error" {
+					t.Fatalf("problem = %+v", problem)
+				}
+				if problem.Fields["recipients"] == "" {
+					t.Fatalf("fields = %+v, want recipients", problem.Fields)
+				}
+			})
+		}
+
+		resp, _ := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
+			Recipients: []string{},
+			Enabled:    false,
+		})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+
+		resp, body := env.do(admin, http.MethodGet, alertChannelPath(wsID, ""))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		list := decodeIncidentJSON[alertChannelListJSON](t, body)
+		if len(list.Channels) != 1 || list.Channels[0].Enabled {
+			t.Fatalf("disabled channel = %+v", list.Channels)
+		}
+		if len(list.Channels[0].Recipients) != 0 {
+			t.Fatalf("disabled recipients = %+v, want empty", list.Channels[0].Recipients)
+		}
+	})
+
+	t.Run("put rejects suspended workspaces", func(t *testing.T) {
+		if _, err := env.pool.Exec(ctx, `UPDATE workspaces SET suspended_at = now() WHERE id = $1`, wsID); err != nil {
+			t.Fatalf("suspend workspace: %v", err)
+		}
+		resp, body := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
+			Recipients: []string{"ops@example.com"},
+			Enabled:    true,
+		})
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, body); got.Code != "workspace_suspended" {
+			t.Fatalf("suspended problem = %+v", got)
+		}
+		if _, err := env.pool.Exec(ctx, `UPDATE workspaces SET suspended_at = NULL WHERE id = $1`, wsID); err != nil {
+			t.Fatalf("unsuspend workspace: %v", err)
+		}
+	})
+}
+
+func TestMonitorAlertHandlers(t *testing.T) {
+	env := newIncidentAPIEnv(t)
+	ctx := context.Background()
+
+	wsID, _ := env.createWorkspace("Monitor Alerts")
+	_ = env.addMember(wsID, "alert-viewer@example.com", "viewer")
+	_ = env.addMember(wsID, "alert-member@example.com", "member")
+	adminID := env.addMember(wsID, "alert-admin@example.com", "admin")
+	monitorID := env.insertMonitor(wsID, "Alert Monitor", adminID)
+
+	otherWS, otherOwnerID := env.createWorkspace("Other Alerts")
+	otherMonitor := env.insertMonitor(otherWS, "Other Alert Monitor", otherOwnerID)
+
+	viewer := env.client("alert-viewer@example.com")
+	member := env.client("alert-member@example.com")
+	admin := env.client("alert-admin@example.com")
+
+	t.Run("missing channel is unavailable", func(t *testing.T) {
+		resp, body := env.do(member, http.MethodGet, monitorAlertChannelPath(wsID, monitorID))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		state := decodeIncidentJSON[monitorAlertChannelJSON](t, body)
+		if state.Available || state.ChannelEnabled || state.Enabled {
+			t.Fatalf("state = %+v, want all false", state)
+		}
+
+		resp, body = env.doJSON(member, http.MethodPatch, monitorAlertChannelPath(wsID, monitorID), map[string]bool{"enabled": true})
+		requireIncidentStatus(t, resp, http.StatusNotFound)
+		if got := incidentProblem(t, body); got.Code != "alert_channel_missing" {
+			t.Fatalf("missing channel problem = %+v", got)
+		}
+	})
+
+	t.Run("existing channel defaults monitors to enabled", func(t *testing.T) {
+		resp, _ := env.doJSON(admin, http.MethodPut, alertChannelPath(wsID, "/email"), alertChannelPutJSON{
+			Recipients: []string{"ops@example.com"},
+			Enabled:    true,
+		})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+
+		resp, body := env.do(member, http.MethodGet, monitorAlertChannelPath(wsID, monitorID))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		state := decodeIncidentJSON[monitorAlertChannelJSON](t, body)
+		if !state.Available || !state.ChannelEnabled || !state.Enabled {
+			t.Fatalf("state = %+v, want all true", state)
+		}
+
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("decode raw state: %v", err)
+		}
+		if _, ok := raw["recipients"]; ok {
+			t.Fatalf("monitor alert state leaked recipients: %s", string(body))
+		}
+
+		// Viewers cannot read the per-monitor alert switch or toggle it.
+		resp, body = env.do(viewer, http.MethodGet, monitorAlertChannelPath(wsID, monitorID))
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, body); got.Code != "forbidden" {
+			t.Fatalf("viewer get problem = %+v", got)
+		}
+		resp, body = env.doJSON(viewer, http.MethodPatch, monitorAlertChannelPath(wsID, monitorID), map[string]bool{"enabled": false})
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, body); got.Code != "forbidden" {
+			t.Fatalf("viewer problem = %+v", got)
+		}
+	})
+
+	t.Run("member toggles monitor alerts", func(t *testing.T) {
+		resp, _ := env.doJSON(member, http.MethodPatch, monitorAlertChannelPath(wsID, monitorID), map[string]bool{"enabled": false})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+
+		resp, body := env.do(member, http.MethodGet, monitorAlertChannelPath(wsID, monitorID))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		state := decodeIncidentJSON[monitorAlertChannelJSON](t, body)
+		if !state.Available || !state.ChannelEnabled || state.Enabled {
+			t.Fatalf("state after disable = %+v", state)
+		}
+
+		resp, _ = env.doJSON(member, http.MethodPatch, monitorAlertChannelPath(wsID, monitorID), map[string]bool{"enabled": true})
+		requireIncidentStatus(t, resp, http.StatusNoContent)
+		resp, body = env.do(member, http.MethodGet, monitorAlertChannelPath(wsID, monitorID))
+		requireIncidentStatus(t, resp, http.StatusOK)
+		state = decodeIncidentJSON[monitorAlertChannelJSON](t, body)
+		if !state.Enabled {
+			t.Fatalf("state after enable = %+v", state)
+		}
+	})
+
+	t.Run("rejects suspended workspaces and foreign monitors", func(t *testing.T) {
+		if _, err := env.pool.Exec(ctx, `UPDATE workspaces SET suspended_at = now() WHERE id = $1`, wsID); err != nil {
+			t.Fatalf("suspend workspace: %v", err)
+		}
+		resp, body := env.doJSON(member, http.MethodPatch, monitorAlertChannelPath(wsID, monitorID), map[string]bool{"enabled": false})
+		requireIncidentStatus(t, resp, http.StatusForbidden)
+		if got := incidentProblem(t, body); got.Code != "workspace_suspended" {
+			t.Fatalf("suspended problem = %+v", got)
+		}
+		if _, err := env.pool.Exec(ctx, `UPDATE workspaces SET suspended_at = NULL WHERE id = $1`, wsID); err != nil {
+			t.Fatalf("unsuspend workspace: %v", err)
+		}
+
+		resp, body = env.do(member, http.MethodGet, monitorAlertChannelPath(wsID, otherMonitor))
+		requireIncidentStatus(t, resp, http.StatusNotFound)
+		if got := incidentProblem(t, body); got.Code != "not_found" {
+			t.Fatalf("foreign monitor problem = %+v", got)
+		}
+		resp, body = env.doJSON(member, http.MethodPatch, monitorAlertChannelPath(wsID, otherMonitor), map[string]bool{"enabled": true})
+		requireIncidentStatus(t, resp, http.StatusNotFound)
+		if got := incidentProblem(t, body); got.Code != "not_found" {
+			t.Fatalf("foreign monitor patch problem = %+v", got)
+		}
 	})
 }

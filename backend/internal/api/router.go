@@ -226,6 +226,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/acknowledge", requireSession(http.HandlerFunc(incidents.AcknowledgeHandler(incidentSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/deliveries", requireSession(http.HandlerFunc(incidents.DeliveriesHandler(incidentSvc))))
 
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(incidents.AlertChannelsHandler(incidentSvc))))
+	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/alert-channels/email", requireSession(http.HandlerFunc(incidents.PutEmailChannelHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.MonitorAlertChannelHandler(incidentSvc))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.SetMonitorAlertChannelHandler(incidentSvc))))
+
 	requireAdmin := auth.RequireAdmin
 	mux.Handle("GET /api/v1/admin/workspaces", requireSession(requireAdmin(http.HandlerFunc(admin.WorkspacesHandler(adminSvc)))))
 	mux.Handle("POST /api/v1/admin/workspaces/{workspaceID}/suspend", requireSession(requireAdmin(http.HandlerFunc(admin.SuspendHandler(adminSvc)))))

@@ -49,6 +49,25 @@ type EmailConfig struct {
 	Recipients []string `json:"recipients"`
 }
 
+// AlertChannel is the API-facing view of a workspace alert channel. Recipients
+// are decoded from the channel config and must only be returned to admins.
+type AlertChannel struct {
+	ID         uuid.UUID `json:"id"`
+	Kind       string    `json:"kind"`
+	Name       string    `json:"name"`
+	Enabled    bool      `json:"enabled"`
+	Recipients []string  `json:"recipients"`
+}
+
+// MonitorAlertState is a monitor's per-channel alert switch. Available is
+// false when the workspace has no email channel; recipients are never exposed
+// through this view.
+type MonitorAlertState struct {
+	Available      bool `json:"available"`
+	ChannelEnabled bool `json:"channel_enabled"`
+	Enabled        bool `json:"enabled"`
+}
+
 // Incident is the API-facing view of an incident. It deliberately omits
 // monitor secrets such as headers, bodies, and query strings.
 type Incident struct {
