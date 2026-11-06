@@ -28,8 +28,8 @@ export function listAlertChannels(
 export function putEmailAlertChannel(
 	workspaceId: string,
 	input: PutEmailAlertChannelInput,
-): Promise<AlertChannel> {
-	return apiRequest<AlertChannel>(`${alertChannelsPath(workspaceId)}/email`, {
+): Promise<void> {
+	return apiRequest<void>(`${alertChannelsPath(workspaceId)}/email`, {
 		method: 'PUT',
 		body: input,
 	});

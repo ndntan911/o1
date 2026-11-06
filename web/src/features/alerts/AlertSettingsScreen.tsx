@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ErrorPanel } from '@/components/feedback/ErrorPanel';
 import { PageSkeleton } from '@/components/feedback/Skeletons';
@@ -12,7 +12,7 @@ import type { ApiProblem } from '@/lib/api/problems';
 import type { AlertChannel, Workspace } from '@/lib/api/types';
 import { canManageAlertChannels } from '@/lib/roles';
 import { useAlertChannels, useSaveEmailAlertChannel } from './hooks';
-import { RecipientsField } from './RecipientsField';
+import { RecipientsField, type RecipientsFieldHandle } from './RecipientsField';
 
 function errorMessage(error: unknown): string {
 	if (isApiProblem(error)) {
@@ -85,6 +85,7 @@ interface AlertSettingsFormProps {
 
 function AlertSettingsForm({ workspace, channel }: AlertSettingsFormProps) {
 	const save = useSaveEmailAlertChannel(workspace.id);
+	const recipientsField = useRef<RecipientsFieldHandle>(null);
 	const [recipients, setRecipients] = useState<string[]>(
 		channel?.recipients ?? [],
 	);
@@ -99,14 +100,18 @@ function AlertSettingsForm({ workspace, channel }: AlertSettingsFormProps) {
 
 	function handleSave() {
 		setProblem(null);
-		if (enabled && recipients.length === 0) {
+		const nextRecipients = recipientsField.current
+			? recipientsField.current.commitDraft()
+			: recipients;
+		if (nextRecipients === null) return;
+		if (enabled && nextRecipients.length === 0) {
 			setValidation('Add at least one recipient before enabling email alerts.');
 			return;
 		}
 
 		setValidation(null);
 		save.mutate(
-			{ recipients, enabled },
+			{ recipients: nextRecipients, enabled },
 			{
 				onError: (error) => setProblem(problemFromError(error)),
 				onSuccess: () => {
@@ -148,6 +153,7 @@ function AlertSettingsForm({ workspace, channel }: AlertSettingsFormProps) {
 			</div>
 
 			<RecipientsField
+				ref={recipientsField}
 				recipients={recipients}
 				onChange={handleRecipientsChange}
 				disabled={save.isPending}

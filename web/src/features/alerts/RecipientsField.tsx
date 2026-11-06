@@ -1,4 +1,10 @@
-import { useId, useState, type KeyboardEvent } from 'react';
+import {
+	forwardRef,
+	useId,
+	useImperativeHandle,
+	useState,
+	type KeyboardEvent,
+} from 'react';
 import { XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,6 +12,14 @@ import { Label } from '@/components/ui/label';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_RECIPIENTS = 20;
+
+export interface RecipientsFieldHandle {
+	/**
+	 * Add the current draft to the list when it is valid. Returns the committed
+	 * list, or null when the draft is invalid and an inline error is shown.
+	 */
+	commitDraft: () => string[] | null;
+}
 
 export interface RecipientsFieldProps {
 	recipients: string[];
@@ -15,40 +29,55 @@ export interface RecipientsFieldProps {
 	maxRecipients?: number;
 }
 
-export function RecipientsField({
-	recipients,
-	onChange,
-	disabled = false,
-	label = 'Recipients',
-	maxRecipients = MAX_RECIPIENTS,
-}: RecipientsFieldProps) {
+export const RecipientsField = forwardRef<
+	RecipientsFieldHandle,
+	RecipientsFieldProps
+>(function RecipientsField(
+	{
+		recipients,
+		onChange,
+		disabled = false,
+		label = 'Recipients',
+		maxRecipients = MAX_RECIPIENTS,
+	},
+	ref,
+) {
 	const inputId = useId();
 	const errorId = useId();
 	const [draft, setDraft] = useState('');
 	const [error, setError] = useState<string | null>(null);
 
-	function addRecipient() {
+	function commitDraft(): string[] | null {
 		const address = draft.trim().toLowerCase();
-		if (!address) {
-			setError('Enter an email address');
-			return;
-		}
+		if (!address) return recipients;
 		if (!EMAIL_PATTERN.test(address)) {
 			setError('Enter a valid email address');
-			return;
+			return null;
 		}
 		if (recipients.includes(address)) {
 			setError('This recipient is already added');
-			return;
+			return null;
 		}
 		if (recipients.length >= maxRecipients) {
 			setError(`You can add up to ${maxRecipients} recipients`);
-			return;
+			return null;
 		}
 
-		onChange([...recipients, address]);
+		const next = [...recipients, address];
+		onChange(next);
 		setDraft('');
 		setError(null);
+		return next;
+	}
+
+	useImperativeHandle(ref, () => ({ commitDraft }));
+
+	function addRecipient() {
+		if (!draft.trim()) {
+			setError('Enter an email address');
+			return;
+		}
+		commitDraft();
 	}
 
 	function removeRecipient(address: string) {
@@ -131,4 +160,4 @@ export function RecipientsField({
 			</div>
 		</div>
 	);
-}
+});

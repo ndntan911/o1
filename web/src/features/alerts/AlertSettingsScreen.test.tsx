@@ -136,6 +136,67 @@ describe('AlertSettingsScreen', () => {
 		expect(toast.success).toHaveBeenCalledWith('Email alert settings saved');
 	});
 
+	test('includes a typed but unadded recipient when saving', async () => {
+		const putBodies: { recipients: string[]; enabled: boolean }[] = [];
+		let current: AlertChannel[] = [channel];
+		server.use(
+			http.get(channelsPath, () => HttpResponse.json({ channels: current })),
+			http.put(emailChannelPath, async ({ request }) => {
+				const body = (await request.json()) as {
+					recipients: string[];
+					enabled: boolean;
+				};
+				putBodies.push(body);
+				current = [
+					{
+						...channel,
+						recipients: body.recipients,
+						enabled: body.enabled,
+						updated_at: '2026-01-02T00:00:00Z',
+					},
+				];
+				return new HttpResponse(null, { status: 204 });
+			}),
+		);
+		const user = userEvent.setup();
+
+		renderWithProviders(<AlertSettingsScreen workspace={workspace} />);
+
+		await screen.findByText('ops@example.com');
+		await user.type(screen.getByLabelText('Add recipient'), 'dev@example.com');
+		await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+		await waitFor(() => expect(putBodies).toHaveLength(1));
+		expect(putBodies[0]).toEqual({
+			recipients: ['ops@example.com', 'dev@example.com'],
+			enabled: true,
+		});
+		expect(await screen.findByText('dev@example.com')).toBeInTheDocument();
+	});
+
+	test('an invalid typed draft blocks saving', async () => {
+		const putBodies: unknown[] = [];
+		server.use(
+			channelHandler([channel]),
+			http.put(emailChannelPath, async ({ request }) => {
+				putBodies.push(await request.json());
+				return new HttpResponse(null, { status: 204 });
+			}),
+		);
+		const user = userEvent.setup();
+
+		renderWithProviders(<AlertSettingsScreen workspace={workspace} />);
+
+		await screen.findByText('ops@example.com');
+		await user.type(screen.getByLabelText('Add recipient'), 'not-an-email');
+		await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+		expect(
+			await screen.findByText('Enter a valid email address'),
+		).toBeInTheDocument();
+		expect(putBodies).toHaveLength(0);
+	});
+
 	test('validates duplicates, invalid addresses, and an empty enabled list', async () => {
 		const putBodies: unknown[] = [];
 		server.use(
