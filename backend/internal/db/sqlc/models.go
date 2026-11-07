@@ -154,6 +154,21 @@ type Session struct {
 	UserAgent  string
 }
 
+type StatusPage struct {
+	WorkspaceID uuid.UUID
+	Enabled     bool
+	Title       string
+	Description string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type StatusPageMonitor struct {
+	StatusPageID uuid.UUID
+	MonitorID    uuid.UUID
+	CreatedAt    time.Time
+}
+
 type User struct {
 	ID              uuid.UUID
 	Email           string

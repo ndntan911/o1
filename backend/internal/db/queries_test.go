@@ -603,3 +603,113 @@ func TestAlertChannelSchema_SoftDeleteAndFilters(t *testing.T) {
 		t.Fatalf("upsert email channel: %v", err)
 	}
 }
+
+func TestStatusPageSchema_SelectionAndCascade(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	userID := testutil.CreateVerifiedUser(t, pool, "status-schema@example.com", "correct horse battery staple")
+	wsID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, slug, created_by) VALUES ($1,'Status Schema','status-schema',$2)`, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	monitorID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors (id, workspace_id, name, url, method, interval_seconds, timeout_seconds, created_by) VALUES ($1,$2,'API','https://example.com','GET',60,30,$3)`, monitorID, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitor_state (monitor_id) VALUES ($1)`, monitorID); err != nil {
+		t.Fatal(err)
+	}
+
+	q := sqlc.New(pool)
+	page, err := q.UpsertStatusPage(ctx, sqlc.UpsertStatusPageParams{
+		WorkspaceID: wsID, Enabled: true, Title: "Status Schema", Description: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.Enabled || page.Title != "Status Schema" {
+		t.Fatalf("page = %+v", page)
+	}
+	if err := q.InsertStatusPageMonitor(ctx, sqlc.InsertStatusPageMonitorParams{
+		StatusPageID: page.WorkspaceID, MonitorID: monitorID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Inserting the same selection twice is idempotent.
+	if err := q.InsertStatusPageMonitor(ctx, sqlc.InsertStatusPageMonitorParams{
+		StatusPageID: page.WorkspaceID, MonitorID: monitorID,
+	}); err != nil {
+		t.Fatalf("duplicate selection: %v", err)
+	}
+	ids, err := q.ListStatusPageMonitorIDs(ctx, page.WorkspaceID)
+	if err != nil || len(ids) != 1 || ids[0] != monitorID {
+		t.Fatalf("selection ids = %v, err = %v", ids, err)
+	}
+
+	// Deleting the monitor removes its selection.
+	if _, err := pool.Exec(ctx, `DELETE FROM monitors WHERE id = $1`, monitorID); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := q.ListStatusPageMonitorIDs(ctx, page.WorkspaceID); err != nil || len(ids) != 0 {
+		t.Fatalf("selection after monitor delete = %v, err = %v", ids, err)
+	}
+
+	// Deleting the workspace removes the page.
+	if _, err := pool.Exec(ctx, `DELETE FROM workspaces WHERE id = $1`, wsID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.GetStatusPage(ctx, wsID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("page after workspace delete error = %v, want pgx.ErrNoRows", err)
+	}
+}
+
+func TestProbeDayStats_GroupsByUTCDate(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	userID := testutil.CreateVerifiedUser(t, pool, "status-days@example.com", "correct horse battery staple")
+	wsID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, slug, created_by) VALUES ($1,'Status Days','status-days',$2)`, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	monitorID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors (id, workspace_id, name, url, method, interval_seconds, timeout_seconds, created_by) VALUES ($1,$2,'API','https://example.com','GET',60,30,$3)`, monitorID, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(at time.Time, status string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO probe_results (id, monitor_id, workspace_id, scheduled_for, checked_at, status, latency_ms)
+			VALUES ($1,$2,$3,$4,$4,$5,100)`,
+			uuid.New(), monitorID, wsID, at, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Use yesterday/today so the probe partitions created by migrations exist.
+	now := time.Now().UTC()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+	insert(day.Add(23*time.Hour+59*time.Minute), "up")
+	insert(day.Add(time.Hour), "down")
+	insert(day.Add(25*time.Hour), "up") // next UTC day, 01:00
+
+	rows, err := sqlc.New(pool).ListProbeDayStats(ctx, sqlc.ListProbeDayStatsParams{
+		MonitorIds: []uuid.UUID{monitorID},
+		Since:      day,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("day rows = %+v, want 2", rows)
+	}
+	if rows[0].Day != day.Format("2006-01-02") || rows[0].Checks != 2 || rows[0].UpCount != 1 || rows[0].DownCount != 1 {
+		t.Fatalf("first day = %+v", rows[0])
+	}
+	next := day.AddDate(0, 0, 1)
+	if rows[1].Day != next.Format("2006-01-02") || rows[1].Checks != 1 || rows[1].UpCount != 1 {
+		t.Fatalf("second day = %+v", rows[1])
+	}
+}
