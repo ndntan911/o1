@@ -525,6 +525,236 @@ func TestService_CrossWorkspaceAndSuspended(t *testing.T) {
 	}
 }
 
+func TestService_ListMonitorChannels(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	monitorID := env.insertMonitor("API")
+	webhook := env.createWebhook("Deploy hook")
+	telegram, err := env.svc.Create(ctx, env.owner, env.wsID, CreateInput{
+		Kind: KindTelegram, Name: "Telegram", BotToken: telegramToken, ChatID: telegramChatID,
+		Enabled: ptrBool(false),
+	})
+	if err != nil {
+		t.Fatalf("create telegram: %v", err)
+	}
+
+	list, err := env.svc.ListMonitorChannels(ctx, env.member, env.wsID, monitorID)
+	if err != nil {
+		t.Fatalf("list monitor channels: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("monitor channels = %+v, want 2", list)
+	}
+	byID := map[uuid.UUID]MonitorChannel{}
+	for _, channel := range list {
+		byID[channel.ID] = channel
+	}
+	if got := byID[webhook.ID]; !got.Enabled || !got.ChannelEnabled {
+		t.Fatalf("webhook switch = %+v", got)
+	}
+	if got := byID[telegram.ID]; !got.Enabled || got.ChannelEnabled {
+		t.Fatalf("telegram switch = %+v (globally disabled)", got)
+	}
+
+	if _, err := env.svc.ListMonitorChannels(ctx, env.viewer, env.wsID, monitorID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("viewer list = %v, want ErrForbidden", err)
+	}
+	if _, err := env.svc.ListMonitorChannels(ctx, env.member, env.wsID, uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown monitor = %v, want ErrNotFound", err)
+	}
+}
+
+func TestService_SetMonitorChannel(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	monitorID := env.insertMonitor("API")
+	first := env.createWebhook("First")
+	second := env.createWebhook("Second")
+
+	if err := env.svc.SetMonitorChannel(ctx, env.member, env.wsID, monitorID, first.ID, false); err != nil {
+		t.Fatalf("set monitor channel: %v", err)
+	}
+	list, err := env.svc.ListMonitorChannels(ctx, env.member, env.wsID, monitorID)
+	if err != nil {
+		t.Fatalf("list monitor channels: %v", err)
+	}
+	for _, channel := range list {
+		switch channel.ID {
+		case first.ID:
+			if channel.Enabled {
+				t.Fatal("first channel still enabled")
+			}
+		case second.ID:
+			if !channel.Enabled {
+				t.Fatal("second channel changed")
+			}
+		}
+	}
+
+	if err := env.svc.SetMonitorChannel(ctx, env.member, env.wsID, monitorID, uuid.New(), true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown channel = %v, want ErrNotFound", err)
+	}
+	if err := env.svc.SetMonitorChannel(ctx, env.member, env.wsID, uuid.New(), first.ID, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown monitor = %v, want ErrNotFound", err)
+	}
+	if err := env.svc.SetMonitorChannel(ctx, env.viewer, env.wsID, monitorID, first.ID, true); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("viewer set = %v, want ErrForbidden", err)
+	}
+
+	otherOwner := testutil.CreateVerifiedUser(t, env.pool, "switch-other@example.com", serviceTestPassword)
+	other, err := env.ws.Create(ctx, otherOwner, "Other switch")
+	if err != nil {
+		t.Fatalf("create other workspace: %v", err)
+	}
+	foreign, err := env.svc.Create(ctx, otherOwner, other.ID, CreateInput{
+		Kind: KindWebhook, Name: "Foreign", URL: webhookURL,
+	})
+	if err != nil {
+		t.Fatalf("create foreign channel: %v", err)
+	}
+	if err := env.svc.SetMonitorChannel(ctx, env.member, env.wsID, monitorID, foreign.ID, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-workspace channel = %v, want ErrNotFound", err)
+	}
+
+	if _, err := env.pool.Exec(ctx, `UPDATE workspaces SET suspended_at = now() WHERE id = $1`, env.wsID); err != nil {
+		t.Fatalf("suspend workspace: %v", err)
+	}
+	if err := env.svc.SetMonitorChannel(ctx, env.member, env.wsID, monitorID, first.ID, true); !errors.Is(err, ErrSuspended) {
+		t.Fatalf("suspended set = %v, want ErrSuspended", err)
+	}
+}
+
+func TestService_SendTestEmail(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	if _, err := env.svc.q.UpsertEmailAlertChannel(ctx, sqlc.UpsertEmailAlertChannelParams{
+		ID: uuid.New(), WorkspaceID: env.wsID,
+		Config: []byte(`{"recipients":["ops@example.com","oncall@example.com"]}`), Enabled: true,
+	}); err != nil {
+		t.Fatalf("upsert email: %v", err)
+	}
+	emailChannel, err := env.svc.q.GetEmailAlertChannel(ctx, env.wsID)
+	if err != nil {
+		t.Fatalf("get email channel: %v", err)
+	}
+
+	if err := env.svc.SendTest(ctx, env.owner, env.wsID, emailChannel.ID); err != nil {
+		t.Fatalf("send test email: %v", err)
+	}
+	messages := env.sender.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(messages))
+	}
+	for _, msg := range messages {
+		if !strings.Contains(msg.Subject, "Alerts") {
+			t.Fatalf("subject = %q, want workspace name", msg.Subject)
+		}
+		if !strings.Contains(msg.Text, "Alerts") {
+			t.Fatalf("text = %q, want workspace name", msg.Text)
+		}
+	}
+	var deliveries int
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM alert_deliveries`).Scan(&deliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0", deliveries)
+	}
+}
+
+func TestService_SendTestNotifier(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	webhook := env.createWebhook("Deploy hook")
+	slack, err := env.svc.Create(ctx, env.owner, env.wsID, CreateInput{
+		Kind: KindSlack, Name: "Slack", URL: slackURL,
+	})
+	if err != nil {
+		t.Fatalf("create slack: %v", err)
+	}
+	telegram, err := env.svc.Create(ctx, env.owner, env.wsID, CreateInput{
+		Kind: KindTelegram, Name: "Telegram", BotToken: telegramToken, ChatID: telegramChatID,
+	})
+	if err != nil {
+		t.Fatalf("create telegram: %v", err)
+	}
+
+	for _, channel := range []Channel{webhook, slack, telegram} {
+		if err := env.svc.SendTest(ctx, env.owner, env.wsID, channel.ID); err != nil {
+			t.Fatalf("send test %s: %v", channel.Kind, err)
+		}
+	}
+	if len(env.notify.events) != 3 {
+		t.Fatalf("notifier events = %d, want 3", len(env.notify.events))
+	}
+	for i, event := range env.notify.events {
+		if event.Kind != "test" || event.WorkspaceName != "Alerts" || event.WorkspaceSlug != "alerts" {
+			t.Fatalf("event %d = %+v", i, event)
+		}
+		if event.Link != "http://localhost:5173" {
+			t.Fatalf("event link = %q", event.Link)
+		}
+	}
+	if env.notify.targets[0].Kind != KindWebhook || env.notify.targets[1].Kind != KindSlack || env.notify.targets[2].Kind != KindTelegram {
+		t.Fatalf("targets = %+v", env.notify.targets)
+	}
+	if !strings.Contains(string(slackPayload(env.notify.events[1])), "Test notification from o1 for") {
+		t.Fatal("slack test payload missing test line")
+	}
+	if !strings.Contains(string(telegramPayload(env.notify.events[2], telegramChatID)), "Test notification from o1 for") {
+		t.Fatal("telegram test payload missing test line")
+	}
+
+	var deliveries int
+	if err := env.pool.QueryRow(ctx, `SELECT count(*) FROM alert_deliveries`).Scan(&deliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0", deliveries)
+	}
+}
+
+func TestService_SendTestDisabledComplete(t *testing.T) {
+	env := newServiceEnv(t)
+	channel, err := env.svc.Create(context.Background(), env.owner, env.wsID, CreateInput{
+		Kind: KindWebhook, Name: "Disabled hook", URL: webhookURL, Enabled: ptrBool(false),
+	})
+	if err != nil {
+		t.Fatalf("create disabled channel: %v", err)
+	}
+	if err := env.svc.SendTest(context.Background(), env.owner, env.wsID, channel.ID); err != nil {
+		t.Fatalf("send test on disabled channel: %v", err)
+	}
+}
+
+func TestService_SendTestIncomplete(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	channel := env.createWebhook("Corrupt hook")
+	if _, err := env.pool.Exec(ctx, `UPDATE alert_channels SET config = '{"url_enc":""}' WHERE id = $1`, channel.ID); err != nil {
+		t.Fatalf("corrupt config: %v", err)
+	}
+	if err := env.svc.SendTest(ctx, env.owner, env.wsID, channel.ID); !errors.Is(err, ErrInvalidChannelConfig) {
+		t.Fatalf("SendTest = %v, want ErrInvalidChannelConfig", err)
+	}
+}
+
+func TestService_SendTestAdminOnly(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	channel := env.createWebhook("Admin hook")
+	if err := env.svc.SendTest(ctx, env.member, env.wsID, channel.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("member SendTest = %v, want ErrForbidden", err)
+	}
+	if err := env.svc.SendTest(ctx, env.viewer, env.wsID, channel.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("viewer SendTest = %v, want ErrForbidden", err)
+	}
+}
+
 func ptrString(value string) *string {
+	return &value
+}
+
+func ptrBool(value bool) *bool {
 	return &value
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -302,6 +304,156 @@ func (s *Service) Delete(ctx context.Context, actorID, workspaceID, channelID uu
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
+}
+
+// ListMonitorChannels returns every active channel with this monitor's switch
+// state. Members and above may read it.
+func (s *Service) ListMonitorChannels(ctx context.Context, actorID, workspaceID, monitorID uuid.UUID) ([]MonitorChannel, error) {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleMember); err != nil {
+		return nil, err
+	}
+	if _, err := s.q.GetMonitor(ctx, sqlc.GetMonitorParams{ID: monitorID, WorkspaceID: workspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("load monitor: %w", err)
+	}
+	rows, err := s.q.ListMonitorAlertChannels(ctx, sqlc.ListMonitorAlertChannelsParams{
+		MonitorID: monitorID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list monitor alert channels: %w", err)
+	}
+	out := make([]MonitorChannel, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, MonitorChannel{
+			ID:             row.ID,
+			Kind:           row.Kind,
+			Name:           row.Name,
+			ChannelEnabled: row.ChannelEnabled,
+			Enabled:        row.MonitorEnabled,
+		})
+	}
+	return out, nil
+}
+
+// SetMonitorChannel toggles one channel's switch for one monitor.
+func (s *Service) SetMonitorChannel(ctx context.Context, actorID, workspaceID, monitorID, channelID uuid.UUID, enabled bool) error {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleMember); err != nil {
+		return err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	locked, err := qtx.LockWorkspace(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock workspace: %w", err)
+	}
+	if locked.SuspendedAt != nil {
+		return ErrSuspended
+	}
+	if _, err := qtx.GetMonitor(ctx, sqlc.GetMonitorParams{ID: monitorID, WorkspaceID: workspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load monitor: %w", err)
+	}
+	if _, err := qtx.GetAlertChannelByID(ctx, sqlc.GetAlertChannelByIDParams{
+		ID: channelID, WorkspaceID: workspaceID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load alert channel: %w", err)
+	}
+	if err := qtx.UpsertMonitorAlertChannel(ctx, sqlc.UpsertMonitorAlertChannelParams{
+		MonitorID: monitorID, ChannelID: channelID, Enabled: enabled,
+	}); err != nil {
+		return fmt.Errorf("update monitor alert channel: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// SendTest delivers a test notification without writing a delivery row.
+// Disabled but complete channels can be tested; admins only.
+func (s *Service) SendTest(ctx context.Context, actorID, workspaceID, channelID uuid.UUID) error {
+	if _, err := s.ws.Authorize(ctx, actorID, workspaceID, workspaces.RoleAdmin); err != nil {
+		return err
+	}
+	row, err := s.q.GetAlertChannelByID(ctx, sqlc.GetAlertChannelByIDParams{
+		ID: channelID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load alert channel: %w", err)
+	}
+	workspace, err := s.q.GetWorkspaceByID(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load workspace: %w", err)
+	}
+
+	switch row.Kind {
+	case KindEmail:
+		var cfg EmailConfig
+		if err := decodeConfig(row.Config, &cfg); err != nil || len(cfg.Recipients) == 0 {
+			return ErrInvalidChannelConfig
+		}
+		if s.sender == nil {
+			return fmt.Errorf("email sender is not configured")
+		}
+		subject := fmt.Sprintf("o1 test notification for %s", workspace.Name)
+		text := fmt.Sprintf(
+			"This is a test notification from o1 for %s.\n\nNo incident is open and no delivery was recorded.\n",
+			workspace.Name,
+		)
+		body := fmt.Sprintf(
+			"<p>This is a test notification from o1 for <strong>%s</strong>.</p>"+
+				"<p>No incident is open and no delivery was recorded.</p>",
+			html.EscapeString(workspace.Name),
+		)
+		for _, recipient := range cfg.Recipients {
+			if err := s.sender.Send(ctx, email.Message{To: recipient, Subject: subject, Text: text, HTML: body}); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case KindWebhook, KindSlack, KindTelegram:
+		target, err := OpenTarget(s.box, row.Kind, row.Config)
+		if err != nil {
+			return ErrInvalidChannelConfig
+		}
+		if s.notifier == nil {
+			return fmt.Errorf("alert notifier is not configured")
+		}
+		return s.notifier.Send(ctx, target, Event{
+			Kind:          "test",
+			WorkspaceName: workspace.Name,
+			WorkspaceSlug: workspace.Slug,
+			Link:          strings.TrimRight(s.baseURL, "/"),
+		})
+
+	default:
+		return ErrInvalidChannelConfig
+	}
 }
 
 func validateKind(kind string) error {

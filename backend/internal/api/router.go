@@ -248,7 +248,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.CreateChannelHandler(alertSvc))))
 	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/alert-channels/{channelID}", requireSession(http.HandlerFunc(alerts.UpdateChannelHandler(alertSvc))))
 	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/alert-channels/{channelID}", requireSession(http.HandlerFunc(alerts.DeleteChannelHandler(alertSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/alert-channels/{channelID}/test", requireSession(http.HandlerFunc(alerts.TestChannelHandler(alertSvc))))
 	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/alert-channels/email", requireSession(http.HandlerFunc(incidents.PutEmailChannelHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channels", requireSession(http.HandlerFunc(alerts.MonitorChannelsHandler(alertSvc))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channels/{channelID}", requireSession(http.HandlerFunc(alerts.SetMonitorChannelHandler(alertSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.MonitorAlertChannelHandler(incidentSvc))))
 	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.SetMonitorAlertChannelHandler(incidentSvc))))
 
