@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"o1/internal/admin"
+	"o1/internal/alerts"
 	"o1/internal/auth"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
@@ -39,6 +40,7 @@ type Dependencies struct {
 	WorkspaceService *workspaces.Service
 	MonitorService   *monitors.Service
 	IncidentService  *incidents.Service
+	AlertService     *alerts.Service
 	AdminService     *admin.Service
 }
 
@@ -187,6 +189,22 @@ func NewRouter(deps Dependencies) http.Handler {
 	if incidentSvc == nil && deps.Pool != nil {
 		incidentSvc = incidents.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
 	}
+	alertSvc := deps.AlertService
+	if alertSvc == nil && deps.Pool != nil && len(deps.Config.EncryptionKey) == 32 {
+		if box, err := secretbox.New(deps.Config.EncryptionKey); err == nil {
+			guard := probe.NewGuard(probe.PolicyFromConfig(deps.Config))
+			alertSvc = alerts.NewService(
+				deps.Pool,
+				sqlc.New(deps.Pool),
+				wsSvc,
+				box,
+				guard,
+				alerts.NewNotifier(guard, ""),
+				deps.EmailSender,
+				deps.Config.AppBaseURL,
+			)
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
@@ -226,7 +244,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/acknowledge", requireSession(http.HandlerFunc(incidents.AcknowledgeHandler(incidentSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/deliveries", requireSession(http.HandlerFunc(incidents.DeliveriesHandler(incidentSvc))))
 
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(incidents.AlertChannelsHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.ListChannelsHandler(alertSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.CreateChannelHandler(alertSvc))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/alert-channels/{channelID}", requireSession(http.HandlerFunc(alerts.UpdateChannelHandler(alertSvc))))
+	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/alert-channels/{channelID}", requireSession(http.HandlerFunc(alerts.DeleteChannelHandler(alertSvc))))
 	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/alert-channels/email", requireSession(http.HandlerFunc(incidents.PutEmailChannelHandler(incidentSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.MonitorAlertChannelHandler(incidentSvc))))
 	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.SetMonitorAlertChannelHandler(incidentSvc))))

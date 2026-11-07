@@ -237,9 +237,9 @@ func TestNotifier_TelegramPayload(t *testing.T) {
 		t.Fatalf("path = %q, want /bot123:abc/sendMessage", gotPath)
 	}
 	var payload struct {
-		ChatID              string `json:"chat_id"`
-		Text                string `json:"text"`
-		DisableWebPagePreview bool `json:"disable_web_page_preview"`
+		ChatID                string `json:"chat_id"`
+		Text                  string `json:"text"`
+		DisableWebPagePreview bool   `json:"disable_web_page_preview"`
 	}
 	if err := json.Unmarshal(gotBody, &payload); err != nil {
 		t.Fatalf("unmarshal telegram payload: %v", err)
