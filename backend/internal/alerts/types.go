@@ -157,6 +157,24 @@ type MonitorChannel struct {
 	Enabled        bool      `json:"enabled"`
 }
 
+// Event carries the values one non-email notification renders. MonitorURL must
+// already be redacted. A Kind of "test" sends a test notification with no
+// monitor or incident.
+type Event struct {
+	Kind           string
+	Sequence       int
+	WorkspaceName  string
+	WorkspaceSlug  string
+	MonitorID      uuid.UUID
+	MonitorName    string
+	MonitorURL     string
+	IncidentID     uuid.UUID
+	StartedAt      time.Time
+	AcknowledgedAt *time.Time
+	ResolvedAt     *time.Time
+	Link           string
+}
+
 // Target is the decrypted delivery target for a non-email channel.
 type Target struct {
 	Kind          string

@@ -88,6 +88,31 @@ func NewGuardWithResolver(p Policy, r Resolver) *Guard {
 	return &Guard{policy: p, resolver: r}
 }
 
+// HTTPClient returns an HTTP client that dials and validates through the
+// guard's SSRF policy. When followRedirects is false the client returns the
+// first response instead of following a redirect. A nil receiver uses a
+// zero-value policy, matching NewProber.
+func (g *Guard) HTTPClient(followRedirects bool) *http.Client {
+	if g == nil {
+		g = NewGuard(Policy{})
+	}
+	transport := &http.Transport{
+		Proxy:               nil,
+		DialContext:         g.dialContext,
+		TLSHandshakeTimeout: g.tlsHandshakeTimeout(),
+		DisableKeepAlives:   true,
+	}
+	client := &http.Client{Transport: transport}
+	if followRedirects {
+		client.CheckRedirect = g.checkRedirect
+	} else {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+	return client
+}
+
 // ValidateURL parses raw and checks it against the policy. A DNS failure at
 // validation time is accepted: the probe dialer still classifies every
 // resolved address before connecting.

@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"testing"
 
 	"o1/internal/config"
@@ -150,6 +155,67 @@ func TestIsPublicIP(t *testing.T) {
 	}
 	if IsPublicIP(nil) {
 		t.Error("IsPublicIP(nil) = true, want false")
+	}
+}
+
+func TestProbeGuard_HTTPClientRedirectPolicy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse server port: %v", err)
+	}
+	g := NewGuard(Policy{
+		AllowedPorts:         map[int]struct{}{port: {}},
+		MaxRedirects:         2,
+		AllowPrivateNetworks: true,
+	})
+
+	noFollow := g.HTTPClient(false)
+	resp, err := noFollow.Get(srv.URL + "/start")
+	if err != nil {
+		t.Fatalf("HTTPClient(false) Get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("HTTPClient(false) status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+
+	follow := g.HTTPClient(true)
+	resp, err = follow.Get(srv.URL + "/start")
+	if err != nil {
+		t.Fatalf("HTTPClient(true) Get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HTTPClient(true) status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("HTTPClient(true) body = %q, want ok", body)
+	}
+}
+
+func TestProbeGuard_HTTPClientNilReceiver(t *testing.T) {
+	var g *Guard
+	client := g.HTTPClient(false)
+	if client == nil || client.Transport == nil {
+		t.Fatal("nil receiver returned an unusable client")
 	}
 }
 
