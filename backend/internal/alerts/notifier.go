@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -113,7 +114,7 @@ func (n *Notifier) Send(ctx context.Context, target Target, event Event) error {
 			"X-O1-Event":   event.Kind,
 		}
 		if target.SigningSecret != "" {
-			timestamp := n.now().UTC().Format(time.RFC3339Nano)
+			timestamp := strconv.FormatInt(n.now().UTC().Unix(), 10)
 			headers["X-O1-Timestamp"] = timestamp
 			headers["X-O1-Signature"] = webhookSignature(target.SigningSecret, timestamp, body)
 		}
@@ -266,7 +267,11 @@ func slackPayload(event Event) []byte {
 		case "resolved":
 			emoji, wording = "🟢", "recovered"
 		}
-		text = fmt.Sprintf("%s %s: %s %s\n%s", emoji, event.WorkspaceName, event.MonitorName, wording, event.Link)
+		text = fmt.Sprintf("%s %s: %s %s", emoji, event.WorkspaceName, event.MonitorName, wording)
+		if event.MonitorURL != "" {
+			text += "\n" + event.MonitorURL
+		}
+		text += "\n" + event.Link
 	}
 	body, _ := json.Marshal(struct {
 		Text string `json:"text"`

@@ -110,6 +110,38 @@ func TestNotifier_WebhookPayloadAndSignature(t *testing.T) {
 	}
 }
 
+func TestNotifier_WebhookTimestampIsUnixSeconds(t *testing.T) {
+	fixed := time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)
+	var gotBody []byte
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := NewNotifier(permissiveGuard(t, srv.URL), "")
+	n.now = func() time.Time { return fixed }
+	const secret = "0123456789abcdef"
+	if err := n.Send(context.Background(), Target{
+		Kind: KindWebhook, URL: srv.URL, SigningSecret: secret,
+	}, testEvent("opened")); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	timestamp := gotHeaders.Get("X-O1-Timestamp")
+	if timestamp != strconv.FormatInt(fixed.Unix(), 10) {
+		t.Fatalf("X-O1-Timestamp = %q, want unix seconds %d", timestamp, fixed.Unix())
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp + "." + string(gotBody)))
+	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	if gotHeaders.Get("X-O1-Signature") != want {
+		t.Fatalf("signature = %q, want %q", gotHeaders.Get("X-O1-Signature"), want)
+	}
+}
+
 func TestNotifier_WebhookWithoutSecretHasNoSignature(t *testing.T) {
 	var gotHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +229,7 @@ func TestNotifier_SlackPayload(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("unmarshal slack payload: %v", err)
 	}
-	for _, want := range []string{"Acme", "API", event.Link, "🔴"} {
+	for _, want := range []string{"Acme", "API", event.MonitorURL, event.Link, "🔴"} {
 		if !strings.Contains(payload.Text, want) {
 			t.Fatalf("slack text %q missing %q", payload.Text, want)
 		}
