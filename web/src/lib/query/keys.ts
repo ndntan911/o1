@@ -32,4 +32,6 @@ export const queryKeys = {
 		['alert-channels', workspaceId] as const,
 	monitorAlertChannel: (workspaceId: string, monitorId: string) =>
 		['monitor-alert-channel', workspaceId, monitorId] as const,
+	monitorAlertChannels: (workspaceId: string, monitorId: string) =>
+		['monitor-alert-channels', workspaceId, monitorId] as const,
 };

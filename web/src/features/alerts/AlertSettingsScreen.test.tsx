@@ -69,6 +69,34 @@ describe('AlertSettingsScreen', () => {
 		).toBeInTheDocument();
 	});
 
+	test('shows other channels alongside the email form', async () => {
+		server.use(
+			channelHandler([
+				channel,
+				{
+					id: 'c2',
+					kind: 'webhook',
+					name: 'Deploy hook',
+					enabled: true,
+					url_preview: 'https://example.com/…',
+					created_at: '2026-01-01T00:00:00Z',
+					updated_at: '2026-01-01T00:00:00Z',
+				},
+			]),
+		);
+
+		renderWithProviders(<AlertSettingsScreen workspace={workspace} />);
+
+		expect(
+			await screen.findByRole('heading', { name: 'Other channels' }),
+		).toBeInTheDocument();
+		expect(screen.getByText('Deploy hook')).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Add channel' }),
+		).toBeInTheDocument();
+		expect(screen.getByText('ops@example.com')).toBeInTheDocument();
+	});
+
 	test.each(['member', 'viewer'] as const)(
 		'a %s sees a forbidden state',
 		(role) => {

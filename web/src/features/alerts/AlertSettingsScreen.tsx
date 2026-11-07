@@ -11,6 +11,7 @@ import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
 import type { AlertChannel, Workspace } from '@/lib/api/types';
 import { canManageAlertChannels } from '@/lib/roles';
+import { ChannelList } from './ChannelList';
 import { useAlertChannels, useSaveEmailAlertChannel } from './hooks';
 import { RecipientsField, type RecipientsFieldHandle } from './RecipientsField';
 
@@ -70,11 +71,17 @@ function AlertSettingsContent({ workspace }: AlertSettingsScreenProps) {
 		channelsQuery.data.channels.find((item) => item.kind === 'email') ?? null;
 
 	return (
-		<AlertSettingsForm
-			key={channel?.updated_at ?? 'new'}
-			workspace={workspace}
-			channel={channel}
-		/>
+		<div className="max-w-2xl space-y-8">
+			<AlertSettingsForm
+				key={channel?.updated_at ?? 'new'}
+				workspace={workspace}
+				channel={channel}
+			/>
+			<ChannelList
+				workspaceId={workspace.id}
+				channels={channelsQuery.data.channels}
+			/>
+		</div>
 	);
 }
 
@@ -123,11 +130,11 @@ function AlertSettingsForm({ workspace, channel }: AlertSettingsFormProps) {
 	}
 
 	return (
-		<section className="max-w-2xl space-y-6">
+		<section className="space-y-6">
 			<div>
 				<h1 className="font-heading text-xl font-semibold">Alert settings</h1>
 				<p className="text-sm text-muted-foreground">
-					Choose who receives incident emails for {workspace.name}.
+					Choose how {workspace.name} sends incident notifications.
 				</p>
 			</div>
 

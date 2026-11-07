@@ -1,11 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/query/keys';
 import {
+	createAlertChannel,
+	deleteAlertChannel,
 	getMonitorAlertChannel,
 	listAlertChannels,
 	putEmailAlertChannel,
 	setMonitorAlertChannel,
+	testAlertChannel,
+	updateAlertChannel,
+	type CreateAlertChannelInput,
 	type PutEmailAlertChannelInput,
+	type UpdateAlertChannelInput,
 } from './api';
 
 export function useAlertChannels(workspaceId: string) {
@@ -47,6 +53,70 @@ export function useSaveEmailAlertChannel(workspaceId: string) {
 					queryKey: queryKeys.monitors(workspaceId),
 				}),
 			]),
+	});
+}
+
+function useInvalidateChannelLists(workspaceId: string) {
+	const queryClient = useQueryClient();
+
+	return () =>
+		Promise.all([
+			queryClient.invalidateQueries({
+				queryKey: queryKeys.alertChannels(workspaceId),
+			}),
+			queryClient.invalidateQueries({
+				queryKey: ['monitor-alert-channels', workspaceId],
+			}),
+			queryClient.invalidateQueries({
+				queryKey: ['monitor-alert-channel', workspaceId],
+			}),
+			queryClient.invalidateQueries({
+				queryKey: ['monitor', workspaceId],
+			}),
+			queryClient.invalidateQueries({
+				queryKey: queryKeys.monitors(workspaceId),
+			}),
+		]);
+}
+
+export function useCreateAlertChannel(workspaceId: string) {
+	const invalidate = useInvalidateChannelLists(workspaceId);
+
+	return useMutation({
+		mutationFn: (input: CreateAlertChannelInput) =>
+			createAlertChannel(workspaceId, input),
+		onSuccess: invalidate,
+	});
+}
+
+export function useUpdateAlertChannel(workspaceId: string) {
+	const invalidate = useInvalidateChannelLists(workspaceId);
+
+	return useMutation({
+		mutationFn: ({
+			channelId,
+			input,
+		}: {
+			channelId: string;
+			input: UpdateAlertChannelInput;
+		}) => updateAlertChannel(workspaceId, channelId, input),
+		onSuccess: invalidate,
+	});
+}
+
+export function useDeleteAlertChannel(workspaceId: string) {
+	const invalidate = useInvalidateChannelLists(workspaceId);
+
+	return useMutation({
+		mutationFn: (channelId: string) =>
+			deleteAlertChannel(workspaceId, channelId),
+		onSuccess: invalidate,
+	});
+}
+
+export function useTestAlertChannel(workspaceId: string) {
+	return useMutation({
+		mutationFn: (channelId: string) => testAlertChannel(workspaceId, channelId),
 	});
 }
 

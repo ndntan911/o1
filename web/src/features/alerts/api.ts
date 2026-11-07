@@ -1,9 +1,33 @@
 import { apiRequest } from '@/lib/api/client';
-import type { AlertChannel, MonitorAlertState } from '@/lib/api/types';
+import type {
+	AlertChannel,
+	AlertChannelKind,
+	MonitorAlertState,
+} from '@/lib/api/types';
 
 export interface PutEmailAlertChannelInput {
 	recipients: string[];
 	enabled: boolean;
+}
+
+export interface CreateAlertChannelInput {
+	kind: Exclude<AlertChannelKind, 'email'>;
+	name: string;
+	enabled: boolean;
+	url?: string;
+	signing_secret?: string;
+	bot_token?: string;
+	chat_id?: string;
+}
+
+export interface UpdateAlertChannelInput {
+	name?: string;
+	enabled?: boolean;
+	url?: string;
+	signing_secret?: string;
+	clear_signing_secret?: boolean;
+	bot_token?: string;
+	chat_id?: string;
 }
 
 function alertChannelsPath(workspaceId: string): string {
@@ -33,6 +57,46 @@ export function putEmailAlertChannel(
 		method: 'PUT',
 		body: input,
 	});
+}
+
+export function createAlertChannel(
+	workspaceId: string,
+	input: CreateAlertChannelInput,
+): Promise<AlertChannel> {
+	return apiRequest<AlertChannel>(alertChannelsPath(workspaceId), {
+		method: 'POST',
+		body: input,
+	});
+}
+
+export function updateAlertChannel(
+	workspaceId: string,
+	channelId: string,
+	input: UpdateAlertChannelInput,
+): Promise<AlertChannel> {
+	return apiRequest<AlertChannel>(
+		`${alertChannelsPath(workspaceId)}/${channelId}`,
+		{ method: 'PATCH', body: input },
+	);
+}
+
+export function deleteAlertChannel(
+	workspaceId: string,
+	channelId: string,
+): Promise<void> {
+	return apiRequest<void>(`${alertChannelsPath(workspaceId)}/${channelId}`, {
+		method: 'DELETE',
+	});
+}
+
+export function testAlertChannel(
+	workspaceId: string,
+	channelId: string,
+): Promise<void> {
+	return apiRequest<void>(
+		`${alertChannelsPath(workspaceId)}/${channelId}/test`,
+		{ method: 'POST' },
+	);
 }
 
 export function getMonitorAlertChannel(

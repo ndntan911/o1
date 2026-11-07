@@ -251,12 +251,18 @@ export interface IncidentDeliveryListResponse {
 	deliveries: IncidentDelivery[];
 }
 
+export type AlertChannelKind = 'email' | 'webhook' | 'slack' | 'telegram';
+
 export interface AlertChannel {
 	id: string;
-	kind: 'email';
+	kind: AlertChannelKind;
 	name: string;
 	enabled: boolean;
-	recipients: string[];
+	recipients?: string[];
+	url_preview?: string;
+	signing_secret_set?: boolean;
+	bot_token_set?: boolean;
+	chat_id?: string;
 	created_at: string;
 	updated_at: string;
 }
