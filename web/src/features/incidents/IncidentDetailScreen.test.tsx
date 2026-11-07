@@ -98,6 +98,9 @@ function makeDelivery(
 		id: 'd1',
 		event: 'opened',
 		sequence: 1,
+		channel_id: 'c1',
+		channel_kind: 'email',
+		channel_name: 'Email',
 		recipient: 'ops@example.com',
 		status: 'sent',
 		attempts: 1,
@@ -316,6 +319,45 @@ describe('IncidentDetailScreen', () => {
 		expect(screen.getByText('oncall@example.com')).toBeInTheDocument();
 		expect(screen.getAllByText('Sent').length).toBeGreaterThan(0);
 		expect(screen.getAllByText('Failed').length).toBeGreaterThan(0);
+	});
+
+	test('shows the channel and hides the recipient for non-email deliveries', async () => {
+		server.use(
+			detailHandler({
+				incident: makeIncident(),
+				events: [makeEvent('opened', '2026-01-01T01:00:00Z')],
+			}),
+			http.get(deliveriesPath, () =>
+				HttpResponse.json({
+					deliveries: [
+						makeDelivery(),
+						makeDelivery({
+							id: 'd2',
+							channel_id: 'c2',
+							channel_kind: 'webhook',
+							channel_name: 'Deploy hook',
+							recipient: 'c2',
+						}),
+					],
+				}),
+			),
+		);
+
+		renderWithProviders(
+			<IncidentDetailScreen
+				workspace={{ ...workspace, role: 'admin' }}
+				incidentId="i1"
+			/>,
+		);
+
+		expect(
+			await screen.findByRole('columnheader', { name: 'Channel' }),
+		).toBeInTheDocument();
+		expect(await screen.findByText('ops@example.com')).toBeInTheDocument();
+		expect(screen.getByText('Webhook')).toBeInTheDocument();
+		expect(screen.getByText('Deploy hook')).toBeInTheDocument();
+		expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+		expect(screen.queryByText('c2')).not.toBeInTheDocument();
 	});
 
 	test('groups deliveries by event and shows last_error', async () => {

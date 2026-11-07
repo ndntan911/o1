@@ -32,6 +32,16 @@ import {
 import { IncidentTimeline } from './IncidentTimeline';
 import { incidentStatusLabel, incidentStatusVariant } from './status';
 
+const DELIVERY_CHANNEL_LABELS: Record<
+	IncidentDelivery['channel_kind'],
+	string
+> = {
+	email: 'Email',
+	webhook: 'Webhook',
+	slack: 'Slack',
+	telegram: 'Telegram',
+};
+
 const DELIVERY_EVENT_LABELS: Record<IncidentDelivery['event'], string> = {
 	opened: 'Opened',
 	reminder: 'Reminder',
@@ -244,6 +254,7 @@ function IncidentDetailView({ workspace, detail }: IncidentDetailViewProps) {
 										</TableCaption>
 										<TableHeader>
 											<TableRow>
+												<TableHead>Channel</TableHead>
 												<TableHead>Recipient</TableHead>
 												<TableHead>Status</TableHead>
 												<TableHead>Attempts</TableHead>
@@ -254,7 +265,21 @@ function IncidentDetailView({ workspace, detail }: IncidentDetailViewProps) {
 										<TableBody>
 											{deliveries.map((delivery) => (
 												<TableRow key={delivery.id}>
-													<TableCell>{delivery.recipient}</TableCell>
+													<TableCell>
+														<span className="font-medium">
+															{delivery.channel_name}
+														</span>
+														{delivery.channel_kind !== 'email' ? (
+															<span className="ml-2 text-xs text-muted-foreground">
+																{DELIVERY_CHANNEL_LABELS[delivery.channel_kind]}
+															</span>
+														) : null}
+													</TableCell>
+													<TableCell>
+														{delivery.channel_kind === 'email'
+															? delivery.recipient
+															: '—'}
+													</TableCell>
 													<TableCell>
 														{DELIVERY_STATUS_LABELS[delivery.status]}
 													</TableCell>

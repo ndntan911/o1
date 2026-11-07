@@ -8,7 +8,7 @@ import { renderWithProviders } from '@/test/render';
 import type {
 	Incident,
 	Monitor,
-	MonitorAlertState,
+	MonitorChannel,
 	ProbeResult,
 	ResultsWindow,
 	Summary,
@@ -132,14 +132,25 @@ const listPath = `${ORIGIN}/api/v1/workspaces/${workspace.id}/monitors`;
 const monitorPath = `${listPath}/m1`;
 const summaryPath = `${monitorPath}/summary`;
 const resultsPath = `${monitorPath}/results`;
-const alertChannelPath = `${monitorPath}/alert-channel`;
+const alertChannelsPath = `${monitorPath}/alert-channels`;
 const incidentsPath = `${ORIGIN}/api/v1/workspaces/${workspace.id}/incidents`;
 
-const defaultAlertState: MonitorAlertState = {
-	available: true,
-	channel_enabled: true,
-	enabled: true,
-};
+const defaultChannels: MonitorChannel[] = [
+	{
+		id: 'c1',
+		kind: 'email',
+		name: 'Email',
+		channel_enabled: true,
+		enabled: true,
+	},
+	{
+		id: 'c2',
+		kind: 'webhook',
+		name: 'Deploy hook',
+		channel_enabled: true,
+		enabled: true,
+	},
+];
 
 function makeIncident(overrides: Partial<Incident> = {}): Incident {
 	return {
@@ -174,7 +185,7 @@ function useMonitorHandlers(
 	monitor: Monitor = makeMonitor(),
 	requests: WindowRequests = { summary: [], results: [] },
 	results: ProbeResult[] = [],
-	alertState: MonitorAlertState = defaultAlertState,
+	channels: MonitorChannel[] = defaultChannels,
 ) {
 	server.use(
 		http.get(monitorPath, () => HttpResponse.json(monitor)),
@@ -186,7 +197,7 @@ function useMonitorHandlers(
 			requests.results.push(new URL(request.url).searchParams.get('window'));
 			return HttpResponse.json({ results });
 		}),
-		http.get(alertChannelPath, () => HttpResponse.json(alertState)),
+		http.get(alertChannelsPath, () => HttpResponse.json({ channels })),
 		http.get(incidentsPath, () => HttpResponse.json({ incidents: [] })),
 	);
 
@@ -630,19 +641,21 @@ describe('MonitorDetailScreen', () => {
 		expect(screen.queryByText('Active incident')).not.toBeInTheDocument();
 	});
 
-	test('a member sees and toggles the email alerts switch', async () => {
-		const patches: unknown[] = [];
-		const state: MonitorAlertState = {
-			available: true,
-			channel_enabled: true,
-			enabled: true,
-		};
-		useMonitorHandlers(makeMonitor(), undefined, undefined, state);
+	test('a member sees and toggles the alert channels', async () => {
+		const patches: Array<{ path: string; body: unknown }> = [];
+		let channels = defaultChannels;
+		useMonitorHandlers(makeMonitor(), undefined, undefined, channels);
 		server.use(
-			http.patch(alertChannelPath, async ({ request }) => {
+			http.get(alertChannelsPath, () => HttpResponse.json({ channels })),
+			http.patch(`${alertChannelsPath}/c2`, async ({ request }) => {
 				const body = (await request.json()) as { enabled: boolean };
-				patches.push(body);
-				state.enabled = body.enabled;
+				patches.push({
+					path: new URL(request.url).pathname,
+					body,
+				});
+				channels = channels.map((channel) =>
+					channel.id === 'c2' ? { ...channel, enabled: body.enabled } : channel,
+				);
 				return new HttpResponse(null, { status: 204 });
 			}),
 		);
@@ -652,16 +665,27 @@ describe('MonitorDetailScreen', () => {
 			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
 		);
 
-		const toggle = await screen.findByRole('switch', { name: 'Email alerts' });
-		await waitFor(() => expect(toggle).toBeChecked());
+		expect(
+			await screen.findByRole('heading', { name: 'Alert channels' }),
+		).toBeInTheDocument();
+		expect(await screen.findByText('Email')).toBeInTheDocument();
+		expect(await screen.findByText('Deploy hook')).toBeInTheDocument();
 
+		const toggle = await screen.findByRole('switch', {
+			name: 'Deploy hook alerts',
+		});
+		await waitFor(() => expect(toggle).toBeChecked());
 		await user.click(toggle);
 
-		await waitFor(() => expect(patches).toEqual([{ enabled: false }]));
+		await waitFor(() => expect(patches).toHaveLength(1));
+		expect(patches[0]).toEqual({
+			path: '/api/v1/workspaces/w1/monitors/m1/alert-channels/c2',
+			body: { enabled: false },
+		});
 		await waitFor(() => expect(toggle).not.toBeChecked());
 	});
 
-	test('a viewer does not see the email alerts switch', async () => {
+	test('a viewer does not see the alert channel switches', async () => {
 		useMonitorHandlers();
 
 		renderWithProviders(
@@ -675,31 +699,31 @@ describe('MonitorDetailScreen', () => {
 		expect(
 			screen.queryByRole('switch', { name: 'Email alerts' }),
 		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole('heading', { name: 'Alert channels' }),
+		).not.toBeInTheDocument();
 	});
 
 	test('a disabled workspace channel shows a note and disables the switch', async () => {
-		useMonitorHandlers(makeMonitor(), undefined, undefined, {
-			available: true,
-			channel_enabled: false,
-			enabled: false,
-		});
+		useMonitorHandlers(makeMonitor(), undefined, undefined, [
+			defaultChannels[0],
+			{ ...defaultChannels[1], channel_enabled: false, enabled: false },
+		]);
 
 		renderWithProviders(
 			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
 		);
 
 		expect(
-			await screen.findByText('Email alerts are disabled for this workspace.'),
+			await screen.findByText('Disabled for this workspace'),
 		).toBeInTheDocument();
-		expect(screen.getByRole('switch', { name: 'Email alerts' })).toBeDisabled();
+		expect(
+			screen.getByRole('switch', { name: 'Deploy hook alerts' }),
+		).toBeDisabled();
 	});
 
-	test('a missing workspace channel shows a note without an admin link for members', async () => {
-		useMonitorHandlers(makeMonitor(), undefined, undefined, {
-			available: false,
-			channel_enabled: false,
-			enabled: false,
-		});
+	test('an empty channel list shows a note without an admin link for members', async () => {
+		useMonitorHandlers(makeMonitor(), undefined, undefined, []);
 
 		renderWithProviders(
 			<MonitorDetailScreen workspace={workspace} monitorId="m1" />,
@@ -707,21 +731,16 @@ describe('MonitorDetailScreen', () => {
 
 		expect(
 			await screen.findByText(
-				'Email alerts are not configured for this workspace.',
+				'No alert channels are configured for this workspace.',
 			),
 		).toBeInTheDocument();
-		expect(screen.getByRole('switch', { name: 'Email alerts' })).toBeDisabled();
 		expect(
-			screen.queryByRole('link', { name: 'Configure email alerts' }),
+			screen.queryByRole('link', { name: 'Configure alert channels' }),
 		).not.toBeInTheDocument();
 	});
 
-	test('a missing workspace channel links admins to alert settings', async () => {
-		useMonitorHandlers(makeMonitor(), undefined, undefined, {
-			available: false,
-			channel_enabled: false,
-			enabled: false,
-		});
+	test('an empty channel list links admins to alert settings', async () => {
+		useMonitorHandlers(makeMonitor(), undefined, undefined, []);
 
 		renderWithProviders(
 			<MonitorDetailScreen
@@ -731,7 +750,7 @@ describe('MonitorDetailScreen', () => {
 		);
 
 		expect(
-			await screen.findByRole('link', { name: 'Configure email alerts' }),
+			await screen.findByRole('link', { name: 'Configure alert channels' }),
 		).toHaveAttribute('href', '/w/acme-status/settings/alerts');
 	});
 });

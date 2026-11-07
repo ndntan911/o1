@@ -3,6 +3,7 @@ import type {
 	AlertChannel,
 	AlertChannelKind,
 	MonitorAlertState,
+	MonitorChannelListResponse,
 } from '@/lib/api/types';
 
 export interface PutEmailAlertChannelInput {
@@ -96,6 +97,27 @@ export function testAlertChannel(
 	return apiRequest<void>(
 		`${alertChannelsPath(workspaceId)}/${channelId}/test`,
 		{ method: 'POST' },
+	);
+}
+
+export function listMonitorAlertChannels(
+	workspaceId: string,
+	monitorId: string,
+): Promise<MonitorChannelListResponse> {
+	return apiRequest<MonitorChannelListResponse>(
+		`/workspaces/${workspaceId}/monitors/${monitorId}/alert-channels`,
+	);
+}
+
+export function setMonitorChannel(
+	workspaceId: string,
+	monitorId: string,
+	channelId: string,
+	enabled: boolean,
+): Promise<void> {
+	return apiRequest<void>(
+		`/workspaces/${workspaceId}/monitors/${monitorId}/alert-channels/${channelId}`,
+		{ method: 'PATCH', body: { enabled } },
 	);
 }
 

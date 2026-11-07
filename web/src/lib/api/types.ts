@@ -229,6 +229,9 @@ export interface IncidentDelivery {
 	id: string;
 	event: 'opened' | 'reminder' | 'resolved';
 	sequence: number;
+	channel_id: string;
+	channel_kind: AlertChannelKind;
+	channel_name: string;
 	recipient: string;
 	status: 'pending' | 'sent' | 'failed' | 'skipped';
 	attempts: number;
@@ -271,4 +274,16 @@ export interface MonitorAlertState {
 	available: boolean;
 	channel_enabled: boolean;
 	enabled: boolean;
+}
+
+export interface MonitorChannel {
+	id: string;
+	kind: AlertChannelKind;
+	name: string;
+	channel_enabled: boolean;
+	enabled: boolean;
+}
+
+export interface MonitorChannelListResponse {
+	channels: MonitorChannel[];
 }

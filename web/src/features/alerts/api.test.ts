@@ -5,7 +5,9 @@ import { isApiProblem } from '@/lib/api/client';
 import {
 	createAlertChannel,
 	deleteAlertChannel,
+	listMonitorAlertChannels,
 	putEmailAlertChannel,
+	setMonitorChannel,
 	testAlertChannel,
 	updateAlertChannel,
 } from './api';
@@ -117,5 +119,44 @@ describe('alert channel API', () => {
 				expect(error.problem.detail).toBe('webhook returned HTTP 500');
 			}
 		}
+	});
+});
+
+describe('monitor alert channel API', () => {
+	const monitorPath = `${channelsPath.replace('/alert-channels', '')}/monitors/m1/alert-channels`;
+
+	test('listMonitorAlertChannels gets the monitor channel list', async () => {
+		server.use(
+			http.get(monitorPath, () =>
+				HttpResponse.json({
+					channels: [
+						{
+							id: 'c1',
+							kind: 'email',
+							name: 'Email',
+							channel_enabled: true,
+							enabled: true,
+						},
+					],
+				}),
+			),
+		);
+
+		const result = await listMonitorAlertChannels('w1', 'm1');
+		expect(result.channels).toHaveLength(1);
+		expect(result.channels[0].name).toBe('Email');
+	});
+
+	test('setMonitorChannel patches the target switch', async () => {
+		const bodies: unknown[] = [];
+		server.use(
+			http.patch(`${monitorPath}/c2`, async ({ request }) => {
+				bodies.push(await request.json());
+				return new HttpResponse(null, { status: 204 });
+			}),
+		);
+
+		await setMonitorChannel('w1', 'm1', 'c2', false);
+		expect(bodies).toEqual([{ enabled: false }]);
 	});
 });

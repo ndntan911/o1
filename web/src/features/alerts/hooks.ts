@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { MonitorChannelListResponse } from '@/lib/api/types';
 import { queryKeys } from '@/lib/query/keys';
 import {
 	createAlertChannel,
 	deleteAlertChannel,
 	getMonitorAlertChannel,
 	listAlertChannels,
+	listMonitorAlertChannels,
 	putEmailAlertChannel,
 	setMonitorAlertChannel,
+	setMonitorChannel,
 	testAlertChannel,
 	updateAlertChannel,
 	type CreateAlertChannelInput,
@@ -117,6 +120,62 @@ export function useDeleteAlertChannel(workspaceId: string) {
 export function useTestAlertChannel(workspaceId: string) {
 	return useMutation({
 		mutationFn: (channelId: string) => testAlertChannel(workspaceId, channelId),
+	});
+}
+
+export function useMonitorAlertChannels(
+	workspaceId: string,
+	monitorId: string,
+	enabled = true,
+) {
+	return useQuery({
+		queryKey: queryKeys.monitorAlertChannels(workspaceId, monitorId),
+		queryFn: () => listMonitorAlertChannels(workspaceId, monitorId),
+		enabled,
+		staleTime: 15_000,
+	});
+}
+
+export function useSetMonitorChannel(workspaceId: string, monitorId: string) {
+	const queryClient = useQueryClient();
+	const key = queryKeys.monitorAlertChannels(workspaceId, monitorId);
+
+	return useMutation({
+		mutationFn: ({
+			channelId,
+			enabled,
+		}: {
+			channelId: string;
+			enabled: boolean;
+		}) => setMonitorChannel(workspaceId, monitorId, channelId, enabled),
+		onMutate: async ({ channelId, enabled }) => {
+			await queryClient.cancelQueries({ queryKey: key });
+			const previous =
+				queryClient.getQueryData<MonitorChannelListResponse>(key);
+			if (previous) {
+				queryClient.setQueryData<MonitorChannelListResponse>(key, {
+					channels: previous.channels.map((channel) =>
+						channel.id === channelId ? { ...channel, enabled } : channel,
+					),
+				});
+			}
+			return { previous };
+		},
+		onError: (_error, _variables, context) => {
+			if (context?.previous) {
+				queryClient.setQueryData(key, context.previous);
+			}
+		},
+		onSuccess: () =>
+			Promise.all([
+				queryClient.invalidateQueries({ queryKey: key }),
+				queryClient.invalidateQueries({
+					queryKey: ['monitor', workspaceId],
+				}),
+				queryClient.invalidateQueries({
+					queryKey: queryKeys.monitors(workspaceId),
+				}),
+			]),
 	});
 }
 
