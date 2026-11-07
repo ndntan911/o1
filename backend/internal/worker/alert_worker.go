@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,39 +14,54 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"o1/internal/alerts"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
 	"o1/internal/incidents"
 	"o1/internal/jobs"
 	"o1/internal/monitors"
+	"o1/internal/secretbox"
 )
 
 const (
 	// alertReminderStaleAfter is twice the reminder interval. A reminder older
 	// than this is dropped rather than sent in a burst after worker downtime.
 	alertReminderStaleAfter = 60 * time.Minute
-	// alertJobTimeout bounds one alert job, including the SMTP send.
+	// alertJobTimeout bounds one alert job, including the outbound send.
 	alertJobTimeout = 60 * time.Second
 )
 
-// AlertWorker sends one incident alert email per delivery.
+// AlertWorker sends one incident alert delivery per job, using email or the
+// guarded webhook/Slack/Telegram notifier.
 type AlertWorker struct {
 	river.WorkerDefaults[jobs.AlertArgs]
 
-	q      *sqlc.Queries
-	sender email.Sender
-	cfg    config.Config
-	logger *slog.Logger
+	q        *sqlc.Queries
+	sender   email.Sender
+	box      *secretbox.Box
+	notifier alerts.NotificationSender
+	cfg      config.Config
+	logger   *slog.Logger
 }
 
 // NewAlertWorker builds an AlertWorker. The pool is accepted for symmetry with
 // the other workers and for future transactional re-checks.
-func NewAlertWorker(pool *pgxpool.Pool, q *sqlc.Queries, sender email.Sender, cfg config.Config, logger *slog.Logger) *AlertWorker {
+func NewAlertWorker(
+	pool *pgxpool.Pool,
+	q *sqlc.Queries,
+	sender email.Sender,
+	box *secretbox.Box,
+	notifier alerts.NotificationSender,
+	cfg config.Config,
+	logger *slog.Logger,
+) *AlertWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AlertWorker{q: q, sender: sender, cfg: cfg, logger: logger}
+	return &AlertWorker{
+		q: q, sender: sender, box: box, notifier: notifier, cfg: cfg, logger: logger,
+	}
 }
 
 // Timeout bounds each job run.
@@ -67,6 +84,20 @@ func (w *AlertWorker) Work(ctx context.Context, job *river.Job[jobs.AlertArgs]) 
 		return nil
 	}
 
+	if delivery.ChannelDeletedAt != nil {
+		if err := w.markDelivery(ctx, delivery.ID, "skipped", "channel deleted"); err != nil {
+			return err
+		}
+		w.logger.Log(ctx, slog.LevelInfo, "alert_delivery_skipped",
+			"delivery_id", delivery.ID,
+			"incident_id", delivery.IncidentID,
+			"channel_id", delivery.ChannelID,
+			"channel_kind", delivery.ChannelKind,
+			"reason", "channel deleted",
+		)
+		return nil
+	}
+
 	if delivery.Event == "reminder" {
 		if reason := reminderSkipReason(delivery, time.Now().UTC()); reason != "" {
 			if err := w.markDelivery(ctx, delivery.ID, "skipped", reason); err != nil {
@@ -81,6 +112,17 @@ func (w *AlertWorker) Work(ctx context.Context, job *river.Job[jobs.AlertArgs]) 
 		}
 	}
 
+	switch delivery.ChannelKind {
+	case "email":
+		return w.sendEmail(ctx, job, delivery)
+	case "webhook", "slack", "telegram":
+		return w.sendNotifier(ctx, job, delivery)
+	default:
+		return w.failWithoutRetry(ctx, delivery, "unsupported alert channel kind")
+	}
+}
+
+func (w *AlertWorker) sendEmail(ctx context.Context, job *river.Job[jobs.AlertArgs], delivery sqlc.GetAlertDeliveryRow) error {
 	message := incidents.BuildAlertMessage(incidents.AlertEmail{
 		WorkspaceName: delivery.WorkspaceName,
 		WorkspaceSlug: delivery.WorkspaceSlug,
@@ -94,28 +136,91 @@ func (w *AlertWorker) Work(ctx context.Context, job *river.Job[jobs.AlertArgs]) 
 		Recipient:     delivery.Recipient,
 	})
 	if err := w.sender.Send(ctx, message); err != nil {
-		lastError := err.Error()
-		if job.Attempt >= job.MaxAttempts {
-			if markErr := w.markDelivery(ctx, delivery.ID, "failed", lastError); markErr != nil {
-				return markErr
-			}
-			w.logger.Log(ctx, slog.LevelError, "alert_delivery_failed",
-				"delivery_id", delivery.ID,
-				"incident_id", delivery.IncidentID,
-				"attempts", job.Attempt,
-				"error", lastError,
-			)
-			return nil
-		}
-		if markErr := w.markDelivery(ctx, delivery.ID, "pending", lastError); markErr != nil {
-			return markErr
-		}
-		return err
+		return w.handleSendError(ctx, job, delivery, err)
 	}
 	if err := w.q.MarkAlertDeliverySent(ctx, delivery.ID); err != nil {
 		return fmt.Errorf("mark alert delivery sent: %w", err)
 	}
 	return nil
+}
+
+func (w *AlertWorker) sendNotifier(ctx context.Context, job *river.Job[jobs.AlertArgs], delivery sqlc.GetAlertDeliveryRow) error {
+	if w.box == nil {
+		return w.failWithoutRetry(ctx, delivery, "invalid alert channel configuration")
+	}
+	target, err := alerts.OpenTarget(w.box, delivery.ChannelKind, delivery.ChannelConfig)
+	if err != nil {
+		return w.failWithoutRetry(ctx, delivery, "invalid alert channel configuration")
+	}
+	if w.notifier == nil {
+		return fmt.Errorf("alert notifier is not configured")
+	}
+	event := alerts.Event{
+		Kind:           delivery.Event,
+		Sequence:       int(delivery.Sequence),
+		WorkspaceName:  delivery.WorkspaceName,
+		WorkspaceSlug:  delivery.WorkspaceSlug,
+		MonitorID:      delivery.MonitorID,
+		MonitorName:    delivery.MonitorName,
+		MonitorURL:     monitors.RedactURL(delivery.MonitorUrl),
+		IncidentID:     delivery.IncidentID,
+		StartedAt:      delivery.StartedAt,
+		AcknowledgedAt: delivery.AcknowledgedAt,
+		ResolvedAt:     delivery.ResolvedAt,
+		Link:           incidentLink(w.cfg.AppBaseURL, delivery),
+	}
+	if err := w.notifier.Send(ctx, target, event); err != nil {
+		if alerts.IsPermanent(err) {
+			return w.failWithoutRetry(ctx, delivery, err.Error())
+		}
+		return w.handleSendError(ctx, job, delivery, err)
+	}
+	if err := w.q.MarkAlertDeliverySent(ctx, delivery.ID); err != nil {
+		return fmt.Errorf("mark alert delivery sent: %w", err)
+	}
+	return nil
+}
+
+// handleSendError applies the shared retry budget to a failed send.
+func (w *AlertWorker) handleSendError(ctx context.Context, job *river.Job[jobs.AlertArgs], delivery sqlc.GetAlertDeliveryRow, sendErr error) error {
+	lastError := sendErr.Error()
+	if job.Attempt >= job.MaxAttempts {
+		if markErr := w.markDelivery(ctx, delivery.ID, "failed", lastError); markErr != nil {
+			return markErr
+		}
+		w.logger.Log(ctx, slog.LevelError, "alert_delivery_failed",
+			"delivery_id", delivery.ID,
+			"incident_id", delivery.IncidentID,
+			"channel_id", delivery.ChannelID,
+			"channel_kind", delivery.ChannelKind,
+			"attempts", job.Attempt,
+			"error", lastError,
+		)
+		return nil
+	}
+	if markErr := w.markDelivery(ctx, delivery.ID, "pending", lastError); markErr != nil {
+		return markErr
+	}
+	return sendErr
+}
+
+func (w *AlertWorker) failWithoutRetry(ctx context.Context, delivery sqlc.GetAlertDeliveryRow, reason string) error {
+	if err := w.markDelivery(ctx, delivery.ID, "failed", reason); err != nil {
+		return err
+	}
+	w.logger.Log(ctx, slog.LevelError, "alert_delivery_failed",
+		"delivery_id", delivery.ID,
+		"incident_id", delivery.IncidentID,
+		"channel_id", delivery.ChannelID,
+		"channel_kind", delivery.ChannelKind,
+		"error", reason,
+	)
+	return nil
+}
+
+func incidentLink(baseURL string, delivery sqlc.GetAlertDeliveryRow) string {
+	return strings.TrimRight(baseURL, "/") + "/w/" + url.PathEscape(delivery.WorkspaceSlug) +
+		"/incidents/" + delivery.IncidentID.String()
 }
 
 // reminderSkipReason returns why a reminder is no longer worth sending, or an

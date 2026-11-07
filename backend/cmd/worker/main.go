@@ -17,6 +17,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"golang.org/x/time/rate"
 
+	"o1/internal/alerts"
 	"o1/internal/app"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
@@ -59,7 +60,7 @@ func run() error {
 	q := sqlc.New(rt.Pool)
 	probeWorker := worker.NewProbeWorker(rt.Pool, q, box, prober, limiter, rt.Logger)
 	sender := email.NewMailpitSender(rt.Config.SMTPAddr, rt.Config.EmailFrom)
-	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, rt.Config, rt.Logger)
+	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, box, alerts.NewNotifier(guard, ""), rt.Config, rt.Logger)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, probeWorker)

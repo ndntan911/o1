@@ -259,23 +259,21 @@ func (s *Service) create(ctx context.Context, workspaceID, actorID uuid.UUID, in
 	if err := qtx.CreateMonitorState(ctx, monitor.ID); err != nil {
 		return uuid.Nil, fmt.Errorf("create monitor state: %w", err)
 	}
-	// A monitor created after the workspace email channel exists starts with
-	// per-monitor email alerts enabled, matching the auto-attach behavior when
-	// the channel itself is created.
-	channel, err := qtx.GetEmailAlertChannel(ctx, workspaceID)
-	switch {
-	case err == nil:
+	// A monitor created after channels exist starts with every per-monitor
+	// switch enabled, including channels disabled globally. This mirrors the
+	// auto-attach behavior when a channel itself is created.
+	channels, err := qtx.ListAlertChannels(ctx, workspaceID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("list alert channels: %w", err)
+	}
+	for _, channel := range channels {
 		if err := qtx.UpsertMonitorAlertChannel(ctx, sqlc.UpsertMonitorAlertChannelParams{
 			MonitorID: monitor.ID,
 			ChannelID: channel.ID,
 			Enabled:   true,
 		}); err != nil {
-			return uuid.Nil, fmt.Errorf("attach email alert channel: %w", err)
+			return uuid.Nil, fmt.Errorf("attach alert channel %s: %w", channel.ID, err)
 		}
-	case errors.Is(err, pgx.ErrNoRows):
-		// No workspace email channel yet; the monitor is still valid.
-	default:
-		return uuid.Nil, fmt.Errorf("load email alert channel: %w", err)
 	}
 	if err := s.insertEvent(ctx, qtx, workspaceID, actorID, "monitor_created", map[string]any{
 		"url": redactURL(in.URL),

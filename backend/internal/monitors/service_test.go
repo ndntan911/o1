@@ -699,7 +699,7 @@ func decryptHeaders(t *testing.T, env *testEnv, monitorID uuid.UUID) map[string]
 	return headers
 }
 
-func TestCreate_AttachesEmailChannel(t *testing.T) {
+func TestCreate_AttachesAllAlertChannels(t *testing.T) {
 	env := newTestEnv(t)
 	ws := env.createWorkspace(t, "owner@example.com")
 
@@ -717,28 +717,40 @@ func TestCreate_AttachesEmailChannel(t *testing.T) {
 		t.Fatalf("join rows without channel = %d, want 0", joins)
 	}
 
-	channelID, err := uuid.NewV7()
+	emailID, err := uuid.NewV7()
 	if err != nil {
-		t.Fatalf("new channel id: %v", err)
+		t.Fatalf("new email channel id: %v", err)
 	}
 	if _, err := env.pool.Exec(context.Background(), `
 		INSERT INTO alert_channels (id, workspace_id, kind, name, config)
 		VALUES ($1, $2, 'email', 'Email', '{"recipients":["ops@example.com"]}')`,
-		channelID, ws); err != nil {
-		t.Fatalf("insert channel: %v", err)
+		emailID, ws); err != nil {
+		t.Fatalf("insert email channel: %v", err)
+	}
+	webhookID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new webhook channel id: %v", err)
+	}
+	if _, err := env.pool.Exec(context.Background(), `
+		INSERT INTO alert_channels (id, workspace_id, kind, name, config, enabled)
+		VALUES ($1, $2, 'webhook', 'Deploy hook', '{"url_enc":"v1:x","url_preview":"https://example.com/…"}', false)`,
+		webhookID, ws); err != nil {
+		t.Fatalf("insert webhook channel: %v", err)
 	}
 
 	created, err := env.svc.Create(context.Background(), env.ownerID, ws, validInput(1))
 	if err != nil {
-		t.Fatalf("create monitor with channel: %v", err)
+		t.Fatalf("create monitor with channels: %v", err)
 	}
-	var enabled bool
-	if err := env.pool.QueryRow(context.Background(),
-		`SELECT enabled FROM monitor_alert_channels WHERE monitor_id = $1 AND channel_id = $2`,
-		created.ID, channelID).Scan(&enabled); err != nil {
-		t.Fatalf("load join row: %v", err)
-	}
-	if !enabled {
-		t.Fatal("monitor alert channel enabled = false, want true")
+	for _, channelID := range []uuid.UUID{emailID, webhookID} {
+		var enabled bool
+		if err := env.pool.QueryRow(context.Background(),
+			`SELECT enabled FROM monitor_alert_channels WHERE monitor_id = $1 AND channel_id = $2`,
+			created.ID, channelID).Scan(&enabled); err != nil {
+			t.Fatalf("load join row for %s: %v", channelID, err)
+		}
+		if !enabled {
+			t.Fatalf("monitor alert channel %s enabled = false, want true", channelID)
+		}
 	}
 }

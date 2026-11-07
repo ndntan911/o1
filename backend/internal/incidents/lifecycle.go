@@ -111,53 +111,107 @@ func createEvent(ctx context.Context, q *sqlc.Queries, incidentID uuid.UUID, kin
 }
 
 func enqueueDeliveries(ctx context.Context, tx pgx.Tx, q *sqlc.Queries, inserter JobInserter, incident sqlc.Incident, event string) error {
-	channels, err := q.ListEnabledAlertChannelsForMonitor(ctx, incident.MonitorID)
+	_, err := enqueueAlertDeliveries(ctx, tx, q, inserter, incident.ID, incident.MonitorID, event, 0)
+	return err
+}
+
+// enqueueAlertDeliveries creates one delivery and alert job per email recipient
+// or non-email channel and reports how many deliveries were newly inserted.
+// Malformed email configuration and unknown kinds are skipped rather than
+// failing the caller's transaction.
+func enqueueAlertDeliveries(
+	ctx context.Context,
+	tx pgx.Tx,
+	q *sqlc.Queries,
+	inserter JobInserter,
+	incidentID, monitorID uuid.UUID,
+	event string,
+	sequence int,
+) (int, error) {
+	channels, err := q.ListEnabledAlertChannelsForMonitor(ctx, monitorID)
 	if err != nil {
-		return fmt.Errorf("list enabled alert channels: %w", err)
+		return 0, fmt.Errorf("list enabled alert channels: %w", err)
 	}
 
+	inserted := 0
 	for _, channel := range channels {
-		// Plan 4 supports email alert channels only.
-		if channel.Kind != "email" {
-			continue
-		}
-		var config EmailConfig
-		if err := json.Unmarshal(channel.Config, &config); err != nil {
-			// A malformed channel must not fail monitoring. Skip its deliveries
-			// and continue with the remaining channels.
-			continue
-		}
-		for _, rawRecipient := range config.Recipients {
-			recipient := strings.TrimSpace(rawRecipient)
-			if recipient == "" {
+		switch channel.Kind {
+		case "email":
+			var config EmailConfig
+			if err := json.Unmarshal(channel.Config, &config); err != nil {
+				// A malformed channel must not fail monitoring. Skip its
+				// deliveries and continue with the remaining channels.
 				continue
 			}
-			deliveryID, err := uuid.NewV7()
+			seen := make(map[string]struct{}, len(config.Recipients))
+			for _, rawRecipient := range config.Recipients {
+				recipient := strings.TrimSpace(rawRecipient)
+				if recipient == "" {
+					continue
+				}
+				if _, duplicate := seen[recipient]; duplicate {
+					continue
+				}
+				seen[recipient] = struct{}{}
+				ok, err := createAlertDelivery(ctx, tx, q, inserter, incidentID, channel.ID, event, sequence, recipient)
+				if err != nil {
+					return inserted, err
+				}
+				if ok {
+					inserted++
+				}
+			}
+		case "webhook", "slack", "telegram":
+			// One delivery per channel; the channel UUID is the dedup-stable
+			// recipient and survives rename and secret rotation.
+			ok, err := createAlertDelivery(ctx, tx, q, inserter, incidentID, channel.ID, event, sequence, channel.ID.String())
 			if err != nil {
-				return fmt.Errorf("new alert delivery id: %w", err)
+				return inserted, err
 			}
-			delivery, err := q.CreateAlertDelivery(ctx, sqlc.CreateAlertDeliveryParams{
-				ID:         deliveryID,
-				IncidentID: incident.ID,
-				ChannelID:  channel.ID,
-				Event:      event,
-				Sequence:   0,
-				Recipient:  recipient,
-			})
-			if errors.Is(err, pgx.ErrNoRows) {
-				// The delivery unique key already exists; do not enqueue a
-				// second job for the same recipient and event.
-				continue
+			if ok {
+				inserted++
 			}
-			if err != nil {
-				return fmt.Errorf("create %s alert delivery: %w", event, err)
-			}
-			if err := insertAlertJob(ctx, tx, inserter, delivery.ID); err != nil {
-				return err
-			}
+		default:
+			continue
 		}
 	}
-	return nil
+	return inserted, nil
+}
+
+func createAlertDelivery(
+	ctx context.Context,
+	tx pgx.Tx,
+	q *sqlc.Queries,
+	inserter JobInserter,
+	incidentID, channelID uuid.UUID,
+	event string,
+	sequence int,
+	recipient string,
+) (bool, error) {
+	deliveryID, err := uuid.NewV7()
+	if err != nil {
+		return false, fmt.Errorf("new alert delivery id: %w", err)
+	}
+	delivery, err := q.CreateAlertDelivery(ctx, sqlc.CreateAlertDeliveryParams{
+		ID:         deliveryID,
+		IncidentID: incidentID,
+		ChannelID:  channelID,
+		Event:      event,
+		Sequence:   int32(sequence),
+		Recipient:  recipient,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The delivery unique key already exists; do not enqueue a second job
+		// for the same recipient, event, and sequence.
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("create %s alert delivery: %w", event, err)
+	}
+	if err := insertAlertJob(ctx, tx, inserter, delivery.ID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func insertAlertJob(ctx context.Context, tx pgx.Tx, inserter JobInserter, deliveryID uuid.UUID) error {

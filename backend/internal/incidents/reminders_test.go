@@ -106,6 +106,29 @@ func (e *reminderEnv) addUndeliverableIncident(t *testing.T, lastNotifiedAt time
 	return e.addIncidentForMonitor(t, monitorID, "open", lastNotifiedAt, 0)
 }
 
+func TestEnqueueReminders_MixedChannelsAndDedup(t *testing.T) {
+	env := newReminderEnv(t)
+	attachMixedChannels(t, env.tx, env.workspaceID, env.monitorID)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	env.addIncident(t, "open", now.Add(-31*time.Minute), 0)
+
+	if got := env.enqueue(t, now); got != 1 {
+		t.Fatalf("first tick incidents = %d, want 1", got)
+	}
+	if got := countRows(t, env.tx, `SELECT count(*) FROM alert_deliveries WHERE sequence = 1`); got != 4 {
+		t.Fatalf("sequence 1 deliveries = %d, want 4", got)
+	}
+	if got := env.enqueue(t, now); got != 0 {
+		t.Fatalf("second tick at the same time = %d, want 0", got)
+	}
+	if got := env.enqueue(t, now.Add(31*time.Minute)); got != 1 {
+		t.Fatalf("next interval tick incidents = %d, want 1", got)
+	}
+	if got := countRows(t, env.tx, `SELECT count(*) FROM alert_deliveries WHERE sequence = 2`); got != 4 {
+		t.Fatalf("sequence 2 deliveries = %d, want 4", got)
+	}
+}
+
 func (e *reminderEnv) enqueue(t *testing.T, now time.Time) int {
 	t.Helper()
 	n, err := incidents.EnqueueReminders(context.Background(), e.tx, e.q, e.inserter, now)

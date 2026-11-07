@@ -78,6 +78,95 @@ func createLifecycleFixtures(t *testing.T, pool *pgxpool.Pool) (workspaceID, mon
 	return ws.ID, monitorID, channelID
 }
 
+// attachMixedChannels adds a webhook and a Telegram channel to the monitor.
+func attachMixedChannels(t *testing.T, tx pgx.Tx, workspaceID, monitorID uuid.UUID) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	webhookID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new webhook channel id: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO alert_channels (id, workspace_id, kind, name, config)
+		VALUES ($1, $2, 'webhook', 'Deploy hook', '{"url_enc":"v1:x","url_preview":"https://example.com/…"}')`,
+		webhookID, workspaceID); err != nil {
+		t.Fatalf("insert webhook channel: %v", err)
+	}
+	telegramID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("new telegram channel id: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO alert_channels (id, workspace_id, kind, name, config)
+		VALUES ($1, $2, 'telegram', 'Telegram', '{"bot_token_enc":"v1:y","chat_id":"42"}')`,
+		telegramID, workspaceID); err != nil {
+		t.Fatalf("insert telegram channel: %v", err)
+	}
+	for _, channelID := range []uuid.UUID{webhookID, telegramID} {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO monitor_alert_channels (monitor_id, channel_id)
+			VALUES ($1, $2)`, monitorID, channelID); err != nil {
+			t.Fatalf("attach channel %s: %v", channelID, err)
+		}
+	}
+	return webhookID, telegramID
+}
+
+func TestApplyProbeTransition_EnqueuesMixedChannels(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	workspaceID, monitorID, _ := createLifecycleFixtures(t, pool)
+
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	q := sqlc.New(pool).WithTx(tx)
+	inserter := &fakeInserter{}
+	webhookID, telegramID := attachMixedChannels(t, tx, workspaceID, monitorID)
+
+	transition := incidents.Transition{
+		WorkspaceID: workspaceID,
+		MonitorID:   monitorID,
+		Previous:    "unknown",
+		Next:        "down",
+		At:          time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if err := incidents.ApplyProbeTransition(ctx, tx, q, inserter, transition); err != nil {
+		t.Fatalf("open incident: %v", err)
+	}
+
+	if got := countRows(t, tx, `SELECT count(*) FROM alert_deliveries`); got != 4 {
+		t.Fatalf("deliveries = %d, want 4", got)
+	}
+	if len(inserter.jobs) != 4 {
+		t.Fatalf("jobs = %d, want 4", len(inserter.jobs))
+	}
+	for _, channelID := range []uuid.UUID{webhookID, telegramID} {
+		var recipient string
+		if err := tx.QueryRow(ctx,
+			`SELECT recipient FROM alert_deliveries WHERE channel_id = $1`, channelID).Scan(&recipient); err != nil {
+			t.Fatalf("load delivery for %s: %v", channelID, err)
+		}
+		if recipient != channelID.String() {
+			t.Fatalf("recipient = %q, want channel id %s", recipient, channelID)
+		}
+	}
+
+	if err := incidents.ApplyProbeTransition(ctx, tx, q, inserter, transition); err != nil {
+		t.Fatalf("replay transition: %v", err)
+	}
+	if got := countRows(t, tx, `SELECT count(*) FROM alert_deliveries`); got != 4 {
+		t.Fatalf("deliveries after replay = %d, want 4", got)
+	}
+	if len(inserter.jobs) != 4 {
+		t.Fatalf("jobs after replay = %d, want 4", len(inserter.jobs))
+	}
+}
+
 func countRows(t *testing.T, tx pgx.Tx, query string, args ...any) int {
 	t.Helper()
 	var n int

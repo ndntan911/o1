@@ -2,13 +2,9 @@ package incidents
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"o1/internal/db/sqlc"
@@ -75,54 +71,6 @@ func EnqueueReminders(ctx context.Context, tx pgx.Tx, q *sqlc.Queries, inserter 
 // recipient and returns how many deliveries were actually inserted. Malformed
 // channel configuration is skipped rather than failing the whole tick.
 func enqueueReminderDeliveries(ctx context.Context, tx pgx.Tx, q *sqlc.Queries, inserter JobInserter, incident sqlc.ListIncidentsNeedingReminderRow) (int, error) {
-	channels, err := q.ListEnabledAlertChannelsForMonitor(ctx, incident.MonitorID)
-	if err != nil {
-		return 0, fmt.Errorf("list enabled alert channels: %w", err)
-	}
-
-	sequence := incident.ReminderCount + 1
-	inserted := 0
-	for _, channel := range channels {
-		// Plan 4 supports email alert channels only.
-		if channel.Kind != "email" {
-			continue
-		}
-		var config EmailConfig
-		if err := json.Unmarshal(channel.Config, &config); err != nil {
-			// A malformed channel must not fail the reminder tick. Skip its
-			// deliveries and continue with the remaining channels.
-			continue
-		}
-		for _, rawRecipient := range config.Recipients {
-			recipient := strings.TrimSpace(rawRecipient)
-			if recipient == "" {
-				continue
-			}
-			deliveryID, err := uuid.NewV7()
-			if err != nil {
-				return inserted, fmt.Errorf("new alert delivery id: %w", err)
-			}
-			delivery, err := q.CreateAlertDelivery(ctx, sqlc.CreateAlertDeliveryParams{
-				ID:         deliveryID,
-				IncidentID: incident.ID,
-				ChannelID:  channel.ID,
-				Event:      "reminder",
-				Sequence:   sequence,
-				Recipient:  recipient,
-			})
-			if errors.Is(err, pgx.ErrNoRows) {
-				// This reminder sequence was already inserted; do not enqueue
-				// a second job for the same recipient.
-				continue
-			}
-			if err != nil {
-				return inserted, fmt.Errorf("create reminder alert delivery: %w", err)
-			}
-			if err := insertAlertJob(ctx, tx, inserter, delivery.ID); err != nil {
-				return inserted, err
-			}
-			inserted++
-		}
-	}
-	return inserted, nil
+	sequence := int(incident.ReminderCount) + 1
+	return enqueueAlertDeliveries(ctx, tx, q, inserter, incident.ID, incident.MonitorID, "reminder", sequence)
 }
