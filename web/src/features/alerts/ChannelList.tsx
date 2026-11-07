@@ -95,6 +95,9 @@ export function ChannelList({ workspaceId, channels }: ChannelListProps) {
 									</div>
 									<p className="truncate text-xs text-muted-foreground">
 										{target}
+										{channel.kind === 'telegram' && channel.bot_token_set ? (
+											<span className="ml-2">Configured</span>
+										) : null}
 									</p>
 								</div>
 								<Switch

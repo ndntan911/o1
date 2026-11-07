@@ -81,13 +81,13 @@ To promote an administrator, register and verify the account, set
 `O1_BOOTSTRAP_ADMIN_EMAIL` to that address, then recreate the API service as
 described under [Administrator bootstrap](#administrator-bootstrap).
 
-Incident history and email alerts are available in the dashboard. Public status
-pages and additional alert channels (such as webhooks) are later milestones.
+Incident history and email, webhook, Slack, and Telegram alerts are available
+in the dashboard. Public status pages are a later milestone.
 
 The dashboard supports Light, Dark, and System appearance. The choice is stored
 in the browser, and System follows the operating system preference.
 
-## Incidents and email alerts
+## Incidents and alerts
 
 The probe worker opens an incident when a monitor crosses its confirmation
 threshold and resolves it after the configured recovery threshold. Incidents
@@ -97,33 +97,70 @@ detail page. Resolved incidents remain in the history with their timeline and
 duration.
 
 Members can acknowledge an open incident from its detail page. Acknowledgement
-records who acknowledged it and when, stops further reminder emails, and leaves
-the incident active until the monitor recovers. Viewers can read incidents but
-cannot acknowledge them or change alert settings.
+records who acknowledged it and when, stops further reminder notifications, and
+leaves the incident active until the monitor recovers. Viewers can read
+incidents but cannot acknowledge them or change alert settings.
 
-Workspace admins configure alerting under **Settings → Alerts**. The email
-channel requires 1–20 unique, valid recipient addresses when enabled; an empty
-list is allowed only while email alerts are disabled. Saving the channel
-attaches it to every workspace monitor that does not have a per-monitor setting
-yet. Members can turn **Email alerts** off or on for an individual monitor from
-that monitor's detail page; the toggle is unavailable to viewers. When an admin
-disables the workspace email channel, the monitor page shows that email alerts
-are disabled for the workspace and disables the per-monitor switch. When no
-email channel exists yet, the monitor page explains that alerts are not
-configured and links admins to the settings screen.
+Workspace admins configure alerting under **Settings → Alerts**. Email requires
+1–20 unique, valid recipient addresses when enabled; an empty list is allowed
+only while email alerts are disabled. The same page manages three non-email
+channel kinds:
 
-Each enabled incident sends an email to every recipient when it opens and when
-it resolves. While an incident is open and unacknowledged, reminders repeat
-every 30 minutes, up to 10 reminders per incident. Acknowledging the incident
-stops the reminder sequence. Admins can see the delivery status for each
-recipient on the incident detail page.
+- **Webhook** posts a JSON incident payload to any public `http` or `https` URL.
+  An optional signing secret (16–128 characters) enables HMAC-SHA256
+  authentication.
+- **Slack** posts an incoming-webhook message to `https://hooks.slack.com` or
+  `https://hooks.slack-gov.com`.
+- **Telegram** sends a message through the Bot API using a bot token and a chat
+  ID (numeric, negative for groups, or `@channelusername`).
+
+Webhook and Slack URLs, the optional webhook signing secret, and the Telegram
+bot token are write-only secrets. After saving, the API returns only a masked
+preview or a "configured" indicator, and the plaintext value is never shown
+again. Channel secrets are encrypted at rest and are never included in delivery
+history, logs, or error messages. A channel name is unique among active
+channels of its kind and can be reused after a channel is deleted.
+
+Saving a channel attaches it to every workspace monitor. Every workspace
+channel appears as a per-monitor switch on the monitor detail page, including
+channels that are disabled globally; members can turn each switch on or off,
+while viewers only see the section when they can read it. When an admin
+disables a channel globally, the monitor switch shows that it is disabled for
+the workspace. Each channel also has a **Test** action that sends a test
+notification without creating a delivery row; disabled but complete channels
+can be tested.
+
+Webhook deliveries send `event` (`opened`, `reminder`, or `resolved`),
+`sequence`, `workspace`, `monitor`, `incident`, and `link`. `monitor.status` is
+`down` for open/reminder and `up` for resolved; `incident.status` is `open` or
+`resolved`. When a signing secret is configured, each request carries
+`X-O1-Event`, `X-O1-Timestamp`, and `X-O1-Signature`; the signature is
+`sha256=<hex HMAC-SHA256(timestamp + "." + body)>` over the exact request body.
+A receiver should verify the signature with the shared secret and reject stale
+timestamps. Test sends use `event: "test"` with `monitor` and `incident` set to
+`null`.
+
+Each enabled incident notifies every enabled channel when it opens and when it
+resolves. While an incident is open and unacknowledged, reminders repeat every
+30 minutes, up to 10 reminders per incident. Acknowledging the incident stops
+the reminder sequence. A failed delivery is retried up to five times for
+transient errors (timeouts, 408, 425, 429, and 5xx); redirects and other 4xx
+responses are permanent failures. Admins can see the delivery status, channel,
+and attempt count on the incident detail page.
+
+Webhook and Slack destinations are validated against the SSRF policy both when
+saved and before every send, and deliveries never follow redirects. This V1
+blocks loopback, private, link-local, and metadata addresses, so internal
+webhook receivers are not supported yet. A 3xx response from a webhook or Slack
+endpoint is treated as a permanent failure.
 
 Development uses Mailpit as the SMTP sink. Compose starts Mailpit at
 <http://localhost:8025>, where every alert email and its rendered content can be
-inspected. A production email sender is not implemented yet: only email channels
-are supported in Plan 4, the worker refuses to start with `O1_ENV=production`,
-and production delivery remains a later milestone. Other channels, paging
-integrations, and public status pages are outside the Plan 4 scope.
+inspected. A production email sender is not implemented yet: the worker refuses
+to start with `O1_ENV=production`, and production delivery remains a later
+milestone. Paging integrations, public status pages, Slack OAuth, custom
+webhook headers, maintenance windows, and per-channel reminder schedules are
+outside the current scope.
 
 ## Configuration
 

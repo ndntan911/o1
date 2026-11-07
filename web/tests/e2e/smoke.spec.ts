@@ -222,6 +222,91 @@ test('register, verify, create a monitor, and administer the workspace', async (
 	).toBeVisible();
 	await expectNoSeriousA11yViolations(page);
 
+	// Non-email alert channels.
+	await page.goto(`/w/${workspaceSlug}/settings/alerts`);
+	await expect(
+		page.getByRole('heading', { name: 'Alert settings', exact: true }),
+	).toBeVisible();
+
+	await page.getByRole('button', { name: 'Add channel' }).click();
+	await expect(
+		page.getByRole('heading', { name: 'Add alert channel', exact: true }),
+	).toBeVisible();
+	await page.getByLabel('Name', { exact: true }).fill('Deploy hook');
+	await page.getByLabel('Webhook URL').fill('https://example.com/o1');
+	await page.getByRole('button', { name: 'Save channel' }).click();
+	await expect(page.getByText('Deploy hook', { exact: true })).toBeVisible();
+	await expect(page.getByText('https://example.com/…')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Add channel' }).click();
+	await page.getByRole('combobox', { name: 'Kind' }).click();
+	await page.getByRole('option', { name: 'Slack' }).click();
+	await page.getByLabel('Name', { exact: true }).fill('Slack #ops');
+	await page
+		.getByLabel('Slack webhook URL')
+		.fill('https://hooks.slack.com/services/T000/B000/XXXX');
+	await page.getByRole('button', { name: 'Save channel' }).click();
+	await expect(page.getByText('Slack #ops', { exact: true })).toBeVisible();
+
+	await page.getByRole('button', { name: 'Add channel' }).click();
+	await page.getByRole('combobox', { name: 'Kind' }).click();
+	await page.getByRole('option', { name: 'Telegram' }).click();
+	await page.getByLabel('Name', { exact: true }).fill('Telegram on-call');
+	await page.getByLabel('Bot token').fill('123456:ABCdef');
+	await page.getByLabel('Chat ID').fill('-1001234567890');
+	await page.getByRole('button', { name: 'Save channel' }).click();
+	const telegramRow = page
+		.getByRole('listitem')
+		.filter({ hasText: 'Telegram on-call' });
+	await expect(telegramRow).toContainText('-1001234567890');
+	await expect(
+		telegramRow.getByText('Configured', { exact: true }),
+	).toBeVisible();
+	await expect(page.getByText('123456:ABCdef')).toHaveCount(0);
+
+	// Per-monitor switches persist across reloads.
+	await page.goto(`/w/${workspaceSlug}/monitors`);
+	await page.getByRole('link', { name: `View ${MONITOR_NAME}` }).click();
+	const deploySwitch = page.getByRole('switch', {
+		name: 'Deploy hook alerts',
+	});
+	await expect(deploySwitch).toBeChecked();
+	await deploySwitch.click();
+	await expect(deploySwitch).not.toBeChecked();
+	await page.reload();
+	await expect(
+		page.getByRole('switch', { name: 'Deploy hook alerts' }),
+	).not.toBeChecked();
+
+	// Edit and delete a channel; delivery history survives the delete.
+	await page.goto(`/w/${workspaceSlug}/settings/alerts`);
+	const slackRow = page.getByRole('listitem').filter({ hasText: 'Slack #ops' });
+	await slackRow.getByRole('button', { name: 'Edit', exact: true }).click();
+	await page.getByLabel('Name', { exact: true }).fill('Slack #alerts');
+	await page.getByRole('switch', { name: 'Channel enabled' }).click();
+	await page.getByRole('button', { name: 'Save channel' }).click();
+	const slackEdited = page
+		.getByRole('listitem')
+		.filter({ hasText: 'Slack #alerts' });
+	await expect(slackEdited).toBeVisible();
+	await expect(
+		slackEdited.getByRole('switch', { name: 'Slack #alerts enabled' }),
+	).not.toBeChecked();
+
+	await slackEdited
+		.getByRole('button', { name: 'Delete Slack #alerts' })
+		.click();
+	await expect(page.getByText(/delivery history is retained/i)).toBeVisible();
+	await page.getByRole('button', { name: 'Delete channel' }).click();
+	await expect(page.getByText('Slack #alerts', { exact: true })).toHaveCount(0);
+
+	// Return to the monitor before exercising the existing monitor flow.
+	await page.goto(`/w/${workspaceSlug}/monitors`);
+	await page.getByRole('link', { name: `View ${MONITOR_NAME}` }).click();
+	await expect(
+		page.getByRole('heading', { name: MONITOR_NAME, exact: true }),
+	).toBeVisible();
+
 	// Pause and resume from the detail screen.
 	await page.getByRole('button', { name: `Pause ${MONITOR_NAME}` }).click();
 	await expect(
