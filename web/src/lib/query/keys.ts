@@ -34,4 +34,6 @@ export const queryKeys = {
 		['monitor-alert-channel', workspaceId, monitorId] as const,
 	monitorAlertChannels: (workspaceId: string, monitorId: string) =>
 		['monitor-alert-channels', workspaceId, monitorId] as const,
+	statusPage: (workspaceId: string) => ['status-page', workspaceId] as const,
+	publicStatus: (slug: string) => ['public-status', slug] as const,
 };

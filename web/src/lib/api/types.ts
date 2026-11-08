@@ -287,3 +287,50 @@ export interface MonitorChannel {
 export interface MonitorChannelListResponse {
 	channels: MonitorChannel[];
 }
+
+export interface StatusPageConfig {
+	enabled: boolean;
+	title: string;
+	description: string;
+	monitor_ids: string[];
+}
+
+export interface StatusPageConfigInput {
+	enabled: boolean;
+	title: string;
+	description: string;
+	monitor_ids: string[];
+}
+
+export type PublicStatusDayStatus = 'up' | 'partial' | 'down' | 'no_data';
+export type PublicMonitorStatus = 'up' | 'down' | 'unknown' | 'paused';
+
+export interface PublicStatusDay {
+	date: string;
+	status: PublicStatusDayStatus;
+	uptime: number | null;
+}
+
+export interface PublicStatusMonitor {
+	id: string;
+	name: string;
+	status: PublicMonitorStatus;
+	uptime: number | null;
+	days: PublicStatusDay[];
+}
+
+export interface PublicStatusIncident {
+	id: string;
+	monitor_id: string;
+	monitor_name: string;
+	status: 'ongoing' | 'resolved';
+	started_at: string;
+	resolved_at: string | null;
+}
+
+export interface PublicStatusPage {
+	workspace: { name: string; slug: string };
+	page: { title: string; description: string; updated_at: string };
+	monitors: PublicStatusMonitor[];
+	incidents: { active: PublicStatusIncident[]; recent: PublicStatusIncident[] };
+}
