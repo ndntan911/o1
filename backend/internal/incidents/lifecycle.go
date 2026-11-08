@@ -197,7 +197,7 @@ func createAlertDelivery(
 		IncidentID: incidentID,
 		ChannelID:  channelID,
 		Event:      event,
-		Sequence:   int32(sequence),
+		Sequence:   int32(sequence), //nolint:gosec // sequence is bounded by the reminder cap (max 10).
 		Recipient:  recipient,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -52,7 +52,7 @@ func (s *Service) List(ctx context.Context, actorID, workspaceID uuid.UUID, filt
 		WorkspaceID: workspaceID,
 		ActiveOnly:  activeOnly,
 		Status:      status,
-		PageLimit:   int32(clampIncidentLimit(limit)),
+		PageLimit:   int32(clampIncidentLimit(limit)), //nolint:gosec // limit is clamped to maxListLimit (100).
 	}
 	if filter.MonitorID != nil {
 		params.MonitorID = pgtype.UUID{Bytes: *filter.MonitorID, Valid: true}

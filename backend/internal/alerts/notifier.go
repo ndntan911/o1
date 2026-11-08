@@ -155,7 +155,7 @@ func (n *Notifier) validateTarget(ctx context.Context, target Target) error {
 }
 
 func (n *Notifier) post(ctx context.Context, client *http.Client, destination string, body []byte, headers map[string]string, label string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, destination, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, destination, bytes.NewReader(body)) //nolint:gosec // Destination is validated by probe.Guard immediately before this call.
 	if err != nil {
 		return &DeliveryError{Message: label + " request could not be built", Permanent: true, Cause: err}
 	}
@@ -163,20 +163,20 @@ func (n *Notifier) post(ctx context.Context, client *http.Client, destination st
 		req.Header.Set(name, value)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // Destination is validated by probe.Guard immediately before this call.
 	if err != nil {
 		return &DeliveryError{Message: label + " request failed", Cause: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, notifierDrainLimit))
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		return nil
 	}
-	permanent := !(resp.StatusCode == http.StatusRequestTimeout ||
-		resp.StatusCode == http.StatusTooEarly ||
-		resp.StatusCode == http.StatusTooManyRequests ||
-		resp.StatusCode >= http.StatusInternalServerError)
+	permanent := resp.StatusCode != http.StatusRequestTimeout &&
+		resp.StatusCode != http.StatusTooEarly &&
+		resp.StatusCode != http.StatusTooManyRequests &&
+		resp.StatusCode < http.StatusInternalServerError
 	return &DeliveryError{
 		Message:   fmt.Sprintf("%s returned HTTP %d", label, resp.StatusCode),
 		Permanent: permanent,

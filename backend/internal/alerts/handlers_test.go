@@ -174,7 +174,7 @@ func (e *alertsAPIEnv) do(c *http.Client, method, path string, body any) (*http.
 		e.t.Fatalf("do request: %v", err)
 	}
 	data, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		e.t.Fatalf("read body: %v", err)
 	}

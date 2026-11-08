@@ -58,7 +58,7 @@ func TestSealCreateConfig_Validation(t *testing.T) {
 	}{
 		{"webhook valid", KindWebhook, CreateInput{URL: "https://example.com/o1"}, public, false, ""},
 		{"webhook private blocked", KindWebhook, CreateInput{URL: "https://internal.example/o1"}, private, true, "url"},
-		{"webhook userinfo blocked", KindWebhook, CreateInput{URL: "https://u:p@example.com/o1"}, public, true, "url"},
+		{"webhook userinfo blocked", KindWebhook, CreateInput{URL: "https://u:p@example.com/o1"}, public, true, "url"}, //nolint:gosec // Deliberate userinfo value for this validation case.
 		{"webhook fragment blocked", KindWebhook, CreateInput{URL: "https://example.com/o1#x"}, public, true, "url"},
 		{"webhook short secret", KindWebhook, CreateInput{URL: "https://example.com/o1", SigningSecret: "short"}, public, true, "signing_secret"},
 		{"webhook too long", KindWebhook, CreateInput{URL: "https://example.com/" + strings.Repeat("a", 2048)}, public, true, "url"},

@@ -188,7 +188,7 @@ func TestProbeGuard_HTTPClientRedirectPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTPClient(false) Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func(b io.ReadCloser) { _ = b.Close() }(resp.Body)
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("HTTPClient(false) status = %d, want %d", resp.StatusCode, http.StatusFound)
 	}
@@ -198,7 +198,7 @@ func TestProbeGuard_HTTPClientRedirectPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTPClient(true) Get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func(b io.ReadCloser) { _ = b.Close() }(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("HTTPClient(true) status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
