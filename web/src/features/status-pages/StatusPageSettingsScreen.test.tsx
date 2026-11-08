@@ -173,3 +173,66 @@ test('shows the public link and copies it', async () => {
 	expect(writeText).toHaveBeenCalledWith(`${ORIGIN}/status/acme`);
 	expect(toast.success).toHaveBeenCalledWith('Public link copied');
 });
+
+test('loads every monitor page before saving', async () => {
+	const user = userEvent.setup();
+	const bodies: unknown[] = [];
+	const firstPage = Array.from({ length: 50 }, (_, index) => ({
+		...monitor,
+		id: `m${index + 1}`,
+		name: `Monitor ${index + 1}`,
+	}));
+	const secondPageMonitor: Monitor = {
+		...monitor,
+		id: 'm51',
+		name: 'Monitor 51',
+	};
+
+	server.use(
+		http.get(configPath, () =>
+			HttpResponse.json({
+				enabled: false,
+				title: 'Acme',
+				description: '',
+				monitor_ids: ['m51'],
+			}),
+		),
+		http.get(monitorsPath, ({ request }) => {
+			const cursor = new URL(request.url).searchParams.get('cursor');
+			if (!cursor) {
+				return HttpResponse.json({
+					monitors: firstPage,
+					next_cursor: 'page-2',
+				});
+			}
+			return HttpResponse.json({ monitors: [secondPageMonitor] });
+		}),
+		http.put(configPath, async ({ request }) => {
+			bodies.push(await request.json());
+			return HttpResponse.json({
+				enabled: false,
+				title: 'Acme',
+				description: '',
+				monitor_ids: ['m51'],
+			});
+		}),
+	);
+
+	renderWithProviders(<StatusPageSettingsScreen workspace={workspace} />);
+	const secondPageCheckbox = await screen.findByLabelText('Publish Monitor 51');
+	expect(secondPageCheckbox).toBeChecked();
+	await user.click(secondPageCheckbox);
+	await user.click(secondPageCheckbox);
+	await user.click(screen.getByRole('button', { name: 'Save status page' }));
+
+	await waitFor(() =>
+		expect(bodies).toEqual([
+			{
+				enabled: false,
+				title: 'Acme',
+				description: '',
+				monitor_ids: ['m51'],
+			},
+		]),
+	);
+});

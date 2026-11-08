@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { ErrorPanel } from '@/components/feedback/ErrorPanel';
 import { PageSkeleton } from '@/components/feedback/Skeletons';
@@ -65,8 +65,31 @@ function StatusPageSettingsContent({
 }: StatusPageSettingsScreenProps) {
 	const configQuery = useStatusPage(workspace.id);
 	const monitorsQuery = useMonitors(workspace.id);
+	const {
+		isPending: monitorsPending,
+		hasNextPage: monitorsHaveNextPage,
+		isFetchingNextPage,
+		isFetchNextPageError,
+		fetchNextPage,
+	} = monitorsQuery;
 
-	if (configQuery.isPending || monitorsQuery.isPending) {
+	// Load every monitor page before the form is usable so saving cannot drop
+	// published monitors that live beyond the first page.
+	useEffect(() => {
+		if (monitorsPending) return;
+		if (!monitorsHaveNextPage) return;
+		if (isFetchingNextPage) return;
+		if (isFetchNextPageError) return;
+		void fetchNextPage();
+	}, [
+		monitorsPending,
+		monitorsHaveNextPage,
+		isFetchingNextPage,
+		isFetchNextPageError,
+		fetchNextPage,
+	]);
+
+	if (configQuery.isPending || monitorsPending) {
 		return <PageSkeleton />;
 	}
 
@@ -90,6 +113,21 @@ function StatusPageSettingsContent({
 				onRetry={() => void monitorsQuery.refetch()}
 			/>
 		);
+	}
+
+	if (isFetchNextPageError) {
+		return (
+			<ErrorPanel
+				title="Could not load all monitors"
+				message={errorMessage(monitorsQuery.error)}
+				problem={problemFromError(monitorsQuery.error)}
+				onRetry={() => void fetchNextPage()}
+			/>
+		);
+	}
+
+	if (monitorsHaveNextPage || isFetchingNextPage) {
+		return <PageSkeleton />;
 	}
 
 	const monitors = monitorsQuery.data.pages.flatMap((page) => page.monitors);
