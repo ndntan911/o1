@@ -24,6 +24,7 @@ import (
 	"o1/internal/monitors"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
+	"o1/internal/statuspage"
 	"o1/internal/workspaces"
 )
 
@@ -32,16 +33,17 @@ import (
 // EmailSender. main.go passes explicit instances so it can close the auth
 // service before the database pool.
 type Dependencies struct {
-	Logger           *slog.Logger
-	Pool             *pgxpool.Pool
-	Config           config.Config
-	EmailSender      email.Sender
-	AuthService      *auth.Service
-	WorkspaceService *workspaces.Service
-	MonitorService   *monitors.Service
-	IncidentService  *incidents.Service
-	AlertService     *alerts.Service
-	AdminService     *admin.Service
+	Logger            *slog.Logger
+	Pool              *pgxpool.Pool
+	Config            config.Config
+	EmailSender       email.Sender
+	AuthService       *auth.Service
+	WorkspaceService  *workspaces.Service
+	MonitorService    *monitors.Service
+	IncidentService   *incidents.Service
+	AlertService      *alerts.Service
+	AdminService      *admin.Service
+	StatusPageService *statuspage.Service
 }
 
 // authRatePerSecond and authRateBurst implement 10 requests per minute for
@@ -205,6 +207,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			)
 		}
 	}
+	statusPageSvc := deps.StatusPageService
+	if statusPageSvc == nil && deps.Pool != nil {
+		statusPageSvc = statuspage.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
@@ -228,6 +234,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}", requireSession(http.HandlerFunc(workspaces.GetHandler(wsSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.MembersHandler(wsSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.AddMemberHandler(wsSvc))))
+
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.GetConfigHandler(statusPageSvc))))
+	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.UpdateConfigHandler(statusPageSvc))))
+
+	mux.Handle("GET /api/v1/public/status/{slug}", httpx.RateLimit(1, 20, true)(http.HandlerFunc(statuspage.PublicHandler(statusPageSvc))))
 
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors", requireSession(http.HandlerFunc(monitors.CreateHandler(monitorSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors", requireSession(http.HandlerFunc(monitors.ListHandler(monitorSvc))))
