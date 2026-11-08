@@ -22,6 +22,7 @@ import type {
 import { canManageStatusPage } from '@/lib/roles';
 import { useStatusPage, useUpdateStatusPage } from './hooks';
 
+const TITLE_MAX = 80;
 const DESCRIPTION_MAX = 500;
 
 const MONITOR_STATUS_LABELS: Record<MonitorStatus, string> = {
@@ -179,6 +180,7 @@ function StatusPageSettingsForm({
 			return next;
 		});
 		setValidation(null);
+		setProblem(null);
 	}
 
 	function handleSave() {
@@ -282,18 +284,24 @@ function StatusPageSettingsForm({
 						</Button>
 					</div>
 				</div>
-			) : null}
+			) : (
+				<p className="text-sm text-muted-foreground">
+					The status page is not public yet.
+				</p>
+			)}
 
 			<div className="space-y-1.5">
 				<Label htmlFor="status-page-title">Title</Label>
 				<Input
 					id="status-page-title"
 					value={title}
+					maxLength={TITLE_MAX}
 					aria-invalid={titleError ? true : undefined}
 					aria-describedby={titleError ? 'status-page-title-error' : undefined}
 					onChange={(event) => {
 						setTitle(event.target.value);
 						setValidation(null);
+						setProblem(null);
 					}}
 				/>
 				{titleError ? (
@@ -316,6 +324,7 @@ function StatusPageSettingsForm({
 					onChange={(event) => {
 						setDescription(event.target.value);
 						setValidation(null);
+						setProblem(null);
 					}}
 				/>
 				<div className="flex items-center justify-between gap-2">

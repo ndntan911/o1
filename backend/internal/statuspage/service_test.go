@@ -288,6 +288,9 @@ func TestService_PublicPageBuckets(t *testing.T) {
 	env.insertProbe(t, monitorID, today.Add(-1*time.Hour), "up")    // yesterday
 	env.insertProbe(t, monitorID, today.Add(-48*time.Hour), "down") // two days ago
 	env.insertProbe(t, monitorID, old, "down")                      // outside 90 days
+	tomorrow := today.AddDate(0, 0, 1)
+	env.ensureProbePartition(t, tomorrow)
+	env.insertProbe(t, monitorID, tomorrow.Add(time.Minute), "up") // future-dated, outside the emitted days
 
 	page, err := env.svc.PublicPage(context.Background(), env.slug)
 	if err != nil {

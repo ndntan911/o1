@@ -81,6 +81,7 @@ test('loads defaults, selects a monitor, and saves', async () => {
 
 	renderWithProviders(<StatusPageSettingsScreen workspace={workspace} />);
 	expect(await screen.findByDisplayValue('Acme')).toBeInTheDocument();
+	expect(screen.getByLabelText('Title')).toHaveAttribute('maxlength', '80');
 	await user.click(screen.getByLabelText('Publish API'));
 	await user.click(screen.getByRole('switch', { name: 'Status page enabled' }));
 	await user.clear(screen.getByLabelText('Title'));
@@ -111,6 +112,10 @@ test('blocks enabling with no monitors', async () => {
 	});
 	renderWithProviders(<StatusPageSettingsScreen workspace={workspace} />);
 	await screen.findByDisplayValue('Acme');
+	expect(
+		screen.getByText('The status page is not public yet.'),
+	).toBeInTheDocument();
+	expect(screen.queryByLabelText('Public link')).not.toBeInTheDocument();
 	await user.click(screen.getByRole('switch', { name: 'Status page enabled' }));
 	await user.click(screen.getByRole('button', { name: 'Save status page' }));
 	expect(
@@ -150,6 +155,11 @@ test('shows server field errors and suspended problems', async () => {
 	await screen.findByDisplayValue('Acme');
 	await user.click(screen.getByRole('button', { name: 'Save status page' }));
 	expect(await screen.findByText('title is required')).toBeInTheDocument();
+
+	await user.type(screen.getByLabelText('Title'), ' updated');
+	await waitFor(() =>
+		expect(screen.queryByText('title is required')).not.toBeInTheDocument(),
+	);
 });
 
 test('shows the public link and copies it', async () => {

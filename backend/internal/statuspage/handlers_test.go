@@ -178,7 +178,7 @@ func TestStatusPageHandlers_Public(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "max-age=15") {
+	if got := resp.Header.Get("Cache-Control"); got != "public, max-age=15, stale-while-revalidate=15" {
 		t.Fatalf("Cache-Control = %q", got)
 	}
 	var page statuspage.PublicPage
@@ -398,11 +398,13 @@ func TestStatusPageHandlers_RateLimit(t *testing.T) {
 	}
 
 	client := &http.Client{}
-	var last *http.Response
-	var lastBody []byte
-	for i := 0; i < 21; i++ {
-		last, lastBody = env.do(client, http.MethodGet, "/api/v1/public/status/"+env.slug, nil)
+	for i := 0; i < 20; i++ {
+		resp, body := env.do(client, http.MethodGet, "/api/v1/public/status/"+env.slug, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d = %d: %s", i+1, resp.StatusCode, body)
+		}
 	}
+	last, lastBody := env.do(client, http.MethodGet, "/api/v1/public/status/"+env.slug, nil)
 	if last.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("21st request = %d: %s", last.StatusCode, lastBody)
 	}

@@ -31,9 +31,9 @@ const (
 	publicRecentLimit = 20
 )
 
-// Service owns status page configuration for admins and, in later work, the
-// public payload aggregation and caching. It keeps the cache here so handlers
-// and the public path share one instance.
+// Service owns status page configuration for admins plus the public payload
+// aggregation and caching. It keeps the cache here so handlers and the public
+// path share one instance.
 type Service struct {
 	pool  *pgxpool.Pool
 	q     *sqlc.Queries
@@ -183,6 +183,8 @@ func (s *Service) UpdateConfig(ctx context.Context, actorID, workspaceID uuid.UU
 // raw monitor URLs, credentials, errors, acknowledgement identity, or delivery
 // details.
 func (s *Service) PublicPage(ctx context.Context, slug string) (PublicPage, error) {
+	// Cached pages are shared across requests: callers must treat the returned
+	// PublicPage and its slices as read-only.
 	if page, ok := s.cache.get(slug); ok {
 		return page, nil
 	}
@@ -242,6 +244,26 @@ func (s *Service) PublicPage(ctx context.Context, slug string) (PublicPage, erro
 	if err != nil {
 		return PublicPage{}, fmt.Errorf("list probe day stats: %w", err)
 	}
+
+	// Only the 90 emitted UTC dates count toward the bars and uptime. Probes
+	// outside that window, such as future-dated rows, must not inflate uptime.
+	first := startOfUTCDay(since)
+	last := startOfUTCDay(now)
+	if windowStart := last.AddDate(0, 0, -(publicDayCount - 1)); windowStart.After(first) {
+		first = windowStart
+	}
+	allowedDays := make(map[string]struct{}, publicDayCount)
+	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
+		allowedDays[day.Format("2006-01-02")] = struct{}{}
+	}
+	windowStats := make([]sqlc.ListProbeDayStatsRow, 0, len(stats))
+	for _, row := range stats {
+		if _, ok := allowedDays[row.Day]; ok {
+			windowStats = append(windowStats, row)
+		}
+	}
+	stats = windowStats
+
 	statsByMonitor := make(map[uuid.UUID][]sqlc.ListProbeDayStatsRow, len(monitors))
 	for _, row := range stats {
 		statsByMonitor[row.MonitorID] = append(statsByMonitor[row.MonitorID], row)

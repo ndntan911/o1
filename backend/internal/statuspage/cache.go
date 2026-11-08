@@ -41,7 +41,8 @@ func newPageCache(ttl time.Duration, now func() time.Time) *pageCache {
 }
 
 // get returns the cached page for slug. Expired entries are removed and
-// reported as misses.
+// reported as misses. Returned pages are read-only and share slices with the
+// cached entry.
 func (c *pageCache) get(slug string) (PublicPage, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
