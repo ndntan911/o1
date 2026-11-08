@@ -126,7 +126,6 @@ function StatusPageSettingsForm({
 	);
 	const [validation, setValidation] = useState<string | null>(null);
 	const [problem, setProblem] = useState<ApiProblem | null>(null);
-	const [copied, setCopied] = useState(false);
 
 	const publicUrl = `${window.location.origin}/status/${workspace.slug}`;
 	const fields = problem?.fields ?? {};
@@ -182,13 +181,10 @@ function StatusPageSettingsForm({
 	}
 
 	async function handleCopy() {
-		setCopied(false);
 		try {
 			await navigator.clipboard.writeText(publicUrl);
-			setCopied(true);
 			toast.success('Public link copied');
 		} catch {
-			setCopied(false);
 			toast.error('Could not copy the link');
 		}
 	}
@@ -247,11 +243,6 @@ function StatusPageSettingsForm({
 							</a>
 						</Button>
 					</div>
-					{copied ? (
-						<p role="status" className="text-sm text-muted-foreground">
-							Public link copied
-						</p>
-					) : null}
 				</div>
 			) : null}
 

@@ -171,5 +171,5 @@ test('shows the public link and copies it', async () => {
 	expect(link).toBeInTheDocument();
 	await user.click(screen.getByRole('button', { name: 'Copy public link' }));
 	expect(writeText).toHaveBeenCalledWith(`${ORIGIN}/status/acme`);
-	expect(await screen.findByText('Public link copied')).toBeInTheDocument();
+	expect(toast.success).toHaveBeenCalledWith('Public link copied');
 });
