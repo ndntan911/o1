@@ -23,6 +23,12 @@ const (
 	maxDescriptionLen = 500
 	// defaultPageCacheTTL is how long public payloads may be served stale.
 	defaultPageCacheTTL = 15 * time.Second
+	// publicDayCount is the number of daily uptime buckets on a public page.
+	publicDayCount = 90
+	// publicRecentWindow is how far back resolved incidents are listed.
+	publicRecentWindow = 7 * 24 * time.Hour
+	// publicRecentLimit caps the resolved incident list.
+	publicRecentLimit = 20
 )
 
 // Service owns status page configuration for admins and, in later work, the
@@ -169,6 +175,191 @@ func (s *Service) UpdateConfig(ctx context.Context, actorID, workspaceID uuid.UU
 		Description: page.Description,
 		MonitorIDs:  selection,
 	}, nil
+}
+
+// PublicPage assembles the public payload for a workspace slug. Disabled or
+// unknown pages return ErrNotFound so the public path cannot distinguish them.
+// Only successful payloads are cached; a page assembled here never contains
+// raw monitor URLs, credentials, errors, acknowledgement identity, or delivery
+// details.
+func (s *Service) PublicPage(ctx context.Context, slug string) (PublicPage, error) {
+	if page, ok := s.cache.get(slug); ok {
+		return page, nil
+	}
+
+	ws, err := s.q.GetWorkspaceBySlug(ctx, slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PublicPage{}, ErrNotFound
+		}
+		return PublicPage{}, fmt.Errorf("load workspace by slug: %w", err)
+	}
+	cfg, err := s.q.GetStatusPage(ctx, ws.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PublicPage{}, ErrNotFound
+		}
+		return PublicPage{}, fmt.Errorf("load status page: %w", err)
+	}
+	if !cfg.Enabled {
+		return PublicPage{}, ErrNotFound
+	}
+
+	monitors, err := s.q.ListPublicStatusMonitors(ctx, ws.ID)
+	if err != nil {
+		return PublicPage{}, fmt.Errorf("list public monitors: %w", err)
+	}
+
+	page := PublicPage{
+		Workspace: PublicWorkspace{Name: ws.Name, Slug: ws.Slug},
+		Page: PublicPageInfo{
+			Title:       cfg.Title,
+			Description: cfg.Description,
+			UpdatedAt:   cfg.UpdatedAt,
+		},
+		Monitors: make([]PublicMonitor, 0, len(monitors)),
+		Incidents: PublicIncidents{
+			Active: []PublicIncident{},
+			Recent: []PublicIncident{},
+		},
+	}
+	if len(monitors) == 0 {
+		s.cache.set(slug, page)
+		return page, nil
+	}
+
+	ids := make([]uuid.UUID, 0, len(monitors))
+	for _, monitor := range monitors {
+		ids = append(ids, monitor.ID)
+	}
+
+	now := s.now()
+	since := startOfUTCDay(now).Add(-(publicDayCount - 1) * 24 * time.Hour)
+	stats, err := s.q.ListProbeDayStats(ctx, sqlc.ListProbeDayStatsParams{
+		MonitorIds: ids,
+		Since:      since,
+	})
+	if err != nil {
+		return PublicPage{}, fmt.Errorf("list probe day stats: %w", err)
+	}
+	statsByMonitor := make(map[uuid.UUID][]sqlc.ListProbeDayStatsRow, len(monitors))
+	for _, row := range stats {
+		statsByMonitor[row.MonitorID] = append(statsByMonitor[row.MonitorID], row)
+	}
+	for _, monitor := range monitors {
+		rows := statsByMonitor[monitor.ID]
+		page.Monitors = append(page.Monitors, PublicMonitor{
+			ID:     monitor.ID,
+			Name:   monitor.Name,
+			Status: monitorStatus(monitor.Paused, monitor.Status),
+			Uptime: buildUptime(rows),
+			Days:   buildDays(rows, since, now),
+		})
+	}
+
+	active, err := s.q.ListPublicActiveIncidents(ctx, ids)
+	if err != nil {
+		return PublicPage{}, fmt.Errorf("list active incidents: %w", err)
+	}
+	for _, incident := range active {
+		page.Incidents.Active = append(page.Incidents.Active, PublicIncident{
+			ID:          incident.ID,
+			MonitorID:   incident.MonitorID,
+			MonitorName: incident.MonitorName,
+			Status:      "ongoing",
+			StartedAt:   incident.StartedAt,
+		})
+	}
+
+	recent, err := s.q.ListPublicRecentIncidents(ctx, sqlc.ListPublicRecentIncidentsParams{
+		MonitorIds: ids,
+		Since:      now.Add(-publicRecentWindow),
+		PageLimit:  publicRecentLimit,
+	})
+	if err != nil {
+		return PublicPage{}, fmt.Errorf("list recent incidents: %w", err)
+	}
+	for _, incident := range recent {
+		page.Incidents.Recent = append(page.Incidents.Recent, PublicIncident{
+			ID:          incident.ID,
+			MonitorID:   incident.MonitorID,
+			MonitorName: incident.MonitorName,
+			Status:      "resolved",
+			StartedAt:   incident.StartedAt,
+			ResolvedAt:  incident.ResolvedAt,
+		})
+	}
+
+	s.cache.set(slug, page)
+	return page, nil
+}
+
+// startOfUTCDay truncates t to midnight UTC.
+func startOfUTCDay(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// buildDays returns publicDayCount daily buckets ending on the UTC day of now.
+// Days are keyed by the SQL date string YYYY-MM-DD and marked no_data, up,
+// down, or partial.
+func buildDays(stats []sqlc.ListProbeDayStatsRow, since, now time.Time) []PublicDay {
+	byDay := make(map[string]sqlc.ListProbeDayStatsRow, len(stats))
+	for _, row := range stats {
+		byDay[row.Day] = row
+	}
+
+	first := startOfUTCDay(since)
+	if last := startOfUTCDay(now).Add(-(publicDayCount - 1) * 24 * time.Hour); last.After(first) {
+		first = last
+	}
+
+	days := make([]PublicDay, 0, publicDayCount)
+	for i := 0; i < publicDayCount; i++ {
+		date := first.AddDate(0, 0, i)
+		key := date.Format("2006-01-02")
+		row, ok := byDay[key]
+		status := "no_data"
+		var uptime *float64
+		if ok && row.UpCount+row.DownCount > 0 {
+			value := float64(row.UpCount) / float64(row.UpCount+row.DownCount)
+			uptime = &value
+			switch {
+			case row.DownCount == 0:
+				status = "up"
+			case row.UpCount == 0:
+				status = "down"
+			default:
+				status = "partial"
+			}
+		}
+		days = append(days, PublicDay{Date: key, Status: status, Uptime: uptime})
+	}
+	return days
+}
+
+// buildUptime returns the share of successful checks across the rows, or nil
+// when the monitor has no checks in the window.
+func buildUptime(stats []sqlc.ListProbeDayStatsRow) *float64 {
+	var checks, up int64
+	for _, row := range stats {
+		checks += row.Checks
+		up += row.UpCount
+	}
+	if checks == 0 {
+		return nil
+	}
+	value := float64(up) / float64(checks)
+	return &value
+}
+
+// monitorStatus maps a paused monitor to "paused"; otherwise it reports the
+// stored monitor state.
+func monitorStatus(paused bool, state string) string {
+	if paused {
+		return "paused"
+	}
+	return state
 }
 
 // selectMonitors dedupes requested monitor IDs and returns them in workspace
