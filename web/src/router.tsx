@@ -30,7 +30,11 @@ import {
 } from '@/lib/last-workspace';
 import { queryClient as appQueryClient } from '@/lib/query/client';
 import { meQueryOptions, useMe } from '@/lib/query/me';
-import { canManageAlertChannels, canManageMonitors } from '@/lib/roles';
+import {
+	canManageAlertChannels,
+	canManageMonitors,
+	canManageStatusPage,
+} from '@/lib/roles';
 
 const WorkspaceListScreen = lazy(async () => {
 	const module = await import('@/features/workspaces/WorkspaceListScreen');
@@ -75,6 +79,12 @@ const IncidentDetailScreen = lazy(async () => {
 const AlertSettingsScreen = lazy(async () => {
 	const module = await import('@/features/alerts/AlertSettingsScreen');
 	return { default: module.AlertSettingsScreen };
+});
+
+const StatusPageSettingsScreen = lazy(async () => {
+	const module =
+		await import('@/features/status-pages/StatusPageSettingsScreen');
+	return { default: module.StatusPageSettingsScreen };
 });
 
 const AdminWorkspacesScreen = lazy(async () => {
@@ -363,6 +373,26 @@ const alertSettingsRoute = createRoute({
 	component: AlertSettingsRoute,
 });
 
+function StatusPageSettingsRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return <StatusPageSettingsScreen workspace={workspace} />;
+}
+
+const statusPageSettingsRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/settings/status-page',
+	beforeLoad: ({ context }) => {
+		if (!canManageStatusPage(context.workspace.role)) {
+			throw redirect({
+				to: '/w/$workspaceSlug/monitors',
+				params: { workspaceSlug: context.workspace.slug },
+			});
+		}
+	},
+	component: StatusPageSettingsRoute,
+});
+
 function MembersRoute() {
 	const { workspace } = workspaceRoute.useRouteContext();
 
@@ -440,6 +470,7 @@ export const routeTree = rootRoute.addChildren([
 			incidentsRoute,
 			incidentDetailRoute,
 			alertSettingsRoute,
+			statusPageSettingsRoute,
 			membersRoute,
 		]),
 		adminRoute.addChildren([

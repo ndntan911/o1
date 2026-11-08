@@ -445,6 +445,64 @@ describe('router guards', () => {
 		).not.toBeInTheDocument();
 	});
 
+	test('the public status route renders without a session', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => unauthenticatedProblem()),
+			http.get(`${ORIGIN}/api/v1/public/status/acme`, () =>
+				HttpResponse.json({
+					workspace: { name: 'Acme', slug: 'acme' },
+					page: {
+						title: 'Acme status',
+						description: '',
+						updated_at: '2026-11-08T09:00:00Z',
+					},
+					monitors: [],
+					incidents: { active: [], recent: [] },
+				}),
+			),
+		);
+		renderRouter('/status/acme');
+		expect(
+			await screen.findByRole('heading', { name: 'Acme status' }),
+		).toBeInTheDocument();
+		expect(screen.queryByText('Sign in')).not.toBeInTheDocument();
+	});
+
+	test('a signed-in user is not redirected away from the public status route', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/public/status/acme-status`, () =>
+				HttpResponse.json({
+					workspace: { name: 'Acme Status', slug: 'acme-status' },
+					page: {
+						title: 'Public page',
+						description: '',
+						updated_at: '2026-11-08T09:00:00Z',
+					},
+					monitors: [],
+					incidents: { active: [], recent: [] },
+				}),
+			),
+		);
+		renderRouter('/status/acme-status');
+		expect(
+			await screen.findByRole('heading', { name: 'Public page' }),
+		).toBeInTheDocument();
+	});
+
+	test('members are redirected away from status page settings', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+		const { router } = renderRouter('/w/acme-status/settings/status-page');
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe('/w/acme-status/monitors'),
+		);
+	});
+
 	test('a workspace admin can open alert settings', async () => {
 		server.use(
 			http.get(`${ORIGIN}/api/v1/me`, () =>

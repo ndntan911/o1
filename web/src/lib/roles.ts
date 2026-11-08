@@ -29,6 +29,10 @@ export function canManageAlertChannels(role: Role): boolean {
 	return roleAtLeast(role, 'admin');
 }
 
+export function canManageStatusPage(role: Role): boolean {
+	return roleAtLeast(role, 'admin');
+}
+
 export function canManageMonitorAlerts(role: Role): boolean {
 	return roleAtLeast(role, 'member');
 }
