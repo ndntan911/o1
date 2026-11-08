@@ -33,10 +33,17 @@ const DAY_STATUS_LABELS: Record<PublicStatusDayStatus, string> = {
 };
 
 const DAY_STATUS_CLASSES: Record<PublicStatusDayStatus, string> = {
-	up: 'bg-emerald-500',
-	partial: 'bg-amber-400',
-	down: 'bg-red-500',
-	no_data: 'bg-muted-foreground/25',
+	up: 'bg-emerald-700 dark:bg-emerald-400',
+	partial: 'bg-amber-700 dark:bg-amber-300',
+	down: 'bg-red-700 dark:bg-red-400',
+	no_data: 'bg-gray-500 dark:bg-gray-400',
+};
+
+const DAY_STATUS_CUES: Record<PublicStatusDayStatus, string> = {
+	up: 'border border-solid border-transparent',
+	partial: 'border border-dashed border-foreground/60',
+	down: 'border-2 border-solid border-foreground/70',
+	no_data: 'border border-dotted border-foreground/60',
 };
 
 const DAY_LEGEND: { status: PublicStatusDayStatus; label: string }[] = [
@@ -140,9 +147,10 @@ function DayBars({ monitor }: { monitor: PublicStatusMonitor }) {
 					<span
 						key={day.date}
 						data-testid="status-day"
+						data-status={day.status}
 						aria-hidden="true"
 						title={dayTitle(day)}
-						className={`min-w-0 flex-1 rounded-[2px] ${DAY_STATUS_CLASSES[day.status]}`}
+						className={`min-w-0 flex-1 rounded-[2px] ${DAY_STATUS_CLASSES[day.status]} ${DAY_STATUS_CUES[day.status]}`}
 					/>
 				))}
 			</div>
@@ -167,7 +175,7 @@ function MonitorRow({ monitor }: { monitor: PublicStatusMonitor }) {
 				<Badge
 					variant={statusVariant}
 					className={
-						monitor.status === 'up' ? 'bg-emerald-600 text-white' : undefined
+						monitor.status === 'up' ? 'bg-emerald-700 text-white' : undefined
 					}
 				>
 					{MONITOR_STATUS_LABELS[monitor.status]}
@@ -191,7 +199,7 @@ function DayLegend() {
 				<li key={entry.status} className="flex items-center gap-1.5">
 					<span
 						aria-hidden="true"
-						className={`size-2.5 rounded-[2px] ${DAY_STATUS_CLASSES[entry.status]}`}
+						className={`size-3 rounded-[2px] ${DAY_STATUS_CLASSES[entry.status]} ${DAY_STATUS_CUES[entry.status]}`}
 					/>
 					<span className="text-muted-foreground">{entry.label}</span>
 				</li>

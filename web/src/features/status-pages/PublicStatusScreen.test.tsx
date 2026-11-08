@@ -66,6 +66,40 @@ test('renders the page, monitor, 90 bars, and uptime', async () => {
 	).toBeInTheDocument();
 });
 
+test('encodes day status with a non-color cue', async () => {
+	serve(
+		page({
+			monitors: [
+				monitor({
+					days: [
+						{ date: '2026-11-08', status: 'up', uptime: 1 },
+						{ date: '2026-11-07', status: 'partial', uptime: 0.5 },
+						{ date: '2026-11-06', status: 'down', uptime: 0 },
+						{ date: '2026-11-05', status: 'no_data', uptime: null },
+					],
+				}),
+			],
+		}),
+	);
+	renderWithProviders(<PublicStatusScreen slug="acme" />);
+
+	await screen.findByText('API');
+	const bars = screen.getAllByTestId('status-day');
+	expect(bars).toHaveLength(4);
+
+	expect(bars[0]).toHaveAttribute('data-status', 'up');
+	expect(bars[0]).toHaveClass('border-solid');
+
+	expect(bars[1]).toHaveAttribute('data-status', 'partial');
+	expect(bars[1]).toHaveClass('border-dashed');
+
+	expect(bars[2]).toHaveAttribute('data-status', 'down');
+	expect(bars[2]).toHaveClass('border-2');
+
+	expect(bars[3]).toHaveAttribute('data-status', 'no_data');
+	expect(bars[3]).toHaveClass('border-dotted');
+});
+
 test('shows no data instead of a percentage', async () => {
 	serve(
 		page({
