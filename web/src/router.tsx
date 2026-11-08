@@ -92,6 +92,11 @@ const SecurityEventsScreen = lazy(async () => {
 	return { default: module.SecurityEventsScreen };
 });
 
+const PublicStatusScreen = lazy(async () => {
+	const module = await import('@/features/status-pages/PublicStatusScreen');
+	return { default: module.PublicStatusScreen };
+});
+
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
 	component: RootLayout,
 });
@@ -109,6 +114,15 @@ const publicLayoutRoute = createRoute({
 		}
 	},
 	component: PublicLayout,
+});
+
+const publicStatusRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: '/status/$slug',
+	component: function PublicStatusRoute() {
+		const { slug } = publicStatusRoute.useParams();
+		return <PublicStatusScreen slug={slug} />;
+	},
 });
 
 const loginRoute = createRoute({
@@ -407,6 +421,7 @@ const adminSecurityEventsRoute = createRoute({
 });
 
 export const routeTree = rootRoute.addChildren([
+	publicStatusRoute,
 	publicLayoutRoute.addChildren([
 		loginRoute,
 		registerRoute,
