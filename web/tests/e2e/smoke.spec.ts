@@ -9,6 +9,7 @@ import {
 	composePsql,
 	MailpitTimeoutError,
 	seedIncident,
+	seedProbeResults,
 	waitForVerificationLink,
 } from './helpers';
 
@@ -110,6 +111,7 @@ async function registerThroughApiUnlessPresent(
 test('register, verify, create a monitor, and administer the workspace', async ({
 	page,
 	request,
+	browser,
 }) => {
 	const email = `e2e-${Date.now()}@example.com`;
 	const password = 'correct horse battery staple';
@@ -393,7 +395,88 @@ test('register, verify, create a monitor, and administer the workspace', async (
 	).toBeVisible();
 	await expectNoSeriousA11yViolations(page);
 
+	// Public status page. Seed a little history, publish the monitor, and view
+	// the page in a fresh logged-out context exactly as visitors would.
+	seedProbeResults(MONITOR_NAME_EDITED);
+
+	await page.getByRole('link', { name: 'Status page', exact: true }).click();
+	await expect(
+		page.getByRole('heading', { name: 'Status page', exact: true }),
+	).toBeVisible();
+	await page.getByLabel('Title', { exact: true }).fill('Acme status');
+	await page
+		.getByLabel('Description', { exact: true })
+		.fill('Live availability for our API');
+	await page
+		.getByRole('checkbox', { name: `Publish ${MONITOR_NAME_EDITED}` })
+		.check();
+	await page.getByRole('switch', { name: 'Status page enabled' }).click();
+
+	const publishSaved = page.waitForResponse(
+		(response) =>
+			response.request().method() === 'PUT' &&
+			response.url().includes('/status-page'),
+	);
+	await page.getByRole('button', { name: 'Save status page' }).click();
+	expect((await publishSaved).ok()).toBe(true);
+	await expect(
+		page.getByText('Status page saved', { exact: true }),
+	).toBeVisible();
+
+	const publicLink = page.getByLabel('Public link', { exact: true });
+	await expect(publicLink).toBeVisible();
+	await expect(publicLink).toHaveValue(new RegExp(`/status/${workspaceSlug}$`));
+	const publicUrl = await publicLink.inputValue();
+	expect(publicUrl).toContain(`/status/${workspaceSlug}`);
+	await expect(page.getByRole('link', { name: 'Open page' })).toHaveAttribute(
+		'href',
+		publicUrl,
+	);
+
+	const publicContext = await browser.newContext();
+	const publicPage = await publicContext.newPage();
+	await publicPage.goto(publicUrl);
+	await expect(
+		publicPage.getByRole('heading', { name: 'Acme status', exact: true }),
+	).toBeVisible();
+	await expect(
+		publicPage.getByText('Live availability for our API', { exact: true }),
+	).toBeVisible();
+	await expect(
+		publicPage.getByRole('heading', { name: MONITOR_NAME_EDITED, exact: true }),
+	).toBeVisible();
+	await expect(publicPage.getByTestId('status-day').first()).toBeVisible();
+	await expect(
+		publicPage.getByText(/[0-9.]+% uptime over the last 90 days/),
+	).toBeVisible();
+	const publicBody = await publicPage.locator('body').innerText();
+	expect(publicBody).not.toContain('https://example.com');
+	await expectNoSeriousA11yViolations(publicPage);
+	await publicContext.close();
+
+	// Unpublish the page; the public link must stop resolving.
+	await page.getByRole('switch', { name: 'Status page enabled' }).click();
+	const unpublishSaved = page.waitForResponse(
+		(response) =>
+			response.request().method() === 'PUT' &&
+			response.url().includes('/status-page'),
+	);
+	await page.getByRole('button', { name: 'Save status page' }).click();
+	expect((await unpublishSaved).ok()).toBe(true);
+	await expect(
+		page.getByRole('switch', { name: 'Status page enabled' }),
+	).not.toBeChecked();
+
+	const unpublishedContext = await browser.newContext();
+	const unpublishedPage = await unpublishedContext.newPage();
+	await unpublishedPage.goto(publicUrl);
+	await expect(
+		unpublishedPage.getByText('Status page not found', { exact: true }),
+	).toBeVisible();
+	await unpublishedContext.close();
+
 	// Delete the monitor from its detail screen.
+	await page.goto(`/w/${workspaceSlug}/monitors`);
 	await page.getByRole('link', { name: `View ${MONITOR_NAME_EDITED}` }).click();
 	await expect(
 		page.getByRole('heading', { name: MONITOR_NAME_EDITED, exact: true }),

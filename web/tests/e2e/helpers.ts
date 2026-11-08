@@ -130,6 +130,35 @@ export function seedIncident(monitorName: string): SeededIncident {
 	return { incidentId, workspaceSlug };
 }
 
+/**
+ * Inserts one down probe for yesterday and one up probe for today for the
+ * named monitor so the public status page has a non-empty daily history.
+ */
+export function seedProbeResults(monitorName: string): void {
+	composePsql(
+		`
+		WITH monitor AS (
+			SELECT m.id, m.workspace_id
+			FROM monitors m
+			WHERE m.name = :'monitor_name'
+			ORDER BY m.created_at DESC, m.id DESC
+			LIMIT 1
+		)
+		INSERT INTO probe_results (
+			id, monitor_id, workspace_id, scheduled_for, checked_at, status, latency_ms
+		)
+		SELECT gen_random_uuid(), monitor.id, monitor.workspace_id,
+		       now() - interval '1 day', now() - interval '1 day', 'down', 100
+		FROM monitor
+		UNION ALL
+		SELECT gen_random_uuid(), monitor.id, monitor.workspace_id,
+		       now(), now(), 'up', 100
+		FROM monitor;
+	`,
+		{ variables: { monitor_name: monitorName } },
+	);
+}
+
 function decodeHtmlEntities(value: string): string {
 	return value
 		.replace(/&amp;/g, '&')

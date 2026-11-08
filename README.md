@@ -69,7 +69,8 @@ npm run build
 
 The Playwright smoke test drives the deployed stack through registration,
 email verification, workspace and monitor management, incident
-acknowledgement, and administrator suspension. With Compose running:
+acknowledgement, public status page publishing, and administrator suspension.
+With Compose running:
 
 ```sh
 cd web
@@ -81,8 +82,8 @@ To promote an administrator, register and verify the account, set
 `O1_BOOTSTRAP_ADMIN_EMAIL` to that address, then recreate the API service as
 described under [Administrator bootstrap](#administrator-bootstrap).
 
-Incident history and email, webhook, Slack, and Telegram alerts are available
-in the dashboard. Public status pages are a later milestone.
+Incident history, email, webhook, Slack, and Telegram alerts, plus public status
+pages, are available in the dashboard. See [Public status pages](#public-status-pages).
 
 The dashboard supports Light, Dark, and System appearance. The choice is stored
 in the browser, and System follows the operating system preference.
@@ -158,9 +159,26 @@ Development uses Mailpit as the SMTP sink. Compose starts Mailpit at
 <http://localhost:8025>, where every alert email and its rendered content can be
 inspected. A production email sender is not implemented yet: the worker refuses
 to start with `O1_ENV=production`, and production delivery remains a later
-milestone. Paging integrations, public status pages, Slack OAuth, custom
-webhook headers, maintenance windows, and per-channel reminder schedules are
-outside the current scope.
+milestone. Paging integrations, Slack OAuth, custom webhook headers, maintenance
+windows, and per-channel reminder schedules are outside the current scope.
+
+## Public status pages
+
+**Settings → Status page** enables one public page per workspace, sets its
+title and description, and selects which monitors appear. The page is served at
+`/status/{workspace-slug}`; administrators can copy or open that link directly
+from the settings screen.
+
+Visitors see the current status of each published monitor, 90 daily bars
+grouped by UTC day, 90-day uptime, and active incidents plus incidents from the
+last 7 days. No-data days, paused monitors, and unknown states are not counted
+as downtime. The page never shows monitor URLs, headers, errors,
+acknowledgements, or delivery data. Responses are cached for 15 seconds and
+limited to 60 requests per minute per IP.
+
+V1 limits: one page per workspace, no custom domains, no separate page slug, no
+subscriber notifications, and no public incident detail pages. Suspended
+workspaces keep the public page read-only.
 
 ## Configuration
 
