@@ -26,6 +26,13 @@ const (
 	maxUserAgentLen = 512
 	// defaultSessionCookieName is used when configuration leaves the name empty.
 	defaultSessionCookieName = "o1_session"
+	// mfaChallengeTTL is how long a login MFA challenge remains usable.
+	mfaChallengeTTL = 5 * time.Minute
+	// mfaChallengePrefix marks raw login challenge tokens.
+	mfaChallengePrefix = "o1mfa_"
+	// mfaMaxAttempts is the number of wrong factors before a challenge is
+	// consumed and further attempts are refused.
+	mfaMaxAttempts = 5
 )
 
 // timingEqualizationHash is a valid Argon2id PHC string used to spend the same
@@ -50,11 +57,22 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
-// Login verifies credentials and creates a new server-side session. Unknown
+// LoginStart is the result of the password step of a login. When MFARequired
+// is true, Token is empty and Challenge carries the raw, single-use token that
+// must be submitted with the second factor.
+type LoginStart struct {
+	Token       string
+	User        sqlc.User
+	MFARequired bool
+	Challenge   string
+}
+
+// BeginLogin verifies credentials and either creates a session (when the
+// account has no second factor) or issues a short-lived MFA challenge. Unknown
 // emails and wrong passwords produce the same ErrInvalidCredentials sentinel;
 // an unverified account yields ErrEmailNotVerified. Only the SHA-256 digest of
-// the returned token is stored.
-func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent string) (string, sqlc.User, error) {
+// stored tokens is persisted.
+func (s *Service) BeginLogin(ctx context.Context, emailAddr, password, ip, userAgent string) (LoginStart, error) {
 	user, err := s.q.GetUserByEmail(ctx, NormalizeEmail(emailAddr))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -62,45 +80,255 @@ func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent 
 			// observable through response timing.
 			_, _ = VerifyPassword(timingEqualizationHash, password)
 			recordLoginFailure(ctx, s.q, ip, "invalid_credentials")
-			return "", sqlc.User{}, ErrInvalidCredentials
+			return LoginStart{}, ErrInvalidCredentials
 		}
-		return "", sqlc.User{}, fmt.Errorf("load user: %w", err)
+		return LoginStart{}, fmt.Errorf("load user: %w", err)
 	}
 
 	ok, err := VerifyPassword(user.PasswordHash, password)
 	if err != nil || !ok {
 		recordLoginFailure(ctx, s.q, ip, "invalid_credentials")
-		return "", sqlc.User{}, ErrInvalidCredentials
+		return LoginStart{}, ErrInvalidCredentials
 	}
 	if user.EmailVerifiedAt == nil {
 		recordLoginFailure(ctx, s.q, ip, "email_unverified")
-		return "", sqlc.User{}, ErrEmailNotVerified
+		return LoginStart{}, ErrEmailNotVerified
 	}
 
-	raw, tokenHash, err := NewToken()
-	if err != nil {
-		return "", sqlc.User{}, fmt.Errorf("create session token: %w", err)
+	if user.TOTPEnabledAt != nil {
+		challenge, err := s.createMFAChallenge(ctx, user.ID, ip, userAgent)
+		if err != nil {
+			return LoginStart{}, err
+		}
+		return LoginStart{User: user, MFARequired: true, Challenge: challenge}, nil
 	}
-	sessionID, err := uuid.NewV7()
+
+	raw, err := createSession(ctx, s.q, s.cfg, user.ID, ip, userAgent)
 	if err != nil {
-		return "", sqlc.User{}, fmt.Errorf("generate session id: %w", err)
-	}
-	if err := s.q.CreateSession(ctx, sqlc.CreateSessionParams{
-		ID:        sessionID,
-		UserID:    user.ID,
-		TokenHash: tokenHash,
-		ExpiresAt: time.Now().Add(s.cfg.SessionTTL),
-		Ip:        normalizeIP(ip),
-		UserAgent: truncateUserAgent(userAgent),
-	}); err != nil {
-		return "", sqlc.User{}, fmt.Errorf("create session: %w", err)
+		return LoginStart{}, err
 	}
 	audit.RecordBestEffort(ctx, s.q, audit.Event{
 		ActorUserID: &user.ID,
 		Kind:        audit.KindLoginSucceeded,
-		Detail:      map[string]any{"ip": normalizedIP(ip)},
+		Detail:      map[string]any{"ip": normalizedIP(ip), "method": "password"},
+	})
+	return LoginStart{Token: raw, User: user}, nil
+}
+
+// Login is a compatibility wrapper around BeginLogin. Accounts protected by a
+// second factor get ErrMFARequired instead of a session token; callers that
+// support two-step login should call BeginLogin directly.
+func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent string) (string, sqlc.User, error) {
+	start, err := s.BeginLogin(ctx, emailAddr, password, ip, userAgent)
+	if err != nil {
+		return "", sqlc.User{}, err
+	}
+	if start.MFARequired {
+		return "", sqlc.User{}, ErrMFARequired
+	}
+	return start.Token, start.User, nil
+}
+
+// createMFAChallenge deletes stale challenges for the user and stores a fresh
+// single-use challenge, returning the raw token. Only the token hash is stored.
+func (s *Service) createMFAChallenge(ctx context.Context, userID uuid.UUID, ip, userAgent string) (string, error) {
+	if err := s.q.DeleteExpiredMFAChallenges(ctx, userID); err != nil {
+		return "", fmt.Errorf("delete expired MFA challenges: %w", err)
+	}
+	base, _, err := NewToken()
+	if err != nil {
+		return "", fmt.Errorf("create MFA challenge token: %w", err)
+	}
+	raw := mfaChallengePrefix + base
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", fmt.Errorf("generate MFA challenge id: %w", err)
+	}
+	if err := s.q.CreateMFAChallenge(ctx, sqlc.CreateMFAChallengeParams{
+		ID:        id,
+		UserID:    userID,
+		TokenHash: HashToken(raw),
+		ExpiresAt: time.Now().Add(mfaChallengeTTL),
+		Ip:        normalizeIP(ip),
+		UserAgent: truncateUserAgent(userAgent),
+	}); err != nil {
+		return "", fmt.Errorf("store MFA challenge: %w", err)
+	}
+	return raw, nil
+}
+
+// createSession issues a session token for userID through q. Callers that need
+// the session and other writes to commit together pass a transaction-backed q.
+func createSession(ctx context.Context, q *sqlc.Queries, cfg config.Config, userID uuid.UUID, ip, userAgent string) (string, error) {
+	raw, tokenHash, err := NewToken()
+	if err != nil {
+		return "", fmt.Errorf("create session token: %w", err)
+	}
+	sessionID, err := uuid.NewV7()
+	if err != nil {
+		return "", fmt.Errorf("generate session id: %w", err)
+	}
+	if err := q.CreateSession(ctx, sqlc.CreateSessionParams{
+		ID:        sessionID,
+		UserID:    userID,
+		TokenHash: tokenHash,
+		ExpiresAt: time.Now().Add(cfg.SessionTTL),
+		Ip:        normalizeIP(ip),
+		UserAgent: truncateUserAgent(userAgent),
+	}); err != nil {
+		return "", fmt.Errorf("create session: %w", err)
+	}
+	return raw, nil
+}
+
+// CompleteTOTPLogin verifies exactly one second factor against a login
+// challenge and, on success, creates a session. Wrong factors increment the
+// challenge attempt count in a transaction that is committed before the typed
+// error is returned; the fifth failure consumes the challenge. Expired or
+// consumed challenges, and exhausted attempt counts, are rejected before any
+// factor is checked.
+func (s *Service) CompleteTOTPLogin(ctx context.Context, challengeToken, code, recoveryCode, ip, userAgent string) (string, sqlc.User, error) {
+	hasCode := strings.TrimSpace(code) != ""
+	hasRecovery := strings.TrimSpace(recoveryCode) != ""
+	if hasCode == hasRecovery {
+		return "", sqlc.User{}, ErrInvalidFactor
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", sqlc.User{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	challenge, err := qtx.GetMFAChallengeForUpdate(ctx, HashToken(challengeToken))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", sqlc.User{}, ErrMFAChallengeExpired
+		}
+		return "", sqlc.User{}, fmt.Errorf("load MFA challenge: %w", err)
+	}
+	now := time.Now()
+	if challenge.Attempts >= mfaMaxAttempts {
+		return "", sqlc.User{}, ErrMFAAttemptsExhausted
+	}
+	if challenge.ConsumedAt != nil || !challenge.ExpiresAt.After(now) {
+		return "", sqlc.User{}, ErrMFAChallengeExpired
+	}
+
+	user, err := qtx.GetUserByID(ctx, challenge.UserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", sqlc.User{}, ErrMFAChallengeExpired
+		}
+		return "", sqlc.User{}, fmt.Errorf("load challenge user: %w", err)
+	}
+	state, err := qtx.GetTOTPState(ctx, challenge.UserID)
+	if err != nil {
+		return "", sqlc.User{}, fmt.Errorf("load TOTP state: %w", err)
+	}
+
+	method := "totp"
+	var factorErr error
+	if hasRecovery {
+		method = "recovery_code"
+		matched, err := consumeRecoveryCode(ctx, qtx, challenge.UserID, recoveryCode, now.UTC())
+		if err != nil {
+			return "", sqlc.User{}, err
+		}
+		if !matched {
+			factorErr = ErrInvalidRecoveryCode
+		}
+	} else {
+		factorErr = s.verifyLoginTOTP(ctx, qtx, challenge.UserID, state, code, now)
+	}
+
+	if factorErr != nil {
+		if !errors.Is(factorErr, ErrInvalidTOTP) && !errors.Is(factorErr, ErrInvalidRecoveryCode) {
+			return "", sqlc.User{}, factorErr
+		}
+		reason := "invalid_totp"
+		if hasRecovery {
+			reason = "invalid_recovery_code"
+		}
+		if err := qtx.IncrementMFAChallengeAttempts(ctx, challenge.ID); err != nil {
+			return "", sqlc.User{}, fmt.Errorf("increment MFA attempts: %w", err)
+		}
+		if challenge.Attempts+1 >= mfaMaxAttempts {
+			if err := qtx.ConsumeMFAChallenge(ctx, sqlc.ConsumeMFAChallengeParams{
+				ID:         challenge.ID,
+				ConsumedAt: now,
+			}); err != nil {
+				return "", sqlc.User{}, fmt.Errorf("consume MFA challenge: %w", err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return "", sqlc.User{}, fmt.Errorf("commit MFA failure: %w", err)
+		}
+		audit.RecordBestEffort(ctx, s.q, audit.Event{
+			ActorUserID: &challenge.UserID,
+			Kind:        audit.KindLoginFailed,
+			Detail:      map[string]any{"ip": normalizedIP(ip), "reason": reason},
+		})
+		return "", sqlc.User{}, factorErr
+	}
+
+	if err := qtx.ConsumeMFAChallenge(ctx, sqlc.ConsumeMFAChallengeParams{
+		ID:         challenge.ID,
+		ConsumedAt: now,
+	}); err != nil {
+		return "", sqlc.User{}, fmt.Errorf("consume MFA challenge: %w", err)
+	}
+	raw, err := createSession(ctx, qtx, s.cfg, user.ID, ip, userAgent)
+	if err != nil {
+		return "", sqlc.User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", sqlc.User{}, fmt.Errorf("commit MFA login: %w", err)
+	}
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		ActorUserID: &user.ID,
+		Kind:        audit.KindLoginSucceeded,
+		Detail:      map[string]any{"ip": normalizedIP(ip), "method": method},
 	})
 	return raw, user, nil
+}
+
+// verifyLoginTOTP checks a TOTP code against the user's active secret and
+// advances the single-use step atomically. A missing or already-used step is
+// ErrInvalidTOTP; unexpected storage failures are returned unchanged.
+func (s *Service) verifyLoginTOTP(ctx context.Context, q *sqlc.Queries, userID uuid.UUID, state sqlc.GetTOTPStateRow, code string, now time.Time) error {
+	if state.TOTPEnabledAt == nil {
+		return ErrInvalidTOTP
+	}
+	secretEnc := ""
+	if state.TOTPSecretEnc != nil {
+		secretEnc = *state.TOTPSecretEnc
+	}
+	secret, err := s.openSecret(secretEnc)
+	if err != nil {
+		if errors.Is(err, ErrTOTPNotEnabled) {
+			return ErrInvalidTOTP
+		}
+		return err
+	}
+	step, matched, err := matchTOTPStep(secret, code, now)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return ErrInvalidTOTP
+	}
+	used, err := useTOTPStep(ctx, q, userID, step)
+	if err != nil {
+		return err
+	}
+	if !used {
+		return ErrInvalidTOTP
+	}
+	return nil
 }
 
 // recordLoginFailure audits a rejected login with a fixed reason. It never

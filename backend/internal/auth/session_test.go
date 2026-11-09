@@ -582,3 +582,242 @@ func TestAuditLoginEvents(t *testing.T) {
 		t.Fatalf("events: succeeded=%d invalid=%d unverified=%d", succeeded, invalid, unverified)
 	}
 }
+
+func TestBeginLogin_TwoFactorChallengeAndComplete(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	user, err := sqlc.New(pool).GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := mustTOTPCode(t, setup.Secret, time.Now())
+	if _, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !start.MFARequired || start.Token != "" || start.Challenge == "" {
+		t.Fatalf("start = %+v", start)
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrInvalidTOTP) {
+		t.Fatalf("wrong code error = %v", err)
+	}
+
+	// The failed attempt is audited with the challenged user as actor.
+	var actor *uuid.UUID
+	var detail string
+	if err := pool.QueryRow(ctx,
+		`SELECT actor_user_id, detail::text FROM security_events
+		 WHERE kind=$1 AND detail::text LIKE '%invalid_totp%'
+		 ORDER BY created_at DESC, id DESC LIMIT 1`, audit.KindLoginFailed).Scan(&actor, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if actor == nil || *actor != user.ID {
+		t.Fatalf("login_failed actor = %v, want %v", actor, user.ID)
+	}
+
+	fresh, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, gotUser, err := svc.CompleteTOTPLogin(ctx, fresh.Challenge, mustTOTPCode(t, setup.Secret, time.Now().Add(30*time.Second)), "", "127.0.0.1", "test")
+	if err != nil || token == "" || gotUser.ID == uuid.Nil {
+		t.Fatalf("complete token=%q user=%+v err=%v", token, gotUser, err)
+	}
+	if _, err := svc.Authenticate(ctx, token); err != nil {
+		t.Fatalf("complete session: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT detail::text FROM security_events
+		 WHERE kind=$1 AND detail::text LIKE '%"method"%'
+		 ORDER BY created_at DESC, id DESC LIMIT 1`, audit.KindLoginSucceeded).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail, "totp") {
+		t.Fatalf("login_succeeded detail = %s, want method totp", detail)
+	}
+}
+
+func TestCompleteTOTPLogin_RecoveryCodeSingleUse(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	user, err := sqlc.New(pool).GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := mustTOTPCode(t, setup.Secret, time.Now())
+	codes, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, gotUser, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "", codes[0], "127.0.0.1", "test")
+	if err != nil || token == "" || gotUser.ID != user.ID {
+		t.Fatalf("recovery login token=%q user=%+v err=%v", token, gotUser, err)
+	}
+
+	again, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, again.Challenge, "", codes[0], "127.0.0.1", "test"); !errors.Is(err, auth.ErrInvalidRecoveryCode) {
+		t.Fatalf("reused recovery code err = %v, want ErrInvalidRecoveryCode", err)
+	}
+}
+
+func TestCompleteTOTPLogin_AttemptsExpire(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	user, err := sqlc.New(pool).GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := mustTOTPCode(t, setup.Secret, time.Now())
+	if _, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 5; attempt++ {
+		if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrInvalidTOTP) {
+			t.Fatalf("attempt %d err = %v, want ErrInvalidTOTP", attempt, err)
+		}
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAAttemptsExhausted) {
+		t.Fatalf("exhausted err = %v, want ErrMFAAttemptsExhausted", err)
+	}
+
+	expired, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE mfa_challenges SET expires_at = now() - interval '1 minute' WHERE token_hash=$1`,
+		auth.HashToken(expired.Challenge)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, expired.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAChallengeExpired) {
+		t.Fatalf("expired challenge err = %v, want ErrMFAChallengeExpired", err)
+	}
+
+	consumed, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE mfa_challenges SET consumed_at = now() WHERE token_hash=$1`,
+		auth.HashToken(consumed.Challenge)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, consumed.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAChallengeExpired) {
+		t.Fatalf("consumed challenge err = %v, want ErrMFAChallengeExpired", err)
+	}
+}
+
+func TestCompleteTOTPLogin_Replay(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	user, err := sqlc.New(pool).GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := mustTOTPCode(t, setup.Secret, time.Now())
+	if _, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextStep := mustTOTPCode(t, setup.Secret, time.Now().Add(30*time.Second))
+	if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, nextStep, "", "127.0.0.1", "test"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, next.Challenge, nextStep, "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrInvalidTOTP) {
+		t.Fatalf("replayed code err = %v, want ErrInvalidTOTP", err)
+	}
+}
+
+func TestBeginLogin_NoTwoFactorUnchanged(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+
+	start, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.MFARequired || start.Challenge != "" || start.Token == "" || start.User.ID == uuid.Nil {
+		t.Fatalf("start = %+v", start)
+	}
+	if _, err := svc.Authenticate(ctx, start.Token); err != nil {
+		t.Fatalf("session token: %v", err)
+	}
+	if _, _, err := svc.Login(ctx, testEmail, testPassword, "", ""); err != nil {
+		t.Fatalf("Login wrapper: %v", err)
+	}
+}
+
+func TestCompleteTOTPLogin_InvalidFactor(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+
+	if _, _, err := svc.CompleteTOTPLogin(ctx, "challenge", "", "", "", ""); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Fatalf("neither factor err = %v, want ErrInvalidFactor", err)
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, "challenge", "123456", "ABCDE-FGHIJ", "", ""); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Fatalf("both factors err = %v, want ErrInvalidFactor", err)
+	}
+}
+
+// mustTOTPCode returns the TOTP code for secret at the given instant.
+func mustTOTPCode(t *testing.T, secret string, at time.Time) string {
+	t.Helper()
+	code, err := totp.GenerateCode(secret, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code
+}

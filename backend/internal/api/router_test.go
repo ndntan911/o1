@@ -85,6 +85,11 @@ func TestRouter_ProtectedRoutesRequireSession(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/workspaces/01234567-89ab-cdef-0123-456789abcdef/unsuspend"},
 		{http.MethodGet, "/api/v1/admin/monitors"},
 		{http.MethodGet, "/api/v1/admin/security-events"},
+		{http.MethodGet, "/api/v1/auth/2fa"},
+		{http.MethodPost, "/api/v1/auth/2fa/setup"},
+		{http.MethodPost, "/api/v1/auth/2fa/enable"},
+		{http.MethodPost, "/api/v1/auth/2fa/disable"},
+		{http.MethodPost, "/api/v1/auth/2fa/recovery-codes"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
@@ -123,5 +128,23 @@ func TestRouter_RegisterRejectsMalformedBody(t *testing.T) {
 	rec := serve(t, h, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestRouter_AuthRateLimiterCoversTOTPRoutes(t *testing.T) {
+	for _, path := range []string{
+		"/api/v1/auth/login/totp",
+		"/api/v1/auth/2fa/setup",
+	} {
+		t.Run(path, func(t *testing.T) {
+			h := newTestRouter(t)
+			var rec *httptest.ResponseRecorder
+			for i := 0; i < 11; i++ {
+				rec = serve(t, h, httptest.NewRequest(http.MethodPost, path, nil))
+			}
+			if rec.Code != http.StatusTooManyRequests {
+				t.Fatalf("request 11 = %d, want %d", rec.Code, http.StatusTooManyRequests)
+			}
+		})
 	}
 }

@@ -330,8 +330,16 @@ func TestDisableTOTP_RequiresPasswordAndFactor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for range 2 {
-		if _, _, err := svc.Login(ctx, testEmail, testPassword, "", ""); err != nil {
+	// Two existing sessions created through the two-step flow: one is passed
+	// as current and must survive, the other must be revoked. Recovery codes
+	// are used so the TOTP replay step is not advanced before the disable
+	// checks below.
+	for i := 0; i < 2; i++ {
+		start, err := svc.BeginLogin(ctx, testEmail, testPassword, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "", codes[i], "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

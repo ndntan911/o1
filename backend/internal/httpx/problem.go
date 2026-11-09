@@ -21,6 +21,15 @@ const (
 	CodeMonitorRateLimited = "monitor_rate_limited"
 	CodeIncidentResolved   = "incident_resolved"
 	CodeInternalError      = "internal_error"
+
+	// Two-factor authentication problem codes.
+	CodeTOTPAlreadyEnabled   = "totp_already_enabled"
+	CodeTOTPNotEnabled       = "totp_not_enabled"
+	CodeTOTPSetupExpired     = "totp_setup_expired"
+	CodeInvalidTOTP          = "invalid_totp"
+	CodeInvalidRecoveryCode  = "invalid_recovery_code"
+	CodeMFAChallengeExpired  = "mfa_challenge_expired"
+	CodeMFAAttemptsExhausted = "mfa_attempts_exhausted"
 )
 
 // Problem is an RFC 9457 problem-details style response body. Every API

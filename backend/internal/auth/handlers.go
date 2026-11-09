@@ -102,9 +102,13 @@ type userProfile struct {
 	Email string `json:"email"`
 }
 
-// loginResponse is the JSON body of a successful login.
+// loginResponse is the JSON body of a successful login. The password step of
+// an account with a second factor instead returns mfa_required and a
+// challenge_token with no user and no session cookie.
 type loginResponse struct {
-	User userProfile `json:"user"`
+	User           *userProfile `json:"user,omitempty"`
+	MFARequired    bool         `json:"mfa_required,omitempty"`
+	ChallengeToken string       `json:"challenge_token,omitempty"`
 }
 
 // forgotPasswordRequest is the JSON body of POST /password/forgot.
@@ -124,9 +128,10 @@ type resetPasswordRequest struct {
 }
 
 // LoginHandler authenticates a user, sets the session cookie, and returns the
-// user's public profile. Unknown emails and wrong passwords share the same
-// 401 invalid_credentials response; unverified accounts get 403
-// email_not_verified.
+// user's public profile. Accounts with a second factor receive
+// {mfa_required: true, challenge_token} and no cookie. Unknown emails and wrong
+// passwords share the same 401 invalid_credentials response; unverified
+// accounts get 403 email_not_verified.
 func LoginHandler(svc *Service, cfg config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req loginRequest
@@ -136,7 +141,7 @@ func LoginHandler(svc *Service, cfg config.Config) http.HandlerFunc {
 			writeValidationProblem(w)
 			return
 		}
-		rawToken, user, err := svc.Login(r.Context(), req.Email, req.Password, requestIP(r), r.UserAgent())
+		start, err := svc.BeginLogin(r.Context(), req.Email, req.Password, requestIP(r), r.UserAgent())
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrInvalidCredentials):
@@ -151,9 +156,16 @@ func LoginHandler(svc *Service, cfg config.Config) http.HandlerFunc {
 			}
 			return
 		}
-		SetSessionCookie(w, cfg, rawToken)
+		if start.MFARequired {
+			httpx.WriteJSON(w, http.StatusOK, loginResponse{
+				MFARequired:    true,
+				ChallengeToken: start.Challenge,
+			})
+			return
+		}
+		SetSessionCookie(w, cfg, start.Token)
 		httpx.WriteJSON(w, http.StatusOK, loginResponse{
-			User: userProfile{ID: user.ID.String(), Email: user.Email},
+			User: &userProfile{ID: start.User.ID.String(), Email: start.User.Email},
 		})
 	}
 }
