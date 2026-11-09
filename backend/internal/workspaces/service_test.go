@@ -368,3 +368,56 @@ func TestAuthorize_APIKeyScopeAndRole(t *testing.T) {
 		t.Fatalf("cross-workspace error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestAuditMemberChanges(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	owner := testutil.CreateVerifiedUser(t, pool, "audit-owner@example.com", "correct horse battery staple")
+	target := testutil.CreateVerifiedUser(t, pool, "audit-target@example.com", "correct horse battery staple")
+	svc := workspaces.NewService(pool, sqlc.New(pool))
+	ws, err := svc.Create(ctx, owner, "Audit Team")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	latest := func() (string, string) {
+		t.Helper()
+		var kind, detail string
+		if err := pool.QueryRow(ctx,
+			`SELECT kind, detail::text FROM security_events WHERE workspace_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+			ws.ID).Scan(&kind, &detail); err != nil {
+			t.Fatalf("load event: %v", err)
+		}
+		return kind, detail
+	}
+
+	if err := svc.AddMember(ctx, owner, ws.ID, "audit-target@example.com", workspaces.RoleViewer); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	kind, detail := latest()
+	if kind != "member_added" || !strings.Contains(detail, target.String()) || !strings.Contains(detail, "viewer") {
+		t.Fatalf("member_added event = %q %s", kind, detail)
+	}
+
+	if err := svc.AddMember(ctx, owner, ws.ID, "audit-target@example.com", workspaces.RoleAdmin); err != nil {
+		t.Fatalf("change role: %v", err)
+	}
+	kind, detail = latest()
+	if kind != "member_role_changed" || !strings.Contains(detail, "previous_role") ||
+		!strings.Contains(detail, "viewer") || !strings.Contains(detail, "admin") {
+		t.Fatalf("member_role_changed event = %q %s", kind, detail)
+	}
+
+	if err := svc.AddMember(ctx, owner, ws.ID, "audit-target@example.com", workspaces.RoleAdmin); err != nil {
+		t.Fatalf("same role: %v", err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM security_events WHERE workspace_id=$1 AND kind LIKE 'member_%'`, ws.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("member events = %d, want 2", count)
+	}
+}

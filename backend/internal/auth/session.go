@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"o1/internal/audit"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
@@ -60,6 +61,7 @@ func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent 
 			// Spend comparable Argon2 work so account existence is not
 			// observable through response timing.
 			_, _ = VerifyPassword(timingEqualizationHash, password)
+			recordLoginFailure(ctx, s.q, ip, "invalid_credentials")
 			return "", sqlc.User{}, ErrInvalidCredentials
 		}
 		return "", sqlc.User{}, fmt.Errorf("load user: %w", err)
@@ -67,9 +69,11 @@ func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent 
 
 	ok, err := VerifyPassword(user.PasswordHash, password)
 	if err != nil || !ok {
+		recordLoginFailure(ctx, s.q, ip, "invalid_credentials")
 		return "", sqlc.User{}, ErrInvalidCredentials
 	}
 	if user.EmailVerifiedAt == nil {
+		recordLoginFailure(ctx, s.q, ip, "email_unverified")
 		return "", sqlc.User{}, ErrEmailNotVerified
 	}
 
@@ -91,7 +95,22 @@ func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent 
 	}); err != nil {
 		return "", sqlc.User{}, fmt.Errorf("create session: %w", err)
 	}
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		ActorUserID: &user.ID,
+		Kind:        audit.KindLoginSucceeded,
+		Detail:      map[string]any{"ip": normalizedIP(ip)},
+	})
 	return raw, user, nil
+}
+
+// recordLoginFailure audits a rejected login with a fixed reason. It never
+// records the email, the supplied password, or the user ID, so unknown and
+// unverified accounts cannot leak identity through the audit trail.
+func recordLoginFailure(ctx context.Context, q *sqlc.Queries, ip, reason string) {
+	audit.RecordBestEffort(ctx, q, audit.Event{
+		Kind:   audit.KindLoginFailed,
+		Detail: map[string]any{"ip": normalizedIP(ip), "reason": reason},
+	})
 }
 
 // Authenticate resolves a raw session token to its principal and slides the
@@ -276,6 +295,15 @@ func sessionCookieName(cfg config.Config) string {
 		return cfg.SessionCookieName
 	}
 	return defaultSessionCookieName
+}
+
+// normalizedIP returns the canonical IP used in audit details, or the empty
+// string when the value is empty or unparseable.
+func normalizedIP(raw string) string {
+	if ip := normalizeIP(raw); ip != nil {
+		return *ip
+	}
+	return ""
 }
 
 // normalizeIP stores a valid IP address, or NULL when the value is empty or

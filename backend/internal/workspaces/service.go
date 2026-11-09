@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/audit"
 	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 )
@@ -307,6 +308,8 @@ func (s *Service) AddMember(ctx context.Context, actorID, workspaceID uuid.UUID,
 	// Never let the upsert overwrite a membership at or above the actor's
 	// role. This prevents an admin from demoting the owner (or another admin)
 	// and prevents an owner from demoting themselves.
+	var previousRole Role
+	hadMembership := false
 	target, err := s.q.GetWorkspaceMember(ctx, sqlc.GetWorkspaceMemberParams{
 		WorkspaceID: workspaceID,
 		UserID:      user.ID,
@@ -320,6 +323,8 @@ func (s *Service) AddMember(ctx context.Context, actorID, workspaceID uuid.UUID,
 		if targetRole.AtLeast(actorRole) {
 			return ErrForbidden
 		}
+		previousRole = targetRole
+		hadMembership = true
 	case errors.Is(err, pgx.ErrNoRows):
 		// New member: nothing to protect.
 	default:
@@ -332,6 +337,29 @@ func (s *Service) AddMember(ctx context.Context, actorID, workspaceID uuid.UUID,
 		Role:        role.String(),
 	}); err != nil {
 		return fmt.Errorf("upsert workspace member: %w", err)
+	}
+
+	switch {
+	case !hadMembership:
+		audit.RecordBestEffort(ctx, s.q, audit.Event{
+			WorkspaceID:   &workspaceID,
+			ActorUserID:   &actorID,
+			ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+			Kind:          audit.KindMemberAdded,
+			Detail:        map[string]any{"user_id": user.ID.String(), "role": role.String()},
+		})
+	case previousRole != role:
+		audit.RecordBestEffort(ctx, s.q, audit.Event{
+			WorkspaceID:   &workspaceID,
+			ActorUserID:   &actorID,
+			ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+			Kind:          audit.KindMemberRoleChanged,
+			Detail: map[string]any{
+				"user_id":       user.ID.String(),
+				"previous_role": previousRole.String(),
+				"new_role":      role.String(),
+			},
+		})
 	}
 	return nil
 }

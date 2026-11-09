@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/audit"
 	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 	"o1/internal/testutil"
@@ -369,5 +370,82 @@ func TestResetPassword_UnknownTokenAndValidation(t *testing.T) {
 	// The failed attempt must not consume the token.
 	if err := svc.ResetPassword(ctx, token, "new correct horse battery"); err != nil {
 		t.Fatalf("token unusable after validation failure: %v", err)
+	}
+}
+
+func TestAuditLoginEvents(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	svc := auth.NewService(pool, sqlc.New(pool), testutil.NewFakeSender(), testutil.TestConfig(t))
+	userID := testutil.CreateVerifiedUser(t, pool, "audit-login@example.com", testPassword)
+	if _, err := svc.Register(ctx, "audit-unverified@example.com", testPassword); err != nil {
+		t.Fatalf("register unverified user: %v", err)
+	}
+
+	const ip = " 203.0.113.9 "
+	if _, _, err := svc.Login(ctx, "audit-login@example.com", testPassword, ip, ""); err != nil {
+		t.Fatalf("successful login: %v", err)
+	}
+	if _, _, err := svc.Login(ctx, "audit-unknown@example.com", testPassword, ip, ""); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatalf("unknown email err = %v", err)
+	}
+	if _, _, err := svc.Login(ctx, "audit-login@example.com", "wrong password", ip, ""); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatalf("wrong password err = %v", err)
+	}
+	if _, _, err := svc.Login(ctx, "audit-unverified@example.com", testPassword, ip, ""); !errors.Is(err, auth.ErrEmailNotVerified) {
+		t.Fatalf("unverified err = %v", err)
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT kind, detail::text, actor_user_id FROM security_events WHERE kind LIKE 'login_%' ORDER BY created_at, id`)
+	if err != nil {
+		t.Fatalf("query events: %v", err)
+	}
+	defer rows.Close()
+
+	var succeeded, invalid, unverified int
+	for rows.Next() {
+		var kind, detail string
+		var actor *uuid.UUID
+		if err := rows.Scan(&kind, &detail, &actor); err != nil {
+			t.Fatalf("scan event: %v", err)
+		}
+		if strings.Contains(detail, "@") {
+			t.Fatalf("%s detail contains an email: %s", kind, detail)
+		}
+		if !strings.Contains(detail, `"ip"`) {
+			t.Fatalf("%s detail missing ip: %s", kind, detail)
+		}
+		switch kind {
+		case audit.KindLoginSucceeded:
+			succeeded++
+			if actor == nil || *actor != userID {
+				t.Fatalf("login_succeeded actor = %v, want %v", actor, userID)
+			}
+			if !strings.Contains(detail, "203.0.113.9") {
+				t.Fatalf("login_succeeded ip not normalized: %s", detail)
+			}
+		case audit.KindLoginFailed:
+			if actor != nil {
+				t.Fatalf("login_failed actor = %v, want NULL", *actor)
+			}
+			switch {
+			case strings.Contains(detail, "invalid_credentials"):
+				invalid++
+			case strings.Contains(detail, "email_unverified"):
+				unverified++
+			default:
+				t.Fatalf("login_failed detail = %s", detail)
+			}
+		default:
+			t.Fatalf("unexpected event kind %q", kind)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if succeeded != 1 || invalid != 2 || unverified != 1 {
+		t.Fatalf("events: succeeded=%d invalid=%d unverified=%d", succeeded, invalid, unverified)
 	}
 }

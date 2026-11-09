@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/audit"
+	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
 	"o1/internal/probe"
@@ -166,6 +168,17 @@ func (s *Service) Create(ctx context.Context, actorID, workspaceID uuid.UUID, in
 	if err := tx.Commit(ctx); err != nil {
 		return Channel{}, fmt.Errorf("commit transaction: %w", err)
 	}
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		WorkspaceID:   &workspaceID,
+		ActorUserID:   &actorID,
+		ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+		Kind:          audit.KindAlertChannelCreated,
+		Detail: map[string]any{
+			"channel_id": created.ID.String(),
+			"kind":       created.Kind,
+			"name":       created.Name,
+		},
+	})
 	return ChannelView(created)
 }
 
@@ -249,6 +262,18 @@ func (s *Service) Update(ctx context.Context, actorID, workspaceID, channelID uu
 	if err := tx.Commit(ctx); err != nil {
 		return Channel{}, fmt.Errorf("commit transaction: %w", err)
 	}
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		WorkspaceID:   &workspaceID,
+		ActorUserID:   &actorID,
+		ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+		Kind:          audit.KindAlertChannelUpdated,
+		Detail: map[string]any{
+			"channel_id": updated.ID.String(),
+			"kind":       updated.Kind,
+			"name":       updated.Name,
+			"enabled":    updated.Enabled,
+		},
+	})
 	return ChannelView(updated)
 }
 
@@ -303,6 +328,17 @@ func (s *Service) Delete(ctx context.Context, actorID, workspaceID, channelID uu
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		WorkspaceID:   &workspaceID,
+		ActorUserID:   &actorID,
+		ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+		Kind:          audit.KindAlertChannelDeleted,
+		Detail: map[string]any{
+			"channel_id": channelID.String(),
+			"kind":       existing.Kind,
+			"name":       existing.Name,
+		},
+	})
 	return nil
 }
 

@@ -758,3 +758,54 @@ func ptrString(value string) *string {
 func ptrBool(value bool) *bool {
 	return &value
 }
+
+func TestAuditAlertChannelEvents(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	const signingSecret = "0123456789abcdef"
+
+	channel, err := env.svc.Create(ctx, env.owner, env.wsID, CreateInput{
+		Kind: KindWebhook, Name: "Audit Ops", URL: webhookURL, SigningSecret: signingSecret,
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	assertEvent := func(kind string) string {
+		t.Helper()
+		var gotKind, detail string
+		var actor *uuid.UUID
+		if err := env.pool.QueryRow(ctx,
+			`SELECT kind, detail::text, actor_user_id FROM security_events WHERE workspace_id=$1 AND kind=$2`,
+			env.wsID, kind).Scan(&gotKind, &detail, &actor); err != nil {
+			t.Fatalf("load %s: %v", kind, err)
+		}
+		if actor == nil || *actor != env.owner {
+			t.Fatalf("%s actor = %v, want %v", kind, actor, env.owner)
+		}
+		for _, leak := range []string{webhookURL, signingSecret} {
+			if strings.Contains(detail, leak) {
+				t.Fatalf("%s leaked %q: %s", kind, leak, detail)
+			}
+		}
+		if !strings.Contains(detail, channel.ID.String()) || !strings.Contains(detail, "Audit Ops") {
+			t.Fatalf("%s detail = %s", kind, detail)
+		}
+		return detail
+	}
+
+	assertEvent("alert_channel_created")
+
+	if _, err := env.svc.Update(ctx, env.owner, env.wsID, channel.ID, UpdateInput{Enabled: ptrBool(false)}); err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	updated := assertEvent("alert_channel_updated")
+	if !strings.Contains(updated, "false") {
+		t.Fatalf("alert_channel_updated detail = %s, want enabled=false", updated)
+	}
+
+	if err := env.svc.Delete(ctx, env.owner, env.wsID, channel.ID); err != nil {
+		t.Fatalf("delete channel: %v", err)
+	}
+	assertEvent("alert_channel_deleted")
+}

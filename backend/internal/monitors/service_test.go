@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/auth"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/monitors"
@@ -752,5 +753,55 @@ func TestCreate_AttachesAllAlertChannels(t *testing.T) {
 		if !enabled {
 			t.Fatalf("monitor alert channel %s enabled = false, want true", channelID)
 		}
+	}
+}
+
+func TestAuditMonitorDeleteAndKeyAttribution(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	ws := env.createWorkspace(t, "owner@example.com")
+
+	keyID := uuid.New()
+	if _, err := env.pool.Exec(ctx,
+		`INSERT INTO api_keys (id, workspace_id, name, prefix, token_hash, role, created_by)
+		 VALUES ($1, $2, 'deploy', 'abcdefghijkl', $3, 'member', $4)`,
+		keyID, ws, []byte("hash"), env.ownerID); err != nil {
+		t.Fatalf("insert api key: %v", err)
+	}
+	keyCtx := auth.ContextWithAPIKey(ctx, auth.APIKeyPrincipal{
+		ID: keyID, WorkspaceID: ws, Name: "deploy", Prefix: "abcdefghijkl",
+		Role: "member", CreatedBy: env.ownerID,
+	})
+
+	created, err := env.svc.Create(keyCtx, env.ownerID, ws, validInput(0))
+	if err != nil {
+		t.Fatalf("create via key: %v", err)
+	}
+	var createdKey string
+	if err := env.pool.QueryRow(ctx,
+		`SELECT COALESCE(actor_api_key_id::text, '') FROM security_events WHERE workspace_id=$1 AND kind='monitor_created'`,
+		ws).Scan(&createdKey); err != nil {
+		t.Fatalf("load monitor_created: %v", err)
+	}
+	if createdKey != keyID.String() {
+		t.Fatalf("monitor_created actor_api_key_id = %q, want %q", createdKey, keyID)
+	}
+
+	if err := env.svc.Delete(keyCtx, env.ownerID, ws, created.ID); err != nil {
+		t.Fatalf("delete via key: %v", err)
+	}
+	var kind, detail, deletedKey string
+	if err := env.pool.QueryRow(ctx,
+		`SELECT kind, detail::text, COALESCE(actor_api_key_id::text, '')
+		 FROM security_events WHERE workspace_id=$1 AND kind='monitor_deleted'`,
+		ws).Scan(&kind, &detail, &deletedKey); err != nil {
+		t.Fatalf("load monitor_deleted: %v", err)
+	}
+	if kind != "monitor_deleted" || !strings.Contains(detail, created.Name) ||
+		!strings.Contains(detail, created.ID.String()) {
+		t.Fatalf("monitor_deleted event = %q %s", kind, detail)
+	}
+	if deletedKey != keyID.String() {
+		t.Fatalf("monitor_deleted actor_api_key_id = %q, want %q", deletedKey, keyID)
 	}
 }

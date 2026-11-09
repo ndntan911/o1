@@ -87,12 +87,13 @@ type AdminMonitor struct {
 
 // SecurityEvent is an abuse signal audit row.
 type SecurityEvent struct {
-	ID          uuid.UUID       `json:"id"`
-	WorkspaceID *uuid.UUID      `json:"workspace_id"`
-	ActorUserID *uuid.UUID      `json:"actor_user_id"`
-	Kind        string          `json:"kind"`
-	Detail      json.RawMessage `json:"detail"`
-	CreatedAt   time.Time       `json:"created_at"`
+	ID            uuid.UUID       `json:"id"`
+	WorkspaceID   *uuid.UUID      `json:"workspace_id"`
+	ActorUserID   *uuid.UUID      `json:"actor_user_id"`
+	ActorAPIKeyID *uuid.UUID      `json:"actor_api_key_id"`
+	Kind          string          `json:"kind"`
+	Detail        json.RawMessage `json:"detail"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 // ListWorkspaces returns workspaces newest first.
@@ -294,12 +295,13 @@ func (s *Service) ListSecurityEvents(ctx context.Context, kind string, workspace
 	out := make([]SecurityEvent, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, SecurityEvent{
-			ID:          row.ID,
-			WorkspaceID: uuidPtr(row.WorkspaceID),
-			ActorUserID: uuidPtr(row.ActorUserID),
-			Kind:        row.Kind,
-			Detail:      json.RawMessage(row.Detail),
-			CreatedAt:   row.CreatedAt,
+			ID:            row.ID,
+			WorkspaceID:   uuidPtr(row.WorkspaceID),
+			ActorUserID:   uuidPtr(row.ActorUserID),
+			ActorAPIKeyID: uuidPtr(row.ActorAPIKeyID),
+			Kind:          row.Kind,
+			Detail:        json.RawMessage(row.Detail),
+			CreatedAt:     row.CreatedAt,
 		})
 	}
 	return out, nil

@@ -508,3 +508,29 @@ func TestService_PublicPagePrivacy(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditStatusPageUpdated(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	monitorID := env.addMonitor("API")
+
+	if _, err := env.svc.UpdateConfig(ctx, env.owner, env.wsID, ConfigInput{
+		Enabled: true, Title: "Acme", MonitorIDs: []uuid.UUID{monitorID},
+	}); err != nil {
+		t.Fatalf("update config: %v", err)
+	}
+
+	var detail string
+	var actor *uuid.UUID
+	if err := env.pool.QueryRow(ctx,
+		`SELECT detail::text, actor_user_id FROM security_events WHERE workspace_id=$1 AND kind='status_page_updated'`,
+		env.wsID).Scan(&detail, &actor); err != nil {
+		t.Fatalf("load event: %v", err)
+	}
+	if actor == nil || *actor != env.owner {
+		t.Fatalf("actor = %v, want %v", actor, env.owner)
+	}
+	if !strings.Contains(detail, `"enabled": true`) || !strings.Contains(detail, `"monitor_count": 1`) {
+		t.Fatalf("detail = %s, want enabled and monitor_count", detail)
+	}
+}

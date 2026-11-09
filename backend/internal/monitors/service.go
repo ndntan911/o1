@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/audit"
+	"o1/internal/auth"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/probe"
@@ -629,6 +631,14 @@ func (s *Service) Delete(ctx context.Context, actorID, workspaceID, monitorID uu
 		return ErrSuspended
 	}
 
+	monitor, err := qtx.GetMonitor(ctx, sqlc.GetMonitorParams{ID: monitorID, WorkspaceID: workspaceID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load monitor: %w", err)
+	}
+
 	deleted, err := qtx.DeleteMonitor(ctx, sqlc.DeleteMonitorParams{ID: monitorID, WorkspaceID: workspaceID})
 	if err != nil {
 		return fmt.Errorf("delete monitor: %w", err)
@@ -639,6 +649,13 @@ func (s *Service) Delete(ctx context.Context, actorID, workspaceID, monitorID uu
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit monitor delete: %w", err)
 	}
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		WorkspaceID:   &workspaceID,
+		ActorUserID:   &actorID,
+		ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+		Kind:          audit.KindMonitorDeleted,
+		Detail:        map[string]any{"monitor_id": monitorID.String(), "name": monitor.Name},
+	})
 	return nil
 }
 
@@ -871,7 +888,7 @@ func (s *Service) insertEvent(ctx context.Context, q *sqlc.Queries, workspaceID,
 		ActorUserID:   pgUUID(actorID),
 		Kind:          kind,
 		Detail:        raw,
-		ActorAPIKeyID: pgtype.UUID{},
+		ActorAPIKeyID: optionalPGUUID(auth.APIKeyIDFrom(ctx)),
 	}); err != nil {
 		return fmt.Errorf("record %s event: %w", kind, err)
 	}
@@ -936,4 +953,12 @@ func intFrom32(value *int32) *int {
 // pgUUID converts a required UUID into the nullable pgtype form.
 func pgUUID(id uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+// optionalPGUUID converts a nullable UUID pointer into the pgtype form.
+func optionalPGUUID(id *uuid.UUID) pgtype.UUID {
+	if id == nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: *id, Valid: true}
 }

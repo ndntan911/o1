@@ -340,3 +340,37 @@ func waitForWorkspaceRowLockWait(t *testing.T, pool *pgxpool.Pool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestAuditSecurityEventIncludesActorAPIKeyID(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	ws := env.createWorkspace(t, "Key Events")
+	keyID := uuid.New()
+	if _, err := env.pool.Exec(ctx,
+		`INSERT INTO api_keys (id, workspace_id, name, prefix, token_hash, role, created_by)
+		 VALUES ($1, $2, 'deploy', 'abcdefghijkl', $3, 'member', $4)`,
+		keyID, ws.ID, []byte("hash"), env.ownerID); err != nil {
+		t.Fatalf("insert api key: %v", err)
+	}
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(ctx,
+		`INSERT INTO security_events (id, workspace_id, kind, detail, actor_api_key_id)
+		 VALUES ($1, $2, 'api_key_created', '{}', $3)`,
+		eventID, ws.ID, keyID); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	events, err := env.svc.ListSecurityEvents(ctx, "api_key_created", &ws.ID, nil, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %+v", events)
+	}
+	if events[0].ActorAPIKeyID == nil || *events[0].ActorAPIKeyID != keyID {
+		t.Fatalf("actor_api_key_id = %v, want %v", events[0].ActorAPIKeyID, keyID)
+	}
+}

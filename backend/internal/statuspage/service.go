@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/audit"
+	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 	"o1/internal/workspaces"
 )
@@ -169,6 +171,13 @@ func (s *Service) UpdateConfig(ctx context.Context, actorID, workspaceID uuid.UU
 	}
 
 	s.cache.delete(ws.Slug)
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		WorkspaceID:   &workspaceID,
+		ActorUserID:   &actorID,
+		ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+		Kind:          audit.KindStatusPageUpdated,
+		Detail:        map[string]any{"enabled": page.Enabled, "monitor_count": len(selection)},
+	})
 	return Config{
 		Enabled:     page.Enabled,
 		Title:       page.Title,
