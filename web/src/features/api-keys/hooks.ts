@@ -11,10 +11,18 @@ export function useAPIKeys(workspaceId: string) {
 	});
 }
 
-export function useCreateAPIKey(workspaceId: string) {
+export function createAPIKeyMutationKey(
+	workspaceId: string,
+	scope: string,
+): readonly ['create-api-key', string, string] {
+	return ['create-api-key', workspaceId, scope] as const;
+}
+
+export function useCreateAPIKey(workspaceId: string, scope = 'default') {
 	const queryClient = useQueryClient();
 
 	return useMutation({
+		mutationKey: createAPIKeyMutationKey(workspaceId, scope),
 		mutationFn: (input: CreateAPIKeyInput) => createAPIKey(workspaceId, input),
 		onSuccess: () =>
 			queryClient.invalidateQueries({

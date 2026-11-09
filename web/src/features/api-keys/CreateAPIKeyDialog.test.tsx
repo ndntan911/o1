@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { useState } from 'react';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { HttpResponse, http } from 'msw';
+import { HttpResponse, delay, http } from 'msw';
 import { server } from '@/test/msw/server';
-import { renderWithProviders } from '@/test/render';
+import { createTestQueryClient, renderWithProviders } from '@/test/render';
 import type { APIKey, CreatedAPIKey } from '@/lib/api/types';
 import { CreateAPIKeyDialog } from './CreateAPIKeyDialog';
 
@@ -61,6 +61,29 @@ function mockClipboard(writeText: ReturnType<typeof vi.fn>) {
 		configurable: true,
 		value: { writeText },
 	});
+}
+
+function CloseableDialog() {
+	const [open, setOpen] = useState(true);
+	return open ? (
+		<CreateAPIKeyDialog workspaceId="w1" onClose={() => setOpen(false)} />
+	) : (
+		<button type="button" onClick={() => setOpen(true)}>
+			Open dialog
+		</button>
+	);
+}
+
+function mutationCacheContains(
+	queryClient: ReturnType<typeof createTestQueryClient>,
+	secret: string,
+) {
+	return queryClient
+		.getMutationCache()
+		.getAll()
+		.some((mutation) =>
+			JSON.stringify(mutation.state.data ?? '').includes(secret),
+		);
 }
 
 beforeEach(() => {
@@ -147,18 +170,7 @@ describe('CreateAPIKeyDialog', () => {
 		serveCreate();
 		const user = userEvent.setup();
 
-		function Harness() {
-			const [open, setOpen] = useState(true);
-			return open ? (
-				<CreateAPIKeyDialog workspaceId="w1" onClose={() => setOpen(false)} />
-			) : (
-				<button type="button" onClick={() => setOpen(true)}>
-					Open dialog
-				</button>
-			);
-		}
-
-		renderWithProviders(<Harness />);
+		renderWithProviders(<CloseableDialog />);
 
 		await user.type(screen.getByLabelText('Name'), 'CI');
 		await user.click(screen.getByRole('button', { name: 'Create key' }));
@@ -172,6 +184,61 @@ describe('CreateAPIKeyDialog', () => {
 		expect(screen.queryByDisplayValue(created.secret)).not.toBeInTheDocument();
 		expect(screen.queryByText(/never be shown again/i)).not.toBeInTheDocument();
 		expect(screen.getByLabelText('Name')).toHaveValue('');
+	});
+
+	test('closing the dialog evicts the settled mutation from the cache', async () => {
+		serveCreate();
+		const queryClient = createTestQueryClient();
+		const user = userEvent.setup();
+
+		renderWithProviders(<CloseableDialog />, { queryClient });
+
+		await user.type(screen.getByLabelText('Name'), 'CI');
+		await user.click(screen.getByRole('button', { name: 'Create key' }));
+		await screen.findByDisplayValue(created.secret);
+
+		expect(mutationCacheContains(queryClient, created.secret)).toBe(false);
+
+		await user.click(screen.getByRole('button', { name: 'Done' }));
+
+		expect(mutationCacheContains(queryClient, created.secret)).toBe(false);
+	});
+
+	test('unmounting mid-flight evicts the pending mutation from the cache', async () => {
+		let releaseRequest: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			releaseRequest = resolve;
+		});
+		let requestFinished = false;
+		server.use(
+			http.post(keysPath, async () => {
+				await gate;
+				await delay(10);
+				requestFinished = true;
+				return HttpResponse.json(created, { status: 201 });
+			}),
+		);
+		const queryClient = createTestQueryClient();
+		const user = userEvent.setup();
+
+		const { unmount } = renderWithProviders(
+			<CreateAPIKeyDialog workspaceId="w1" onClose={vi.fn()} />,
+			{ queryClient },
+		);
+
+		await user.type(screen.getByLabelText('Name'), 'CI');
+		await user.click(screen.getByRole('button', { name: 'Create key' }));
+
+		await waitFor(() =>
+			expect(queryClient.getMutationCache().getAll()).toHaveLength(1),
+		);
+
+		unmount();
+		expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
+
+		releaseRequest();
+		await waitFor(() => expect(requestFinished).toBe(true));
+		expect(mutationCacheContains(queryClient, created.secret)).toBe(false);
 	});
 
 	test('a 409 problem stays open and shows the problem', async () => {

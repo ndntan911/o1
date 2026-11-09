@@ -1,5 +1,13 @@
-import { useState, type FormEvent } from 'react';
+import {
+	useCallback,
+	useEffect,
+	useId,
+	useMemo,
+	useState,
+	type FormEvent,
+} from 'react';
 import { toast } from 'sonner';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { ProblemAlert } from '@/components/feedback/ProblemAlert';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,7 +30,7 @@ import {
 import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
 import type { APIKeyRole, CreateAPIKeyInput } from '@/lib/api/types';
-import { useCreateAPIKey } from './hooks';
+import { createAPIKeyMutationKey, useCreateAPIKey } from './hooks';
 
 export interface CreateAPIKeyDialogProps {
 	workspaceId: string;
@@ -34,24 +42,54 @@ const ROLES: Array<{ value: APIKeyRole; label: string }> = [
 	{ value: 'member', label: 'Member' },
 ];
 
+function evictMutation(
+	queryClient: QueryClient,
+	mutationKey: readonly unknown[],
+): void {
+	const cache = queryClient.getMutationCache();
+	const mutation = cache.find({ mutationKey });
+	if (mutation) cache.remove(mutation);
+}
+
 export function CreateAPIKeyDialog({
 	workspaceId,
 	onClose,
 }: CreateAPIKeyDialogProps) {
-	const create = useCreateAPIKey(workspaceId);
+	const queryClient = useQueryClient();
+	const mutationScope = useId();
+	const mutationKey = useMemo(
+		() => createAPIKeyMutationKey(workspaceId, mutationScope),
+		[workspaceId, mutationScope],
+	);
+	const create = useCreateAPIKey(workspaceId, mutationScope);
+	const resetCreate = create.reset;
 	const [name, setName] = useState('');
 	const [role, setRole] = useState<APIKeyRole>('viewer');
 	const [secret, setSecret] = useState<string | null>(null);
 	const [problem, setProblem] = useState<ApiProblem | null>(null);
 
+	const discardCreateMutation = useCallback(() => {
+		// reset() only detaches the observer and schedules GC; removing the entry
+		// from MutationCache is what clears the one-time secret immediately.
+		resetCreate();
+		evictMutation(queryClient, mutationKey);
+	}, [queryClient, mutationKey, resetCreate]);
+
+	useEffect(
+		() => () => {
+			discardCreateMutation();
+		},
+		[discardCreateMutation],
+	);
+
 	function handleClose() {
-		// The secret exists only in this component's state. Clearing it before
-		// unmounting guarantees a reopened dialog can never show it again.
+		// The secret exists only in this component's state. Clearing it and
+		// evicting the mutation guarantees a reopened dialog can never show it.
 		setSecret(null);
 		setName('');
 		setRole('viewer');
 		setProblem(null);
-		create.reset();
+		discardCreateMutation();
 		onClose();
 	}
 
@@ -63,9 +101,7 @@ export function CreateAPIKeyDialog({
 		create.mutate(input, {
 			onSuccess: (created) => {
 				setSecret(created.secret);
-				// Drop the mutation result from React Query's mutation cache so the
-				// secret only ever lives in this component's state.
-				create.reset();
+				discardCreateMutation();
 			},
 			onError: (error) => setProblem(problemFromError(error)),
 		});
