@@ -53,6 +53,7 @@
     "globals": "^17.14.0",
     "jsdom": "^29.1.1",
     "msw": "^3.0.3",
+    "otplib": "^13.6.0",
     "prettier": "^3.9.10",
     "shadcn": "^4.23.0",
     "tailwindcss": "^4.3.4",

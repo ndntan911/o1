@@ -5,6 +5,7 @@ import {
 	type Page,
 } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { generate } from 'otplib';
 import {
 	composePsql,
 	MailpitTimeoutError,
@@ -18,6 +19,54 @@ import {
 const WORKSPACE_NAME = 'E2E Workspace';
 const MONITOR_NAME = 'Example';
 const MONITOR_NAME_EDITED = 'Example edited';
+const TOTP_PERIOD_SECONDS = 30;
+
+function totpStep(epochMs = Date.now()): number {
+	return Math.floor(epochMs / (TOTP_PERIOD_SECONDS * 1000));
+}
+
+async function totpCodeForStep(secret: string, step: number): Promise<string> {
+	return generate({
+		secret,
+		epoch: step * TOTP_PERIOD_SECONDS,
+		period: TOTP_PERIOD_SECONDS,
+		digits: 6,
+	});
+}
+
+/**
+ * Returns a code for the step after `lastUsedStep`. The backend accepts one
+ * step of clock skew, so when the next step has not started yet the code is
+ * still valid. Once it has, the code is freshly current. This lets the test use
+ * several distinct TOTP steps without waiting for every time step.
+ */
+async function freshTOTPCode(
+	secret: string,
+	lastUsedStep: number,
+): Promise<{ code: string; step: number }> {
+	const step = lastUsedStep + 1;
+	const validFrom = (step - 1) * TOTP_PERIOD_SECONDS * 1000;
+	const wait = validFrom - Date.now();
+	if (wait > 0) {
+		await new Promise((resolve) => setTimeout(resolve, wait + 1000));
+	}
+	return { step, code: await totpCodeForStep(secret, step) };
+}
+
+async function signInWithPassword(
+	page: Page,
+	email: string,
+	password: string,
+): Promise<void> {
+	await page.getByLabel('Email').fill(email);
+	await page.getByLabel('Password', { exact: true }).fill(password);
+	await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+}
+
+async function logOut(page: Page): Promise<void> {
+	await page.getByRole('button', { name: 'Log out' }).click();
+	await expect(page.getByLabel('Email')).toBeVisible();
+}
 
 async function expectNoSeriousA11yViolations(page: Page) {
 	const results = await new AxeBuilder({ page }).analyze();
@@ -667,6 +716,152 @@ test('register, verify, create a monitor, and administer the workspace', async (
 		.getByRole('button', { name: 'Unsuspend workspace', exact: true })
 		.click();
 	await expect(workspaceRow.getByText('Active', { exact: true })).toBeVisible();
+
+	// Two-factor authentication: enroll, sign in with TOTP, sign in with a
+	// single-use recovery code, then disable with the password and a second
+	// recovery code.
+	await page.goto('/account/security');
+	await expect(
+		page.getByRole('heading', { name: 'Security', exact: true }),
+	).toBeVisible();
+	await expectNoSeriousA11yViolations(page);
+
+	await page
+		.getByRole('button', { name: 'Enable two-factor authentication' })
+		.click();
+	const enableDialog = page.getByRole('dialog');
+	await expect(
+		enableDialog.getByRole('heading', {
+			name: 'Enable two-factor authentication',
+			exact: true,
+		}),
+	).toBeVisible();
+	await enableDialog.getByLabel('Password', { exact: true }).fill(password);
+	await enableDialog.getByRole('button', { name: 'Continue' }).click();
+
+	await expect(enableDialog.getByTestId('totp-qr')).toBeVisible();
+	const secret = (await enableDialog.locator('code').innerText()).trim();
+	expect(secret).toMatch(/^[A-Z2-7]+=*$/);
+
+	const enrollmentStep = totpStep();
+	await enableDialog.getByLabel('Password', { exact: true }).fill(password);
+	await enableDialog
+		.getByLabel('Verification code')
+		.fill(await totpCodeForStep(secret, enrollmentStep));
+	await enableDialog.getByRole('button', { name: 'Verify and enable' }).click();
+
+	const recoveryList = enableDialog.getByRole('list', {
+		name: 'Recovery codes',
+	});
+	await expect(recoveryList).toBeVisible();
+	const recoveryCodes = (
+		await recoveryList.getByRole('listitem').allInnerTexts()
+	).map((code) => code.trim());
+	expect(recoveryCodes).toHaveLength(10);
+	const [firstRecoveryCode, secondRecoveryCode] = recoveryCodes;
+	expect(firstRecoveryCode).toMatch(
+		/^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/,
+	);
+	expect(secondRecoveryCode).toMatch(
+		/^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/,
+	);
+	await enableDialog.getByRole('button', { name: 'Done' }).click();
+	await expect(
+		page.getByText('Two-factor authentication is on', { exact: true }),
+	).toBeVisible();
+	await expect(
+		page.getByText('10 recovery codes remaining', { exact: true }),
+	).toBeVisible();
+
+	let lastUsedStep = enrollmentStep;
+	await logOut(page);
+	await signInWithPassword(page, email, password);
+	await expect(
+		page.getByText('Enter the second factor for your account.', {
+			exact: true,
+		}),
+	).toBeVisible();
+	await expectNoSeriousA11yViolations(page);
+	const totpLogin = await freshTOTPCode(secret, lastUsedStep);
+	lastUsedStep = totpLogin.step;
+	await page.getByLabel('Authentication code').fill(totpLogin.code);
+	await page.getByRole('button', { name: 'Verify', exact: true }).click();
+	await expect(
+		page.getByRole('heading', { name: 'Monitors', exact: true }),
+	).toBeVisible();
+
+	// The first recovery code works once.
+	await logOut(page);
+	await signInWithPassword(page, email, password);
+	await page.getByRole('button', { name: 'Use a recovery code' }).click();
+	await page
+		.getByLabel('Recovery code', { exact: true })
+		.fill(firstRecoveryCode);
+	await page.getByRole('button', { name: 'Verify', exact: true }).click();
+	await expect(
+		page.getByRole('heading', { name: 'Monitors', exact: true }),
+	).toBeVisible();
+
+	// Reusing it fails, and the still-live challenge accepts a TOTP code.
+	await logOut(page);
+	await signInWithPassword(page, email, password);
+	await page.getByRole('button', { name: 'Use a recovery code' }).click();
+	await page
+		.getByLabel('Recovery code', { exact: true })
+		.fill(firstRecoveryCode);
+	await page.getByRole('button', { name: 'Verify', exact: true }).click();
+	await expect(
+		page.getByText('Invalid recovery code', { exact: true }),
+	).toBeVisible();
+	await expect(
+		page.getByText('Code: invalid_recovery_code', { exact: true }),
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Use an authenticator code' }).click();
+	const replayLogin = await freshTOTPCode(secret, lastUsedStep);
+	await page.getByLabel('Authentication code').fill(replayLogin.code);
+	await page.getByRole('button', { name: 'Verify', exact: true }).click();
+	await expect(
+		page.getByRole('heading', { name: 'Monitors', exact: true }),
+	).toBeVisible();
+
+	await page.goto('/account/security');
+	await expect(
+		page.getByText('Two-factor authentication is on', { exact: true }),
+	).toBeVisible();
+	await page
+		.getByRole('button', { name: 'Disable two-factor authentication' })
+		.click();
+	const disableDialog = page.getByRole('dialog');
+	await expect(
+		disableDialog.getByRole('heading', {
+			name: 'Disable two-factor authentication',
+			exact: true,
+		}),
+	).toBeVisible();
+	await disableDialog.getByLabel('Password', { exact: true }).fill(password);
+	await disableDialog.getByLabel('Use recovery code').check();
+	await disableDialog
+		.getByLabel('Recovery code', { exact: true })
+		.fill(secondRecoveryCode);
+	await disableDialog
+		.getByRole('button', {
+			name: 'Disable two-factor authentication',
+			exact: true,
+		})
+		.click();
+	await expect(
+		page.getByText('Two-factor authentication disabled', { exact: true }),
+	).toBeVisible();
+	await expect(
+		page.getByRole('button', { name: 'Enable two-factor authentication' }),
+	).toBeVisible();
+
+	// Password-only login works again after disabling.
+	await logOut(page);
+	await signInWithPassword(page, email, password);
+	await expect(
+		page.getByRole('heading', { name: 'Monitors', exact: true }),
+	).toBeVisible();
 
 	// Mobile navigation stays reachable at a phone viewport, including the
 	// bottom-anchored theme control on a short screen.

@@ -55,6 +55,9 @@ const auditKinds = [
 	'status_page_updated',
 	'api_key_created',
 	'api_key_revoked',
+	'totp_enabled',
+	'totp_disabled',
+	'totp_recovery_codes_regenerated',
 ] as const;
 
 const workspace = {
@@ -116,6 +119,17 @@ describe('SecurityEventsScreen', () => {
 		await waitFor(() => {
 			expect(urls.at(-1)?.searchParams.get('kind')).toBe('ssrf_blocked');
 		});
+
+		for (const value of [
+			'totp_enabled',
+			'totp_disabled',
+			'totp_recovery_codes_regenerated',
+		] as const) {
+			await user.selectOptions(kind, value);
+			await waitFor(() => {
+				expect(urls.at(-1)?.searchParams.get('kind')).toBe(value);
+			});
+		}
 	});
 
 	test('the workspace combobox sends workspace_id', async () => {

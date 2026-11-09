@@ -70,7 +70,8 @@ npm run build
 The Playwright smoke test drives the deployed stack through registration,
 email verification, workspace and monitor management, incident
 acknowledgement, public status page publishing, API key creation and
-authorization, audit attribution, and administrator suspension.
+authorization, audit attribution, administrator suspension, and TOTP
+enrollment, two-step login, recovery-code use, and disabling.
 With Compose running:
 
 ```sh
@@ -220,6 +221,43 @@ V1 limits: no key expiry, rotation, custom scopes, admin/owner keys, IP
 allowlists, or per-key usage analytics. Revoke and recreate is the rotation
 path.
 
+## Two-factor authentication
+
+Two-factor authentication (2FA) is opt-in per user under **Security** in the
+account menu (`/account/security`). Each user enrolls their own account; there
+is no workspace-wide enforcement in V1.
+
+Enrollment uses a standard TOTP authenticator app (SHA-1, six digits, 30-second
+period). Starting setup requires the account password. The page then shows a QR
+code and the base32 secret for manual entry. Confirming enrollment requires the
+password again plus a current code. The ten single-use recovery codes are
+shown once and are never retrievable again; only hashes are stored. Enabling
+2FA revokes every other session while keeping the current one.
+
+Sign-in becomes two steps. After the password, the API returns a short-lived
+challenge instead of a session cookie, and the dashboard asks for either the
+current authenticator code or a recovery code. A challenge expires after five
+minutes and is consumed after five failed attempts. Both codes are single use:
+used TOTP time steps are recorded so a code cannot be replayed, and each
+recovery code is marked used atomically. Regenerating recovery codes with the
+password and one factor replaces all remaining codes and invalidates the old
+ones.
+
+Disabling 2FA and regenerating recovery codes both require the password plus
+exactly one factor: a current authenticator code or a recovery code. Disabling
+clears the active secret, pending setup, recovery codes, and login challenges,
+then revokes other sessions. A password reset preserves an enabled 2FA
+configuration and clears any pending setup or challenge.
+
+API keys bypass TOTP entirely, so automation keeps working while browser
+sessions require the second factor. V1 has no administrator reset, trusted
+devices, passkeys, or recovery by support request; a user who loses both the
+authenticator and all recovery codes loses browser access.
+
+The audit trail records `totp_enabled`, `totp_disabled`, and
+`totp_recovery_codes_regenerated`. These events carry the acting user and never
+contain the secret, a TOTP code, or a recovery code.
+
 ## Audit log
 
 Global administrators can read the audit trail from
@@ -242,6 +280,7 @@ Recorded kinds:
   `alert_channel_deleted` (including the workspace email channel).
 - `status_page_updated`.
 - `api_key_created` and `api_key_revoked`.
+- `totp_enabled`, `totp_disabled`, and `totp_recovery_codes_regenerated`.
 - `workspace_suspended` and `workspace_unsuspended`.
 
 Key-driven monitor creation, rate-limit, SSRF, and deletion events carry

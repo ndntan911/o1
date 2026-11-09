@@ -25,6 +25,9 @@ export const SECURITY_EVENT_KINDS = [
 	'status_page_updated',
 	'api_key_created',
 	'api_key_revoked',
+	'totp_enabled',
+	'totp_disabled',
+	'totp_recovery_codes_regenerated',
 ] as const;
 
 export type SecurityEventKind = (typeof SECURITY_EVENT_KINDS)[number];
