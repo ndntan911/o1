@@ -276,20 +276,56 @@ func (q *Queries) ListRecoveryCodes(ctx context.Context, userID uuid.UUID) ([]Us
 	return items, nil
 }
 
-const markRecoveryCodeUsed = `-- name: MarkRecoveryCodeUsed :exec
+const listRecoveryCodesForUpdate = `-- name: ListRecoveryCodesForUpdate :many
+SELECT id, user_id, code_hash, used_at, created_at FROM user_recovery_codes
+WHERE user_id = $1
+ORDER BY created_at, id
+FOR UPDATE
+`
+
+func (q *Queries) ListRecoveryCodesForUpdate(ctx context.Context, userID uuid.UUID) ([]UserRecoveryCode, error) {
+	rows, err := q.db.Query(ctx, listRecoveryCodesForUpdate, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserRecoveryCode
+	for rows.Next() {
+		var i UserRecoveryCode
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CodeHash,
+			&i.UsedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markRecoveryCodeUsed = `-- name: MarkRecoveryCodeUsed :execrows
 UPDATE user_recovery_codes
-SET used_at = $2::timestamptz
-WHERE id = $1
+SET used_at = $1
+WHERE id = $2 AND used_at IS NULL
 `
 
 type MarkRecoveryCodeUsedParams struct {
+	UsedAt *time.Time
 	ID     uuid.UUID
-	UsedAt time.Time
 }
 
-func (q *Queries) MarkRecoveryCodeUsed(ctx context.Context, arg MarkRecoveryCodeUsedParams) error {
-	_, err := q.db.Exec(ctx, markRecoveryCodeUsed, arg.ID, arg.UsedAt)
-	return err
+func (q *Queries) MarkRecoveryCodeUsed(ctx context.Context, arg MarkRecoveryCodeUsedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markRecoveryCodeUsed, arg.UsedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setTOTPPending = `-- name: SetTOTPPending :exec

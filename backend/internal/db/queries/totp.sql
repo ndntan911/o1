@@ -57,10 +57,16 @@ SELECT * FROM user_recovery_codes
 WHERE user_id = $1
 ORDER BY created_at, id;
 
--- name: MarkRecoveryCodeUsed :exec
+-- name: ListRecoveryCodesForUpdate :many
+SELECT * FROM user_recovery_codes
+WHERE user_id = sqlc.arg('user_id')
+ORDER BY created_at, id
+FOR UPDATE;
+
+-- name: MarkRecoveryCodeUsed :execrows
 UPDATE user_recovery_codes
-SET used_at = sqlc.arg(used_at)::timestamptz
-WHERE id = $1;
+SET used_at = sqlc.arg('used_at')
+WHERE id = sqlc.arg('id') AND used_at IS NULL;
 
 -- name: DeleteRecoveryCodes :exec
 DELETE FROM user_recovery_codes

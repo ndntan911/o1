@@ -815,15 +815,46 @@ func TestTOTPSchema_StateRecoveryAndChallenges(t *testing.T) {
 	}
 
 	// Recovery codes are hashed rows that cascade with the user.
-	for i := 0; i < 2; i++ {
+	recoveryIDs := make([]uuid.UUID, 2)
+	for i := range recoveryIDs {
+		id := uuid.New()
+		recoveryIDs[i] = id
 		if err := q.CreateRecoveryCode(ctx, sqlc.CreateRecoveryCodeParams{
-			ID: uuid.New(), UserID: userID, CodeHash: []byte{byte(i)},
+			ID: id, UserID: userID, CodeHash: []byte{byte(i)},
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if n, err := q.CountUnusedRecoveryCodes(ctx, userID); err != nil || n != 2 {
 		t.Fatalf("unused codes = %d, err = %v", n, err)
+	}
+	if codes, err := q.ListRecoveryCodesForUpdate(ctx, userID); err != nil || len(codes) != 2 {
+		t.Fatalf("codes for update = %+v, err = %v, want 2", codes, err)
+	}
+
+	// A recovery code can be marked used exactly once.
+	if rows, err := q.MarkRecoveryCodeUsed(ctx, sqlc.MarkRecoveryCodeUsedParams{
+		ID: recoveryIDs[0], UsedAt: ptr(time.Now().UTC()),
+	}); err != nil || rows != 1 {
+		t.Fatalf("first mark rows = %d, err = %v, want 1", rows, err)
+	}
+	if rows, err := q.MarkRecoveryCodeUsed(ctx, sqlc.MarkRecoveryCodeUsedParams{
+		ID: recoveryIDs[0], UsedAt: ptr(time.Now().UTC()),
+	}); err != nil || rows != 0 {
+		t.Fatalf("second mark rows = %d, err = %v, want 0", rows, err)
+	}
+	codes, err := q.ListRecoveryCodes(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usedCode *sqlc.UserRecoveryCode
+	for i := range codes {
+		if codes[i].ID == recoveryIDs[0] {
+			usedCode = &codes[i]
+		}
+	}
+	if usedCode == nil || usedCode.UsedAt == nil {
+		t.Fatalf("marked code = %+v, want used_at set", usedCode)
 	}
 
 	// Challenges are unique by token hash and cascade with the user.
