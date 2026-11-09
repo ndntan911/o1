@@ -31,6 +31,16 @@ const adminWorkspaceMe: Me = {
 	],
 };
 
+const apiKey = {
+	id: 'k1',
+	name: 'CI deploy',
+	prefix: 'o1_abcdefghijkl',
+	role: 'member',
+	created_by: 'u1',
+	created_at: '2026-11-09T09:00:00Z',
+	last_used_at: null,
+};
+
 const detailSummary = {
 	window: '6h',
 	uptime: 0.99,
@@ -408,6 +418,9 @@ describe('router guards', () => {
 			'href',
 			'/w/acme-status/settings/alerts',
 		);
+		expect(
+			await screen.findByRole('link', { name: 'API keys' }),
+		).toHaveAttribute('href', '/w/acme-status/settings/api-keys');
 		expect(screen.getByText('Settings')).toBeInTheDocument();
 	});
 
@@ -424,6 +437,9 @@ describe('router guards', () => {
 		await screen.findByRole('link', { name: 'Monitors' });
 		expect(
 			screen.queryByRole('link', { name: 'Alerts' }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole('link', { name: 'API keys' }),
 		).not.toBeInTheDocument();
 	});
 
@@ -442,6 +458,24 @@ describe('router guards', () => {
 		);
 		expect(
 			screen.queryByRole('heading', { name: 'Alert settings' }),
+		).not.toBeInTheDocument();
+	});
+
+	test('a member is redirected away from API key settings', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+
+		const { router } = renderRouter('/w/acme-status/settings/api-keys');
+
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe('/w/acme-status/monitors'),
+		);
+		expect(
+			screen.queryByRole('heading', { name: 'API keys' }),
 		).not.toBeInTheDocument();
 	});
 
@@ -531,5 +565,23 @@ describe('router guards', () => {
 			await screen.findByRole('heading', { name: 'Alert settings' }),
 		).toBeInTheDocument();
 		expect(await screen.findByText('ops@example.com')).toBeInTheDocument();
+	});
+
+	test('a workspace admin can open API key settings', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () =>
+				HttpResponse.json(adminWorkspaceMe),
+			),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/api-keys`, () =>
+				HttpResponse.json({ keys: [apiKey] }),
+			),
+		);
+
+		renderRouter('/w/acme-status/settings/api-keys');
+
+		expect(
+			await screen.findByRole('heading', { name: 'API keys' }),
+		).toBeInTheDocument();
+		expect(await screen.findByText('CI deploy')).toBeInTheDocument();
 	});
 });

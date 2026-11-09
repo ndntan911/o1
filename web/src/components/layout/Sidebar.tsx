@@ -84,6 +84,15 @@ export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 					>
 						Status page
 					</Link>
+					<Link
+						to="/w/$workspaceSlug/settings/api-keys"
+						params={{ workspaceSlug: currentWorkspace.slug }}
+						className={linkClass}
+						activeProps={{ className: activeClass }}
+						onClick={onNavigate}
+					>
+						API keys
+					</Link>
 				</div>
 			) : null}
 

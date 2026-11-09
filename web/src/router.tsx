@@ -32,6 +32,7 @@ import { queryClient as appQueryClient } from '@/lib/query/client';
 import { meQueryOptions, useMe } from '@/lib/query/me';
 import {
 	canManageAlertChannels,
+	canManageAPIKeys,
 	canManageMonitors,
 	canManageStatusPage,
 } from '@/lib/roles';
@@ -85,6 +86,11 @@ const StatusPageSettingsScreen = lazy(async () => {
 	const module =
 		await import('@/features/status-pages/StatusPageSettingsScreen');
 	return { default: module.StatusPageSettingsScreen };
+});
+
+const APIKeysScreen = lazy(async () => {
+	const module = await import('@/features/api-keys/APIKeysScreen');
+	return { default: module.APIKeysScreen };
 });
 
 const AdminWorkspacesScreen = lazy(async () => {
@@ -393,6 +399,26 @@ const statusPageSettingsRoute = createRoute({
 	component: StatusPageSettingsRoute,
 });
 
+function APIKeysRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return <APIKeysScreen workspace={workspace} />;
+}
+
+const apiKeysRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/settings/api-keys',
+	beforeLoad: ({ context }) => {
+		if (!canManageAPIKeys(context.workspace.role)) {
+			throw redirect({
+				to: '/w/$workspaceSlug/monitors',
+				params: { workspaceSlug: context.workspace.slug },
+			});
+		}
+	},
+	component: APIKeysRoute,
+});
+
 function MembersRoute() {
 	const { workspace } = workspaceRoute.useRouteContext();
 
@@ -471,6 +497,7 @@ export const routeTree = rootRoute.addChildren([
 			incidentDetailRoute,
 			alertSettingsRoute,
 			statusPageSettingsRoute,
+			apiKeysRoute,
 			membersRoute,
 		]),
 		adminRoute.addChildren([
