@@ -62,7 +62,6 @@ type keyAPIEnv struct {
 	memberID uuid.UUID
 	viewerID uuid.UUID
 	ownerBID uuid.UUID
-	seq      int
 }
 
 func newKeyAPIEnv(t *testing.T) *keyAPIEnv {
@@ -175,11 +174,6 @@ func (e *keyAPIEnv) createKey(name, role string) apikeys.CreatedKey {
 		e.t.Fatalf("create key %q: %v", name, err)
 	}
 	return created
-}
-
-func (e *keyAPIEnv) nextName(prefix string) string {
-	e.seq++
-	return fmt.Sprintf("%s-%d", prefix, e.seq)
 }
 
 func (e *keyAPIEnv) insertMonitor(workspaceID uuid.UUID, name string) uuid.UUID {

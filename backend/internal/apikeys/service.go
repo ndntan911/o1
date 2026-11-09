@@ -39,7 +39,7 @@ const (
 
 	// unique constraint names used to classify insert failures.
 	prefixConstraint    = "api_keys_prefix_key"
-	tokenHashConstraint = "api_keys_token_hash_key"
+	tokenHashConstraint = "api_keys_token_hash_key" //nolint:gosec // PostgreSQL constraint name, not a credential.
 	nameConstraint      = "api_keys_workspace_active_name_key"
 )
 
