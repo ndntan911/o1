@@ -15,6 +15,7 @@ import (
 
 	"o1/internal/admin"
 	"o1/internal/alerts"
+	"o1/internal/apikeys"
 	"o1/internal/auth"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
@@ -44,6 +45,7 @@ type Dependencies struct {
 	AlertService      *alerts.Service
 	AdminService      *admin.Service
 	StatusPageService *statuspage.Service
+	APIKeyService     *apikeys.Service
 }
 
 // authRatePerSecond and authRateBurst implement 10 requests per minute for
@@ -211,12 +213,24 @@ func NewRouter(deps Dependencies) http.Handler {
 	if statusPageSvc == nil && deps.Pool != nil {
 		statusPageSvc = statuspage.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
 	}
+	keySvc := deps.APIKeyService
+	if keySvc == nil && deps.Pool != nil {
+		keySvc = apikeys.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
 	mux.HandleFunc("GET /readyz", readyzHandler(deps.Pool))
 
 	requireSession := auth.RequireSession(authSvc)
+	// requireAuth accepts a Bearer API key or a session cookie. keyLimiter
+	// must sit inside it: the limiter reads the key principal that RequireAuth
+	// places in the context.
+	requireAuth := auth.RequireAuth(authSvc)
+	keyLimiter := httpx.KeyedRateLimit(auth.APIKeyRateKey, 10, 60)
+	withKeyAuth := func(next http.Handler) http.Handler {
+		return requireAuth(keyLimiter(next))
+	}
 	authLimiter := httpx.RateLimit(authRatePerSecond, authRateBurst, true)
 
 	mux.Handle("POST /api/v1/auth/register", authLimiter(http.HandlerFunc(auth.RegisterHandler(authSvc))))
@@ -231,29 +245,33 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux.Handle("GET /api/v1/workspaces", requireSession(http.HandlerFunc(workspaces.ListHandler(wsSvc))))
 	mux.Handle("POST /api/v1/workspaces", requireSession(http.HandlerFunc(workspaces.CreateHandler(wsSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}", requireSession(http.HandlerFunc(workspaces.GetHandler(wsSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}", withKeyAuth(http.HandlerFunc(workspaces.GetHandler(wsSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.MembersHandler(wsSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/members", requireSession(http.HandlerFunc(workspaces.AddMemberHandler(wsSvc))))
+
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/api-keys", requireSession(http.HandlerFunc(apikeys.ListHandler(keySvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/api-keys", requireSession(http.HandlerFunc(apikeys.CreateHandler(keySvc))))
+	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/api-keys/{keyID}", requireSession(http.HandlerFunc(apikeys.RevokeHandler(keySvc))))
 
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.GetConfigHandler(statusPageSvc))))
 	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.UpdateConfigHandler(statusPageSvc))))
 
 	mux.Handle("GET /api/v1/public/status/{slug}", httpx.RateLimit(1, 20, true)(http.HandlerFunc(statuspage.PublicHandler(statusPageSvc))))
 
-	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors", requireSession(http.HandlerFunc(monitors.CreateHandler(monitorSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors", requireSession(http.HandlerFunc(monitors.ListHandler(monitorSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", requireSession(http.HandlerFunc(monitors.GetHandler(monitorSvc))))
-	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", requireSession(http.HandlerFunc(monitors.UpdateHandler(monitorSvc))))
-	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", requireSession(http.HandlerFunc(monitors.DeleteHandler(monitorSvc))))
-	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/pause", requireSession(http.HandlerFunc(monitors.PauseHandler(monitorSvc))))
-	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/resume", requireSession(http.HandlerFunc(monitors.ResumeHandler(monitorSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/results", requireSession(http.HandlerFunc(monitors.ResultsHandler(monitorSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/summary", requireSession(http.HandlerFunc(monitors.SummaryHandler(monitorSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors", withKeyAuth(http.HandlerFunc(monitors.CreateHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors", withKeyAuth(http.HandlerFunc(monitors.ListHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", withKeyAuth(http.HandlerFunc(monitors.GetHandler(monitorSvc))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", withKeyAuth(http.HandlerFunc(monitors.UpdateHandler(monitorSvc))))
+	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/monitors/{monitorID}", withKeyAuth(http.HandlerFunc(monitors.DeleteHandler(monitorSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/pause", withKeyAuth(http.HandlerFunc(monitors.PauseHandler(monitorSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/resume", withKeyAuth(http.HandlerFunc(monitors.ResumeHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/results", withKeyAuth(http.HandlerFunc(monitors.ResultsHandler(monitorSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/summary", withKeyAuth(http.HandlerFunc(monitors.SummaryHandler(monitorSvc))))
 
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents", requireSession(http.HandlerFunc(incidents.ListHandler(incidentSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}", requireSession(http.HandlerFunc(incidents.GetHandler(incidentSvc))))
-	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/acknowledge", requireSession(http.HandlerFunc(incidents.AcknowledgeHandler(incidentSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/deliveries", requireSession(http.HandlerFunc(incidents.DeliveriesHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents", withKeyAuth(http.HandlerFunc(incidents.ListHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}", withKeyAuth(http.HandlerFunc(incidents.GetHandler(incidentSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/acknowledge", withKeyAuth(http.HandlerFunc(incidents.AcknowledgeHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/deliveries", withKeyAuth(http.HandlerFunc(incidents.DeliveriesHandler(incidentSvc))))
 
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.ListChannelsHandler(alertSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.CreateChannelHandler(alertSvc))))
@@ -261,10 +279,10 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("DELETE /api/v1/workspaces/{workspaceID}/alert-channels/{channelID}", requireSession(http.HandlerFunc(alerts.DeleteChannelHandler(alertSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/alert-channels/{channelID}/test", requireSession(http.HandlerFunc(alerts.TestChannelHandler(alertSvc))))
 	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/alert-channels/email", requireSession(http.HandlerFunc(incidents.PutEmailChannelHandler(incidentSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channels", requireSession(http.HandlerFunc(alerts.MonitorChannelsHandler(alertSvc))))
-	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channels/{channelID}", requireSession(http.HandlerFunc(alerts.SetMonitorChannelHandler(alertSvc))))
-	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.MonitorAlertChannelHandler(incidentSvc))))
-	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", requireSession(http.HandlerFunc(incidents.SetMonitorAlertChannelHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channels", withKeyAuth(http.HandlerFunc(alerts.MonitorChannelsHandler(alertSvc))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channels/{channelID}", withKeyAuth(http.HandlerFunc(alerts.SetMonitorChannelHandler(alertSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", withKeyAuth(http.HandlerFunc(incidents.MonitorAlertChannelHandler(incidentSvc))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceID}/monitors/{monitorID}/alert-channel", withKeyAuth(http.HandlerFunc(incidents.SetMonitorAlertChannelHandler(incidentSvc))))
 
 	requireAdmin := auth.RequireAdmin
 	mux.Handle("GET /api/v1/admin/workspaces", requireSession(requireAdmin(http.HandlerFunc(admin.WorkspacesHandler(adminSvc)))))
