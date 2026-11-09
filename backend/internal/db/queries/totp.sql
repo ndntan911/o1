@@ -14,7 +14,7 @@ SELECT totp_secret_enc,
 FROM users
 WHERE id = sqlc.arg(user_id);
 
--- name: EnableTOTP :exec
+-- name: EnableTOTP :execrows
 UPDATE users
 SET totp_secret_enc = sqlc.arg(secret_enc)::text,
     totp_enabled_at = now(),
@@ -22,7 +22,8 @@ SET totp_secret_enc = sqlc.arg(secret_enc)::text,
     totp_pending_enc = NULL,
     totp_pending_expires_at = NULL,
     updated_at = now()
-WHERE id = sqlc.arg(user_id);
+WHERE id = sqlc.arg(user_id)
+  AND totp_enabled_at IS NULL;
 
 -- name: DisableTOTP :exec
 UPDATE users
@@ -84,6 +85,20 @@ VALUES ($1, $2, $3, $4, $5, $6);
 SELECT * FROM mfa_challenges
 WHERE token_hash = $1
 FOR UPDATE;
+
+-- name: GetLatestMFAChallengeForUser :one
+SELECT * FROM mfa_challenges
+WHERE user_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: RotateMFAChallenge :exec
+UPDATE mfa_challenges
+SET token_hash = sqlc.arg(token_hash),
+    expires_at = sqlc.arg(expires_at)::timestamptz,
+    ip = sqlc.arg(ip),
+    user_agent = sqlc.arg(user_agent)
+WHERE id = sqlc.arg(id) AND consumed_at IS NULL;
 
 -- name: IncrementMFAChallengeAttempts :exec
 UPDATE mfa_challenges

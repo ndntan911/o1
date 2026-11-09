@@ -157,7 +157,7 @@ func (q *Queries) DisableTOTP(ctx context.Context, userID uuid.UUID) error {
 	return err
 }
 
-const enableTOTP = `-- name: EnableTOTP :exec
+const enableTOTP = `-- name: EnableTOTP :execrows
 UPDATE users
 SET totp_secret_enc = $1::text,
     totp_enabled_at = now(),
@@ -166,6 +166,7 @@ SET totp_secret_enc = $1::text,
     totp_pending_expires_at = NULL,
     updated_at = now()
 WHERE id = $3
+  AND totp_enabled_at IS NULL
 `
 
 type EnableTOTPParams struct {
@@ -174,9 +175,36 @@ type EnableTOTPParams struct {
 	UserID       uuid.UUID
 }
 
-func (q *Queries) EnableTOTP(ctx context.Context, arg EnableTOTPParams) error {
-	_, err := q.db.Exec(ctx, enableTOTP, arg.SecretEnc, arg.LastUsedStep, arg.UserID)
-	return err
+func (q *Queries) EnableTOTP(ctx context.Context, arg EnableTOTPParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enableTOTP, arg.SecretEnc, arg.LastUsedStep, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getLatestMFAChallengeForUser = `-- name: GetLatestMFAChallengeForUser :one
+SELECT id, user_id, token_hash, attempts, expires_at, consumed_at, ip, user_agent, created_at FROM mfa_challenges
+WHERE user_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestMFAChallengeForUser(ctx context.Context, userID uuid.UUID) (MFAChallenge, error) {
+	row := q.db.QueryRow(ctx, getLatestMFAChallengeForUser, userID)
+	var i MFAChallenge
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.Attempts,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.Ip,
+		&i.UserAgent,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getMFAChallengeForUpdate = `-- name: GetMFAChallengeForUpdate :one
@@ -326,6 +354,34 @@ func (q *Queries) MarkRecoveryCodeUsed(ctx context.Context, arg MarkRecoveryCode
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const rotateMFAChallenge = `-- name: RotateMFAChallenge :exec
+UPDATE mfa_challenges
+SET token_hash = $1,
+    expires_at = $2::timestamptz,
+    ip = $3,
+    user_agent = $4
+WHERE id = $5 AND consumed_at IS NULL
+`
+
+type RotateMFAChallengeParams struct {
+	TokenHash []byte
+	ExpiresAt time.Time
+	Ip        *string
+	UserAgent string
+	ID        uuid.UUID
+}
+
+func (q *Queries) RotateMFAChallenge(ctx context.Context, arg RotateMFAChallengeParams) error {
+	_, err := q.db.Exec(ctx, rotateMFAChallenge,
+		arg.TokenHash,
+		arg.ExpiresAt,
+		arg.Ip,
+		arg.UserAgent,
+		arg.ID,
+	)
+	return err
 }
 
 const setTOTPPending = `-- name: SetTOTPPending :exec

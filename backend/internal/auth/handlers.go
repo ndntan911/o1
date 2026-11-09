@@ -150,6 +150,9 @@ func LoginHandler(svc *Service, cfg config.Config) http.HandlerFunc {
 			case errors.Is(err, ErrEmailNotVerified):
 				writeProblem(w, http.StatusForbidden, httpx.CodeEmailNotVerified,
 					"Email address is not verified")
+			case errors.Is(err, ErrMFAAttemptsExhausted):
+				writeProblem(w, http.StatusTooManyRequests, httpx.CodeMFAAttemptsExhausted,
+					"Too many authentication attempts")
 			default:
 				writeProblem(w, http.StatusInternalServerError, "internal_error",
 					"Internal Server Error")

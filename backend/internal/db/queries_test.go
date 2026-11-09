@@ -798,10 +798,15 @@ func TestTOTPSchema_StateRecoveryAndChallenges(t *testing.T) {
 		t.Fatalf("state = %+v", state)
 	}
 
-	if err := q.EnableTOTP(ctx, sqlc.EnableTOTPParams{
+	if rows, err := q.EnableTOTP(ctx, sqlc.EnableTOTPParams{
 		UserID: userID, SecretEnc: "sealed-active", LastUsedStep: 100,
-	}); err != nil {
-		t.Fatal(err)
+	}); err != nil || rows != 1 {
+		t.Fatalf("enable rows = %d, err = %v, want 1", rows, err)
+	}
+	if rows, err := q.EnableTOTP(ctx, sqlc.EnableTOTPParams{
+		UserID: userID, SecretEnc: "sealed-replaced", LastUsedStep: 200,
+	}); err != nil || rows != 0 {
+		t.Fatalf("second enable rows = %d, err = %v, want 0", rows, err)
 	}
 	if rows, err := q.UpdateTOTPLastUsedStepIfGreater(ctx, sqlc.UpdateTOTPLastUsedStepIfGreaterParams{
 		UserID: userID, LastUsedStep: 100,

@@ -129,12 +129,48 @@ func (s *Service) Login(ctx context.Context, emailAddr, password, ip, userAgent 
 	return start.Token, start.User, nil
 }
 
-// createMFAChallenge deletes stale challenges for the user and stores a fresh
-// single-use challenge, returning the raw token. Only the token hash is stored.
+// createMFAChallenge returns a fresh raw login challenge token for the user.
+// The attempt budget is per user per challenge window: a live challenge is
+// rotated in place so its attempts carry over, while an exhausted challenge
+// blocks new challenges until it expires. Stale rows are removed best-effort.
 func (s *Service) createMFAChallenge(ctx context.Context, userID uuid.UUID, ip, userAgent string) (string, error) {
-	if err := s.q.DeleteExpiredMFAChallenges(ctx, userID); err != nil {
-		return "", fmt.Errorf("delete expired MFA challenges: %w", err)
+	now := time.Now()
+
+	// Read the newest row before cleanup so an exhausted challenge still
+	// blocks a retry even when its consumed row is about to be deleted.
+	latest, err := s.q.GetLatestMFAChallengeForUser(ctx, userID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("load latest MFA challenge: %w", err)
 	}
+
+	if cleanupErr := s.q.DeleteExpiredMFAChallenges(ctx, userID); cleanupErr != nil {
+		slog.Warn("delete expired MFA challenges failed",
+			"user_id", userID, "error_type", fmt.Sprintf("%T", cleanupErr))
+	}
+
+	if err == nil {
+		if latest.ExpiresAt.After(now) && latest.Attempts >= mfaMaxAttempts {
+			return "", ErrMFAAttemptsExhausted
+		}
+		if latest.ConsumedAt == nil && latest.ExpiresAt.After(now) && latest.Attempts < mfaMaxAttempts {
+			base, _, err := NewToken()
+			if err != nil {
+				return "", fmt.Errorf("create MFA challenge token: %w", err)
+			}
+			raw := mfaChallengePrefix + base
+			if err := s.q.RotateMFAChallenge(ctx, sqlc.RotateMFAChallengeParams{
+				ID:        latest.ID,
+				TokenHash: HashToken(raw),
+				ExpiresAt: now.Add(mfaChallengeTTL),
+				Ip:        normalizeIP(ip),
+				UserAgent: truncateUserAgent(userAgent),
+			}); err != nil {
+				return "", fmt.Errorf("rotate MFA challenge: %w", err)
+			}
+			return raw, nil
+		}
+	}
+
 	base, _, err := NewToken()
 	if err != nil {
 		return "", fmt.Errorf("create MFA challenge token: %w", err)
@@ -148,7 +184,7 @@ func (s *Service) createMFAChallenge(ctx context.Context, userID uuid.UUID, ip, 
 		ID:        id,
 		UserID:    userID,
 		TokenHash: HashToken(raw),
-		ExpiresAt: time.Now().Add(mfaChallengeTTL),
+		ExpiresAt: now.Add(mfaChallengeTTL),
 		Ip:        normalizeIP(ip),
 		UserAgent: truncateUserAgent(userAgent),
 	}); err != nil {

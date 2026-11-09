@@ -216,6 +216,99 @@ func TestEnableTOTP_RejectsWrongExpiredAndReplay(t *testing.T) {
 	}
 }
 
+func TestEnableTOTP_SecondEnableRejected(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	user, err := sqlc.New(pool).GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := totp.GenerateCode(setup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) != 10 {
+		t.Fatalf("recovery codes = %d, want 10", len(codes))
+	}
+
+	var activeBefore string
+	if err := pool.QueryRow(ctx,
+		`SELECT totp_secret_enc FROM users WHERE id=$1`, user.ID).Scan(&activeBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a concurrent enrollment that stored a fresh pending secret
+	// after this account was activated. Enabling again must not overwrite the
+	// active secret or replace the issued recovery codes.
+	box, err := secretbox.New(testutil.TestConfig(t).EncryptionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := totp.Generate(totp.GenerateOpts{Issuer: "o1 uptime", AccountName: testEmail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := box.Seal([]byte(fresh.Secret()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := sqlc.New(pool)
+	if err := q.SetTOTPPending(ctx, sqlc.SetTOTPPendingParams{
+		UserID:     user.ID,
+		PendingEnc: sealed,
+		ExpiresAt:  time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	freshCode, err := totp.GenerateCode(fresh.Secret(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnableTOTP(ctx, user.ID, testPassword, freshCode, uuid.Nil); !errors.Is(err, auth.ErrTOTPAlreadyEnabled) {
+		t.Fatalf("second enable error = %v, want ErrTOTPAlreadyEnabled", err)
+	}
+
+	var activeAfter string
+	if err := pool.QueryRow(ctx,
+		`SELECT totp_secret_enc FROM users WHERE id=$1`, user.ID).Scan(&activeAfter); err != nil {
+		t.Fatal(err)
+	}
+	if activeAfter != activeBefore {
+		t.Fatal("second enable replaced the active secret")
+	}
+	if remaining, err := q.CountUnusedRecoveryCodes(ctx, user.ID); err != nil || remaining != 10 {
+		t.Fatalf("recovery codes after second enable = %d, err = %v, want 10", remaining, err)
+	}
+}
+
+func TestEnableTOTP_NilEncryptionBoxIsInternalError(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	cfg := testutil.TestConfig(t)
+	cfg.EncryptionKey = nil
+	svc := auth.NewService(pool, sqlc.New(pool), testutil.NewFakeSender(), cfg)
+	ctx := context.Background()
+	userID := testutil.CreateVerifiedUser(t, pool, "no-box@example.com", testPassword)
+
+	_, err := svc.EnableTOTP(ctx, userID, testPassword, "000000", uuid.Nil)
+	if err == nil {
+		t.Fatal("EnableTOTP without an encryption box succeeded")
+	}
+	if errors.Is(err, auth.ErrTOTPNotEnabled) {
+		t.Fatalf("EnableTOTP error = %v, want internal error not ErrTOTPNotEnabled", err)
+	}
+}
+
 func TestGetTOTPState(t *testing.T) {
 	pool, cleanup := testutil.NewPostgres(t)
 	defer cleanup()

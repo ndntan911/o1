@@ -142,6 +142,46 @@ func TestRequireAuth_BearerAndNoCookieFallback(t *testing.T) {
 	}
 }
 
+func TestRequireAuth_APIKeyBypassesTOTP(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	user, _, _ := enableTOTPForTest(t, svc, pool)
+	ws := createTestWorkspace(t, pool, user.ID)
+	raw := "o1_abcdefghijkl_" + strings.Repeat("e", 43)
+	insertTestKey(t, pool, user.ID, ws, "viewer", "abcdefghijkl", raw)
+
+	// Password login now requires a second factor, so the API key is the only
+	// way to authenticate without one.
+	start, err := svc.BeginLogin(context.Background(), testEmail, testPassword, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !start.MFARequired || start.Token != "" {
+		t.Fatalf("password login = %+v, want an MFA challenge", start)
+	}
+
+	h := auth.RequireAuth(svc)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key, ok := auth.APIKeyFrom(r.Context())
+		if !ok || key.WorkspaceID != ws {
+			t.Fatalf("key context = %+v, %v", key, ok)
+		}
+		principal, ok := auth.PrincipalFrom(r.Context())
+		if !ok || principal.UserID != user.ID || principal.SessionID != uuid.Nil {
+			t.Fatalf("principal = %+v, %v", principal, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/"+ws.String()+"/monitors", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("TOTP-enabled user with API key status = %d", rec.Code)
+	}
+}
+
 func TestRequireAuth_SessionStillWorks(t *testing.T) {
 	pool, cleanup := testutil.NewPostgres(t)
 	defer cleanup()

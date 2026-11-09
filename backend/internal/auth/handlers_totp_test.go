@@ -15,6 +15,7 @@ import (
 
 	"o1/internal/auth"
 	"o1/internal/db/sqlc"
+	"o1/internal/httpx"
 	"o1/internal/testutil"
 )
 
@@ -186,6 +187,13 @@ func TestCompleteTOTPLoginHandler_ErrorCodes(t *testing.T) {
 	if code := problemCode(t, status, ctype, body); status != http.StatusBadRequest || code != "validation_error" {
 		t.Fatalf("missing factor: status = %d, code = %q", status, code)
 	}
+	var factorProblem httpx.Problem
+	if err := json.Unmarshal([]byte(body), &factorProblem); err != nil {
+		t.Fatalf("decode missing factor problem: %v", err)
+	}
+	if factorProblem.Fields["factor"] != "provide exactly one second factor" {
+		t.Fatalf("missing factor fields = %v", factorProblem.Fields)
+	}
 
 	status, ctype, body = postJSON(t, h, `{"challenge_token":"`+start.Challenge+`","code":"000000"}`)
 	if code := problemCode(t, status, ctype, body); status != http.StatusUnauthorized || code != "invalid_totp" {
@@ -201,7 +209,9 @@ func TestCompleteTOTPLoginHandler_ErrorCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for attempt := 1; attempt <= 5; attempt++ {
+	// One earlier wrong attempt carried over; four more reach the five-guess
+	// budget for this user and window.
+	for attempt := 1; attempt <= 4; attempt++ {
 		status, ctype, body = postJSON(t, h, `{"challenge_token":"`+exhausted.Challenge+`","code":"000000"}`)
 		if code := problemCode(t, status, ctype, body); status != http.StatusUnauthorized || code != "invalid_totp" {
 			t.Fatalf("attempt %d: status = %d, code = %q", attempt, status, code)
@@ -212,6 +222,17 @@ func TestCompleteTOTPLoginHandler_ErrorCodes(t *testing.T) {
 		t.Fatalf("exhausted: status = %d, code = %q", status, code)
 	}
 
+	loginRec := postJSONRec(t, auth.LoginHandler(svc, cfg), loginBody())
+	if code := problemCode(t, loginRec.Code, loginRec.Result().Header.Get("Content-Type"), loginRec.Body.String()); loginRec.Code != http.StatusTooManyRequests || code != "mfa_attempts_exhausted" {
+		t.Fatalf("login after exhaustion: status = %d, code = %q", loginRec.Code, code)
+	}
+
+	// Expiring the exhausted challenge opens the next budget window.
+	if _, err := pool.Exec(ctx,
+		`UPDATE mfa_challenges SET expires_at = now() - interval '1 minute' WHERE token_hash=$1`,
+		auth.HashToken(exhausted.Challenge)); err != nil {
+		t.Fatal(err)
+	}
 	expired, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
 	if err != nil {
 		t.Fatal(err)
@@ -316,6 +337,13 @@ func TestTOTPHandlers_SetupEnableStateAndDisable(t *testing.T) {
 		`{"password":"`+testPassword+`","code":"123456","recovery_code":"ABCDE-FGHIJ"}`, cookie)
 	if code := problemCode(t, bothRec.Code, bothRec.Result().Header.Get("Content-Type"), bothRec.Body.String()); bothRec.Code != http.StatusBadRequest || code != "validation_error" {
 		t.Fatalf("both factors: status = %d, code = %q", bothRec.Code, code)
+	}
+	var bothProblem httpx.Problem
+	if err := json.Unmarshal(bothRec.Body.Bytes(), &bothProblem); err != nil {
+		t.Fatalf("decode both-factor problem: %v", err)
+	}
+	if bothProblem.Fields["factor"] != "provide exactly one second factor" {
+		t.Fatalf("both-factor fields = %v", bothProblem.Fields)
 	}
 
 	wrongRecovery := serveWithSession(t, svc, http.MethodPost, auth.DisableTOTPHandler(svc),

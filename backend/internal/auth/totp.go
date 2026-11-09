@@ -143,6 +143,9 @@ func (s *Service) EnableTOTP(ctx context.Context, userID uuid.UUID, password, co
 	if user.TOTPEnabledAt != nil {
 		return nil, ErrTOTPAlreadyEnabled
 	}
+	if s.box == nil {
+		return nil, fmt.Errorf("TOTP encryption is not configured")
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -180,12 +183,16 @@ func (s *Service) EnableTOTP(ctx context.Context, userID uuid.UUID, password, co
 	if err != nil {
 		return nil, err
 	}
-	if err := qtx.EnableTOTP(ctx, sqlc.EnableTOTPParams{
+	rows, err := qtx.EnableTOTP(ctx, sqlc.EnableTOTPParams{
 		SecretEnc:    sealed,
 		LastUsedStep: step,
 		UserID:       userID,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("enable TOTP: %w", err)
+	}
+	if rows == 0 {
+		return nil, ErrTOTPAlreadyEnabled
 	}
 
 	if err := qtx.DeleteRecoveryCodes(ctx, userID); err != nil {

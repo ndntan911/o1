@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { useState } from 'react';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { server } from '@/test/msw/server';
@@ -113,6 +113,9 @@ describe('EnableTOTPDialog', () => {
 		await startSetup(user);
 
 		expect(await screen.findByTestId('totp-qr')).toBeInTheDocument();
+		expect(
+			within(screen.getByTestId('totp-qr')).getByRole('img'),
+		).toBeInTheDocument();
 		expect(screen.getByText(setup.secret)).toBeInTheDocument();
 		expect(setupBodies).toEqual([{ password: 'correct horse battery' }]);
 		expect(screen.getByLabelText('Password')).toBeInTheDocument();

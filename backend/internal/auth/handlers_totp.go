@@ -161,8 +161,7 @@ func CompleteTOTPLoginHandler(svc *Service, cfg config.Config) http.HandlerFunc 
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrInvalidFactor):
-				writeProblem(w, http.StatusBadRequest, httpx.CodeValidationError,
-					"Provide exactly one authentication factor")
+				writeFactorProblem(w)
 			case errors.Is(err, ErrInvalidTOTP):
 				writeProblem(w, http.StatusUnauthorized, httpx.CodeInvalidTOTP,
 					"Invalid authentication code")
@@ -224,10 +223,22 @@ func writeTOTPManagementProblem(w http.ResponseWriter, err error) {
 		writeProblem(w, http.StatusBadRequest, httpx.CodeInvalidRecoveryCode,
 			"Invalid recovery code")
 	case errors.Is(err, ErrInvalidFactor):
-		writeProblem(w, http.StatusBadRequest, httpx.CodeValidationError,
-			"Provide exactly one authentication factor")
+		writeFactorProblem(w)
 	default:
 		writeProblem(w, http.StatusInternalServerError, httpx.CodeInternalError,
 			"Internal Server Error")
 	}
+}
+
+// writeFactorProblem responds 400 validation_error when a request supplies
+// both or neither second factor. The fields map mirrors the other handlers so
+// clients can point at the offending input.
+func writeFactorProblem(w http.ResponseWriter) {
+	httpx.WriteProblem(w, httpx.Problem{
+		Type:   "about:blank",
+		Title:  "Provide exactly one second factor",
+		Status: http.StatusBadRequest,
+		Code:   httpx.CodeValidationError,
+		Fields: map[string]string{"factor": "provide exactly one second factor"},
+	})
 }

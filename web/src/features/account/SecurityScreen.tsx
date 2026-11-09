@@ -18,6 +18,7 @@ import { Label } from '@/components/ui/label';
 import { isApiProblem } from '@/lib/api/client';
 import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
+import { totpCodeSchema } from '@/features/auth/schemas';
 import type { TOTPDisableInput } from './api';
 import { EnableTOTPDialog, RecoveryCodesPanel } from './EnableTOTPDialog';
 import {
@@ -77,7 +78,11 @@ export function SecurityScreen() {
 								Two-factor authentication is on
 							</p>
 							<p className="text-sm text-muted-foreground">
-								{state.recovery_codes_remaining} recovery codes remaining
+								{state.recovery_codes_remaining}{' '}
+								{state.recovery_codes_remaining === 1
+									? 'recovery code'
+									: 'recovery codes'}{' '}
+								remaining
 							</p>
 						</div>
 						<div className="flex flex-wrap gap-2">
@@ -150,7 +155,11 @@ function FactorDialog({
 	const [method, setMethod] = useState<'totp' | 'recovery'>('totp');
 	const [value, setValue] = useState('');
 
-	const ready = password.length > 0 && value.trim().length > 0;
+	const ready =
+		password.length > 0 &&
+		(method === 'totp'
+			? totpCodeSchema.safeParse(value).success
+			: value.trim().length > 0);
 
 	function handleClose() {
 		if (pending) return;

@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { problemFromError } from '@/lib/api/problem-from-error';
 import type { ApiProblem } from '@/lib/api/problems';
+import { totpCodeSchema } from '@/features/auth/schemas';
 import type { TOTPSetup } from './api';
 import { evictTOTPMutation, useEnableTOTP, useSetupTOTP } from './hooks';
 
@@ -112,6 +113,7 @@ export function EnableTOTPDialog({ onClose }: EnableTOTPDialogProps) {
 	);
 
 	const pending = setupMutation.isPending || enableMutation.isPending;
+	const codeValid = totpCodeSchema.safeParse(code).success;
 
 	function handleClose() {
 		if (pending) return;
@@ -146,6 +148,7 @@ export function EnableTOTPDialog({ onClose }: EnableTOTPDialogProps) {
 	function handleEnable(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 		setProblem(null);
+		if (!codeValid) return;
 		enableMutation.mutate(
 			{ password: verifyPassword, code },
 			{
@@ -287,7 +290,7 @@ export function EnableTOTPDialog({ onClose }: EnableTOTPDialogProps) {
 							</Button>
 							<Button
 								type="submit"
-								disabled={!verifyPassword || code.length === 0 || pending}
+								disabled={!verifyPassword || !codeValid || pending}
 							>
 								{enableMutation.isPending ? 'Enabling…' : 'Verify and enable'}
 							</Button>

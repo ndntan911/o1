@@ -345,6 +345,37 @@ describe('LoginScreen', () => {
 		expect(navigate).not.toHaveBeenCalled();
 	});
 
+	test('disables the step links while a code is verifying', async () => {
+		const user = await signInForMFA('/');
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, async () => {
+				await gate;
+				return HttpResponse.json({
+					user: { id: 'u1', email: 'alice@example.com' },
+				});
+			}),
+		);
+
+		await user.type(screen.getByLabelText('Authentication code'), '123456');
+		await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole('button', { name: 'Use a recovery code' }),
+			).toBeDisabled(),
+		);
+		expect(
+			screen.getByRole('button', { name: 'Back to sign in' }),
+		).toBeDisabled();
+
+		release();
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+	});
+
 	test('returns to the password step from back to sign in', async () => {
 		const user = await signInForMFA('/');
 

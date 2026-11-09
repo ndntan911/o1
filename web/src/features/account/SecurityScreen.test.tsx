@@ -129,6 +129,37 @@ describe('SecurityScreen', () => {
 		).not.toBeInTheDocument();
 	});
 
+	test('the enabled state pluralizes a single remaining recovery code', async () => {
+		serveState({ enabled: true, recovery_codes_remaining: 1 });
+
+		renderWithProviders(<SecurityScreen />);
+
+		expect(
+			await screen.findByText('1 recovery code remaining'),
+		).toBeInTheDocument();
+	});
+
+	test('the disable dialog requires a full six-digit code', async () => {
+		serveState({ enabled: true, recovery_codes_remaining: 8 });
+		const user = userEvent.setup();
+
+		renderWithProviders(<SecurityScreen />);
+		const dialog = await openDisableDialog(user);
+		const submit = within(dialog).getByRole('button', {
+			name: 'Disable two-factor authentication',
+		});
+
+		await user.type(within(dialog).getByLabelText('Password'), 'correct horse');
+		await user.type(
+			within(dialog).getByLabelText('Verification code'),
+			'12345',
+		);
+		expect(submit).toBeDisabled();
+
+		await user.type(within(dialog).getByLabelText('Verification code'), '6');
+		expect(submit).toBeEnabled();
+	});
+
 	test('the disable dialog needs a password and one factor, then disables', async () => {
 		const state = serveState({ enabled: true, recovery_codes_remaining: 8 });
 		const bodies: unknown[] = [];

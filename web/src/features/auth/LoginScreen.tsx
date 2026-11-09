@@ -316,6 +316,7 @@ export function LoginScreen({ redirectTo }: LoginScreenProps) {
 							<button
 								type="button"
 								className="self-start underline underline-offset-4"
+								disabled={verifying}
 								onClick={() => switchStep('totp')}
 							>
 								Use an authenticator code
@@ -324,6 +325,7 @@ export function LoginScreen({ redirectTo }: LoginScreenProps) {
 							<button
 								type="button"
 								className="self-start underline underline-offset-4"
+								disabled={verifying}
 								onClick={() => switchStep('recovery')}
 							>
 								Use a recovery code
@@ -332,6 +334,7 @@ export function LoginScreen({ redirectTo }: LoginScreenProps) {
 						<button
 							type="button"
 							className="self-start underline underline-offset-4"
+							disabled={verifying}
 							onClick={backToPassword}
 						>
 							Back to sign in
