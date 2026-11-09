@@ -16,6 +16,7 @@ export const queryKeys = {
 	summary: (workspaceId: string, monitorId: string, window: ResultsWindow) =>
 		['summary', workspaceId, monitorId, window] as const,
 	members: (workspaceId: string) => ['members', workspaceId] as const,
+	apiKeys: (workspaceId: string) => ['api-keys', workspaceId] as const,
 	adminWorkspaces: (filters: AdminWorkspaceFilters) =>
 		['admin', 'workspaces', filters] as const,
 	adminMonitors: (filters: AdminMonitorFilters) =>

@@ -33,6 +33,10 @@ export function canManageStatusPage(role: Role): boolean {
 	return roleAtLeast(role, 'admin');
 }
 
+export function canManageAPIKeys(role: Role): boolean {
+	return roleAtLeast(role, 'admin');
+}
+
 export function canManageMonitorAlerts(role: Role): boolean {
 	return roleAtLeast(role, 'member');
 }

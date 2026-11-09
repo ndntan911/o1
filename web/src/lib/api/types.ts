@@ -334,3 +334,25 @@ export interface PublicStatusPage {
 	monitors: PublicStatusMonitor[];
 	incidents: { active: PublicStatusIncident[]; recent: PublicStatusIncident[] };
 }
+
+export type APIKeyRole = 'viewer' | 'member';
+
+export interface APIKey {
+	id: string;
+	name: string;
+	prefix: string;
+	role: APIKeyRole;
+	created_by: string;
+	created_at: string;
+	last_used_at: string | null;
+}
+
+export interface CreatedAPIKey {
+	key: APIKey;
+	secret: string;
+}
+
+export interface CreateAPIKeyInput {
+	name: string;
+	role: APIKeyRole;
+}

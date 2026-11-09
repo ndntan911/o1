@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 import {
 	assignableRoles,
+	canManageAPIKeys,
 	canManageMembers,
 	canManageMonitors,
 	canManageStatusPage,
@@ -21,6 +22,13 @@ test('only admins and owners manage the status page', () => {
 	expect(canManageStatusPage('owner')).toBe(true);
 	expect(canManageStatusPage('member')).toBe(false);
 	expect(canManageStatusPage('viewer')).toBe(false);
+});
+
+test('only admins and owners manage API keys', () => {
+	expect(canManageAPIKeys('admin')).toBe(true);
+	expect(canManageAPIKeys('owner')).toBe(true);
+	expect(canManageAPIKeys('member')).toBe(false);
+	expect(canManageAPIKeys('viewer')).toBe(false);
 });
 
 test('assignable roles never include owner', () => {
