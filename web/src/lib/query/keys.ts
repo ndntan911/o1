@@ -8,6 +8,7 @@ import type {
 
 export const queryKeys = {
 	me: ['me'] as const,
+	totpState: ['totp-state'] as const,
 	monitors: (workspaceId: string) => ['monitors', workspaceId] as const,
 	monitor: (workspaceId: string, monitorId: string) =>
 		['monitor', workspaceId, monitorId] as const,

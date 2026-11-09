@@ -584,4 +584,35 @@ describe('router guards', () => {
 		).toBeInTheDocument();
 		expect(await screen.findByText('CI deploy')).toBeInTheDocument();
 	});
+
+	test('a signed-in user can open the account security page', async () => {
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(me)),
+			http.get(`${ORIGIN}/api/v1/auth/2fa`, () =>
+				HttpResponse.json({ enabled: false, recovery_codes_remaining: 0 }),
+			),
+		);
+
+		const { router } = renderRouter('/account/security');
+
+		expect(
+			await screen.findByRole('heading', { name: 'Security' }),
+		).toBeInTheDocument();
+		expect(router.state.location.pathname).toBe('/account/security');
+		expect(screen.getByRole('link', { name: 'Security' })).toHaveAttribute(
+			'href',
+			'/account/security',
+		);
+	});
+
+	test('logged-out users are redirected from account security to login', async () => {
+		server.use(http.get(`${ORIGIN}/api/v1/me`, () => unauthenticatedProblem()));
+
+		const { router } = renderRouter('/account/security');
+
+		await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
+		expect(router.state.location.searchStr).toBe(
+			'?redirect=%2Faccount%2Fsecurity',
+		);
+	});
 });

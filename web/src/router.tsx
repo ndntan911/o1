@@ -93,6 +93,11 @@ const APIKeysScreen = lazy(async () => {
 	return { default: module.APIKeysScreen };
 });
 
+const SecurityScreen = lazy(async () => {
+	const module = await import('@/features/account/SecurityScreen');
+	return { default: module.SecurityScreen };
+});
+
 const AdminWorkspacesScreen = lazy(async () => {
 	const module = await import('@/features/admin/AdminWorkspacesScreen');
 	return { default: module.AdminWorkspacesScreen };
@@ -239,6 +244,12 @@ const workspacesRoute = createRoute({
 	getParentRoute: () => appLayoutRoute,
 	path: '/workspaces',
 	component: WorkspacesRoute,
+});
+
+const accountSecurityRoute = createRoute({
+	getParentRoute: () => appLayoutRoute,
+	path: '/account/security',
+	component: SecurityScreen,
 });
 
 function WorkspaceLayoutRoute() {
@@ -488,6 +499,7 @@ export const routeTree = rootRoute.addChildren([
 	appLayoutRoute.addChildren([
 		homeRoute,
 		workspacesRoute,
+		accountSecurityRoute,
 		workspaceRoute.addChildren([
 			monitorsRoute,
 			monitorCreateRoute,
