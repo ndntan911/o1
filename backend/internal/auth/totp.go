@@ -256,11 +256,268 @@ func (s *Service) openSecret(value string) (string, error) {
 	return string(plaintext), nil
 }
 
-// normalizeRecoveryCode uppercases a code and removes the display separator
-// and whitespace so hashing and comparison are formatting-independent.
+// normalizeRecoveryCode uppercases a code, removes the display separator and
+// whitespace, and maps the ambiguous letters O, I, and L to digits so hashing
+// and comparison are formatting-independent.
 func normalizeRecoveryCode(code string) string {
-	replacer := strings.NewReplacer("-", "", " ", "")
-	return strings.ToUpper(replacer.Replace(strings.TrimSpace(code)))
+	replacer := strings.NewReplacer("-", "", " ", "", "O", "0", "I", "1", "L", "1")
+	return replacer.Replace(strings.ToUpper(strings.TrimSpace(code)))
+}
+
+// validRecoveryCode reports whether a normalized value is ten Crockford base32
+// characters.
+func validRecoveryCode(code string) bool {
+	if len(code) != recoveryCodeLength {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if strings.IndexByte(recoveryCodeAlphabet, code[i]) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// consumeRecoveryCode verifies a recovery code against the user's unused rows
+// and marks the match used, all through q. Callers must run it in a transaction
+// so the lock and the update commit or roll back together. Used, unknown, and
+// malformed codes are reported as false.
+func consumeRecoveryCode(ctx context.Context, q *sqlc.Queries, userID uuid.UUID, raw string, now time.Time) (bool, error) {
+	normalized := normalizeRecoveryCode(raw)
+	if !validRecoveryCode(normalized) {
+		return false, nil
+	}
+	sum := sha256.Sum256([]byte(normalized))
+
+	codes, err := q.ListRecoveryCodesForUpdate(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("load recovery codes: %w", err)
+	}
+	matched := uuid.Nil
+	for _, code := range codes {
+		if code.UsedAt != nil {
+			continue
+		}
+		if subtle.ConstantTimeCompare(code.CodeHash, sum[:]) == 1 {
+			matched = code.ID
+		}
+	}
+	if matched == uuid.Nil {
+		return false, nil
+	}
+
+	rows, err := q.MarkRecoveryCodeUsed(ctx, sqlc.MarkRecoveryCodeUsedParams{
+		UsedAt: &now,
+		ID:     matched,
+	})
+	if err != nil {
+		return false, fmt.Errorf("mark recovery code used: %w", err)
+	}
+	return rows == 1, nil
+}
+
+// VerifyRecoveryCode reports whether raw matches one unused recovery code and
+// consumes it atomically. Used, unknown, and malformed codes return false.
+func (s *Service) VerifyRecoveryCode(ctx context.Context, userID uuid.UUID, raw string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	ok, err := consumeRecoveryCode(ctx, s.q.WithTx(tx), userID, raw, time.Now().UTC())
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit recovery code verification: %w", err)
+	}
+	return true, nil
+}
+
+// loadTOTPManagementUser verifies the account password and that TOTP is
+// enabled before a management action. Unknown users and wrong passwords share
+// ErrInvalidCredentials so account existence is not observable.
+func (s *Service) loadTOTPManagementUser(ctx context.Context, userID uuid.UUID, password string) (sqlc.User, error) {
+	user, err := s.q.GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return sqlc.User{}, ErrInvalidCredentials
+		}
+		return sqlc.User{}, fmt.Errorf("load user: %w", err)
+	}
+	ok, err := VerifyPassword(user.PasswordHash, password)
+	if err != nil || !ok {
+		return sqlc.User{}, ErrInvalidCredentials
+	}
+	if user.TOTPEnabledAt == nil {
+		return sqlc.User{}, ErrTOTPNotEnabled
+	}
+	return user, nil
+}
+
+// verifyManagementFactor enforces exactly one of a TOTP code or a recovery
+// code and verifies it through q. TOTP codes advance the replay step
+// atomically and recovery codes are consumed.
+func (s *Service) verifyManagementFactor(ctx context.Context, q *sqlc.Queries, userID uuid.UUID, state sqlc.GetTOTPStateRow, code, recoveryCode string) error {
+	hasCode := strings.TrimSpace(code) != ""
+	hasRecovery := strings.TrimSpace(recoveryCode) != ""
+	if hasCode == hasRecovery {
+		return ErrInvalidFactor
+	}
+	if hasRecovery {
+		ok, err := consumeRecoveryCode(ctx, q, userID, recoveryCode, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrInvalidRecoveryCode
+		}
+		return nil
+	}
+
+	var secretEnc string
+	if state.TOTPSecretEnc != nil {
+		secretEnc = *state.TOTPSecretEnc
+	}
+	secret, err := s.openSecret(secretEnc)
+	if err != nil {
+		return err
+	}
+	step, matched, err := matchTOTPStep(secret, code, time.Now())
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return ErrInvalidTOTP
+	}
+	used, err := useTOTPStep(ctx, q, userID, step)
+	if err != nil {
+		return err
+	}
+	if !used {
+		return ErrInvalidTOTP
+	}
+	return nil
+}
+
+// DisableTOTP verifies the password and exactly one second factor, then clears
+// active and pending TOTP state, deletes recovery codes and MFA challenges,
+// and revokes every session except currentSessionID.
+func (s *Service) DisableTOTP(ctx context.Context, userID uuid.UUID, password, code, recoveryCode string, currentSessionID uuid.UUID) error {
+	if _, err := s.loadTOTPManagementUser(ctx, userID, password); err != nil {
+		return err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	state, err := qtx.GetTOTPState(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("load TOTP state: %w", err)
+	}
+	if state.TOTPEnabledAt == nil {
+		return ErrTOTPNotEnabled
+	}
+	if err := s.verifyManagementFactor(ctx, qtx, userID, state, code, recoveryCode); err != nil {
+		return err
+	}
+
+	if err := qtx.DisableTOTP(ctx, userID); err != nil {
+		return fmt.Errorf("disable TOTP: %w", err)
+	}
+	if err := qtx.DeleteRecoveryCodes(ctx, userID); err != nil {
+		return fmt.Errorf("delete recovery codes: %w", err)
+	}
+	if err := qtx.DeleteMFAChallengesForUser(ctx, userID); err != nil {
+		return fmt.Errorf("delete MFA challenges: %w", err)
+	}
+	if err := qtx.DeleteOtherUserSessions(ctx, sqlc.DeleteOtherUserSessionsParams{
+		UserID:    userID,
+		SessionID: currentSessionID,
+	}); err != nil {
+		return fmt.Errorf("revoke other sessions: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit TOTP disable: %w", err)
+	}
+
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		ActorUserID: &userID,
+		Kind:        audit.KindTOTPDisabled,
+	})
+	return nil
+}
+
+// RegenerateRecoveryCodes verifies the password and exactly one second factor,
+// replaces every recovery code with ten fresh hashes, and returns the plaintext
+// codes exactly once.
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID uuid.UUID, password, code, recoveryCode string) ([]string, error) {
+	if _, err := s.loadTOTPManagementUser(ctx, userID, password); err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	qtx := s.q.WithTx(tx)
+
+	state, err := qtx.GetTOTPState(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("load TOTP state: %w", err)
+	}
+	if state.TOTPEnabledAt == nil {
+		return nil, ErrTOTPNotEnabled
+	}
+	if err := s.verifyManagementFactor(ctx, qtx, userID, state, code, recoveryCode); err != nil {
+		return nil, err
+	}
+
+	if err := qtx.DeleteRecoveryCodes(ctx, userID); err != nil {
+		return nil, fmt.Errorf("delete recovery codes: %w", err)
+	}
+	codes, hashes, err := generateRecoveryCodes(recoveryCodeCount)
+	if err != nil {
+		return nil, err
+	}
+	for _, hash := range hashes {
+		id, err := uuid.NewV7()
+		if err != nil {
+			return nil, fmt.Errorf("generate recovery code id: %w", err)
+		}
+		if err := qtx.CreateRecoveryCode(ctx, sqlc.CreateRecoveryCodeParams{
+			ID:       id,
+			UserID:   userID,
+			CodeHash: hash,
+		}); err != nil {
+			return nil, fmt.Errorf("store recovery code: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit recovery code regeneration: %w", err)
+	}
+
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		ActorUserID: &userID,
+		Kind:        audit.KindTOTPRecoveryCodesRegenerated,
+		Detail:      map[string]any{"recovery_codes": len(codes)},
+	})
+	return codes, nil
 }
 
 // hashRecoveryCode returns the SHA-256 digest of the normalized code.

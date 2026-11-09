@@ -256,6 +256,12 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 	if err := qtx.MarkPasswordResetTokenUsed(ctx, reset.ID); err != nil {
 		return fmt.Errorf("mark password reset token used: %w", err)
 	}
+	if err := qtx.DeleteMFAChallengesForUser(ctx, reset.UserID); err != nil {
+		return fmt.Errorf("delete MFA challenges: %w", err)
+	}
+	if err := qtx.ClearTOTPPending(ctx, reset.UserID); err != nil {
+		return fmt.Errorf("clear pending TOTP setup: %w", err)
+	}
 	if err := qtx.DeleteSessionsByUserID(ctx, reset.UserID); err != nil {
 		return fmt.Errorf("revoke sessions: %w", err)
 	}

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -65,6 +66,35 @@ func newTOTPTestPool(t *testing.T) *pgxpool.Pool {
 		}
 	})
 	return pool
+}
+
+func TestNormalizeRecoveryCode(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"abcd-efghj", "ABCDEFGHJ"},
+		{" o1l0 2abc ", "01102ABC"},
+		{"O-I-L", "011"},
+	}
+	for _, tc := range cases {
+		if got := normalizeRecoveryCode(tc.in); got != tc.want {
+			t.Errorf("normalizeRecoveryCode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if !bytes.Equal(hashRecoveryCode("o1l0-ab cde"), hashRecoveryCode("0110ABCDE")) {
+		t.Fatal("hash is not stable across normalization")
+	}
+}
+
+func TestValidRecoveryCode(t *testing.T) {
+	for _, code := range []string{"0123456789", "ABCDEFGHJK"} {
+		if !validRecoveryCode(code) {
+			t.Errorf("validRecoveryCode(%q) = false, want true", code)
+		}
+	}
+	for _, code := range []string{"", "012345678", "01234567890", "012345678U", "O123456789"} {
+		if validRecoveryCode(code) {
+			t.Errorf("validRecoveryCode(%q) = true, want false", code)
+		}
+	}
 }
 
 func TestTOTPVerify_SkewAndReplay(t *testing.T) {

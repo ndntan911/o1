@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
 	"o1/internal/auth"
@@ -264,6 +265,312 @@ func TestGetTOTPState(t *testing.T) {
 	if state.RecoveryCodesRemaining != 9 {
 		t.Fatalf("remaining after use = %d, want 9", state.RecoveryCodesRemaining)
 	}
+}
+
+func TestVerifyRecoveryCode_SingleUse(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	userID, _, codes := enableTOTP(t, ctx, svc, pool)
+
+	// Lowercase input with spaces instead of the display dash still matches.
+	raw := strings.ToLower(strings.ReplaceAll(codes[0], "-", " "))
+	ok, err := svc.VerifyRecoveryCode(ctx, userID, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("fresh recovery code was rejected")
+	}
+
+	ok, err = svc.VerifyRecoveryCode(ctx, userID, codes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("recovery code was accepted twice")
+	}
+
+	ok, err = svc.VerifyRecoveryCode(ctx, userID, "not-a-recovery-code")
+	if err != nil {
+		t.Fatalf("malformed code error = %v, want nil", err)
+	}
+	if ok {
+		t.Fatal("malformed code was accepted")
+	}
+
+	assertRecoveryRowsHashed(t, ctx, pool, userID, codes)
+	var used int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_recovery_codes WHERE user_id=$1 AND used_at IS NOT NULL`,
+		userID).Scan(&used); err != nil {
+		t.Fatal(err)
+	}
+	if used != 1 {
+		t.Fatalf("used recovery codes = %d, want 1", used)
+	}
+}
+
+func TestDisableTOTP_RequiresPasswordAndFactor(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	userID, secret, codes := enableTOTP(t, ctx, svc, pool)
+
+	q := sqlc.New(pool)
+	if err := q.CreateMFAChallenge(ctx, sqlc.CreateMFAChallengeParams{
+		ID:        uuid.New(),
+		UserID:    userID,
+		TokenHash: []byte("disable-challenge"),
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+		UserAgent: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if _, _, err := svc.Login(ctx, testEmail, testPassword, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions := listSessionIDs(t, ctx, pool, userID)
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(sessions))
+	}
+	current := sessions[0]
+	last := lastUsedStep(t, ctx, pool, userID)
+
+	if err := svc.DisableTOTP(ctx, userID, "wrong password",
+		currentOrLaterCode(t, secret, last), "", current); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatalf("wrong password error = %v, want ErrInvalidCredentials", err)
+	}
+	if err := svc.DisableTOTP(ctx, userID, testPassword,
+		wrongTOTPCode(t, secret), "", current); !errors.Is(err, auth.ErrInvalidTOTP) {
+		t.Fatalf("wrong code error = %v, want ErrInvalidTOTP", err)
+	}
+	if err := svc.DisableTOTP(ctx, userID, testPassword,
+		currentOrLaterCode(t, secret, last), codes[0], current); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Fatalf("both factors error = %v, want ErrInvalidFactor", err)
+	}
+	if err := svc.DisableTOTP(ctx, userID, testPassword, "", "", current); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Fatalf("no factor error = %v, want ErrInvalidFactor", err)
+	}
+
+	if err := svc.DisableTOTP(ctx, userID, testPassword,
+		currentOrLaterCode(t, secret, last), "", current); err != nil {
+		t.Fatal(err)
+	}
+
+	var enabledAt *time.Time
+	var secretEnc, pendingEnc *string
+	var pendingExpires *time.Time
+	var lastStep *int64
+	if err := pool.QueryRow(ctx,
+		`SELECT totp_enabled_at, totp_secret_enc, totp_pending_enc, totp_pending_expires_at, totp_last_used_step
+		 FROM users WHERE id=$1`, userID).
+		Scan(&enabledAt, &secretEnc, &pendingEnc, &pendingExpires, &lastStep); err != nil {
+		t.Fatal(err)
+	}
+	if enabledAt != nil || secretEnc != nil || pendingEnc != nil || pendingExpires != nil || lastStep != nil {
+		t.Fatalf("TOTP state not cleared: enabled=%v secret=%v pending=%v expires=%v step=%v",
+			enabledAt, secretEnc, pendingEnc, pendingExpires, lastStep)
+	}
+
+	var recoveryCount, challengeCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_recovery_codes WHERE user_id=$1`, userID).Scan(&recoveryCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM mfa_challenges WHERE user_id=$1`, userID).Scan(&challengeCount); err != nil {
+		t.Fatal(err)
+	}
+	if recoveryCount != 0 || challengeCount != 0 {
+		t.Fatalf("recovery codes = %d, challenges = %d, want 0 and 0", recoveryCount, challengeCount)
+	}
+
+	remaining := listSessionIDs(t, ctx, pool, userID)
+	if len(remaining) != 1 || remaining[0] != current {
+		t.Fatalf("sessions after disable = %v, want [%v]", remaining, current)
+	}
+
+	var audited int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM security_events WHERE actor_user_id=$1 AND kind=$2`,
+		userID, "totp_disabled").Scan(&audited); err != nil {
+		t.Fatal(err)
+	}
+	if audited != 1 {
+		t.Fatalf("totp_disabled audit events = %d, want 1", audited)
+	}
+
+	// A disabled account is back to password-only login.
+	if _, _, err := svc.Login(ctx, testEmail, testPassword, "", ""); err != nil {
+		t.Fatalf("login after disable = %v", err)
+	}
+}
+
+func TestDisableTOTP_ReplayStep(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	userID, secret, _ := enableTOTP(t, ctx, svc, pool)
+	enableStep := lastUsedStep(t, ctx, pool, userID)
+
+	replay := codeAtStep(t, secret, enableStep)
+	if err := svc.DisableTOTP(ctx, userID, testPassword, replay, "", uuid.Nil); !errors.Is(err, auth.ErrInvalidTOTP) {
+		t.Fatalf("replayed step error = %v, want ErrInvalidTOTP", err)
+	}
+
+	later := currentOrLaterCode(t, secret, enableStep)
+	if err := svc.DisableTOTP(ctx, userID, testPassword, later, "", uuid.Nil); err != nil {
+		t.Fatalf("later step disable = %v", err)
+	}
+}
+
+func TestRegenerateRecoveryCodes(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	userID, secret, oldCodes := enableTOTP(t, ctx, svc, pool)
+	last := lastUsedStep(t, ctx, pool, userID)
+
+	if _, err := svc.RegenerateRecoveryCodes(ctx, userID, "wrong password",
+		currentOrLaterCode(t, secret, last), ""); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatalf("wrong password error = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.RegenerateRecoveryCodes(ctx, userID, testPassword,
+		currentOrLaterCode(t, secret, last), oldCodes[0]); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Fatalf("both factors error = %v, want ErrInvalidFactor", err)
+	}
+	if _, err := svc.RegenerateRecoveryCodes(ctx, userID, testPassword, "", ""); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Fatalf("no factor error = %v, want ErrInvalidFactor", err)
+	}
+
+	fresh, err := svc.RegenerateRecoveryCodes(ctx, userID, testPassword,
+		currentOrLaterCode(t, secret, last), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh) != 10 {
+		t.Fatalf("regenerated codes = %d, want 10", len(fresh))
+	}
+	assertRecoveryRowsHashed(t, ctx, pool, userID, fresh)
+
+	ok, err := svc.VerifyRecoveryCode(ctx, userID, oldCodes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("old recovery code survived regeneration")
+	}
+
+	var detail []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT detail FROM security_events WHERE actor_user_id=$1 AND kind=$2 ORDER BY id DESC LIMIT 1`,
+		userID, "totp_recovery_codes_regenerated").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(detail), fresh[0]) {
+		t.Fatal("audit detail contains a plaintext recovery code")
+	}
+
+	// A recovery code can authorize regeneration, and is consumed doing so.
+	again, err := svc.RegenerateRecoveryCodes(ctx, userID, testPassword, "", fresh[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 10 {
+		t.Fatalf("second regenerated codes = %d, want 10", len(again))
+	}
+	ok, err = svc.VerifyRecoveryCode(ctx, userID, fresh[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("recovery code survived regeneration")
+	}
+	assertRecoveryRowsHashed(t, ctx, pool, userID, again)
+}
+
+// totpTestPeriod mirrors the service's 30-second TOTP step.
+const totpTestPeriod = 30
+
+// enableTOTP runs a full enrollment for the shared verified test user and
+// returns the user ID, enrollment secret, and plaintext recovery codes.
+func enableTOTP(t *testing.T, ctx context.Context, svc *auth.Service, pool *pgxpool.Pool) (uuid.UUID, string, []string) {
+	t.Helper()
+	user, err := sqlc.New(pool).GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := totp.GenerateCode(setup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return user.ID, setup.Secret, codes
+}
+
+// codeAtStep generates a TOTP code for an exact time step.
+func codeAtStep(t *testing.T, secret string, step int64) string {
+	t.Helper()
+	code, err := totp.GenerateCodeCustom(secret, time.Unix(step*totpTestPeriod, 0), totp.ValidateOpts{
+		Period:    totpTestPeriod,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code
+}
+
+// currentOrLaterCode returns a code for the current step, or the next one when
+// the current step was already used, so replay protection accepts it.
+func currentOrLaterCode(t *testing.T, secret string, lastStep int64) string {
+	t.Helper()
+	step := time.Now().Unix() / totpTestPeriod
+	if step <= lastStep {
+		step = lastStep + 1
+	}
+	return codeAtStep(t, secret, step)
+}
+
+// lastUsedStep reads the recorded TOTP replay step for a user.
+func lastUsedStep(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID) int64 {
+	t.Helper()
+	var step int64
+	if err := pool.QueryRow(ctx,
+		`SELECT totp_last_used_step FROM users WHERE id=$1`, userID).Scan(&step); err != nil {
+		t.Fatal(err)
+	}
+	return step
+}
+
+// wrongTOTPCode returns a syntactically valid code that does not match now.
+func wrongTOTPCode(t *testing.T, secret string) string {
+	t.Helper()
+	valid, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := "000000"
+	if wrong == valid {
+		wrong = "111111"
+	}
+	return wrong
 }
 
 func listSessionIDs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID) []uuid.UUID {

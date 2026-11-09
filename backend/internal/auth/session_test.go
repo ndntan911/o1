@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pquerna/otp/totp"
 
 	"o1/internal/audit"
 	"o1/internal/auth"
@@ -371,6 +373,137 @@ func TestResetPassword_UnknownTokenAndValidation(t *testing.T) {
 	if err := svc.ResetPassword(ctx, token, "new correct horse battery"); err != nil {
 		t.Fatalf("token unusable after validation failure: %v", err)
 	}
+}
+
+func TestResetPassword_ClearsChallengesAndPending(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	fs := testutil.NewFakeSender()
+	svc := auth.NewService(pool, sqlc.New(pool), fs, testutil.TestConfig(t))
+	testutil.CreateVerifiedUser(t, pool, testEmail, testPassword)
+	ctx := context.Background()
+	q := sqlc.New(pool)
+	user, err := q.GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := totp.GenerateCode(setup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var enabledAt time.Time
+	var secretEnc string
+	var lastStep int64
+	if err := pool.QueryRow(ctx,
+		`SELECT totp_enabled_at, totp_secret_enc, totp_last_used_step FROM users WHERE id=$1`,
+		user.ID).Scan(&enabledAt, &secretEnc, &lastStep); err != nil {
+		t.Fatal(err)
+	}
+	beforeHashes := recoveryHashes(t, ctx, pool, user.ID)
+	if len(beforeHashes) != 10 {
+		t.Fatalf("recovery codes before reset = %d, want 10", len(beforeHashes))
+	}
+
+	// Simulate a pending setup and an outstanding login challenge.
+	if err := q.SetTOTPPending(ctx, sqlc.SetTOTPPendingParams{
+		PendingEnc: "v1:pending-reset",
+		ExpiresAt:  time.Now().Add(10 * time.Minute),
+		UserID:     user.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateMFAChallenge(ctx, sqlc.CreateMFAChallengeParams{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		TokenHash: []byte("reset-challenge"),
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+		UserAgent: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.RequestPasswordReset(ctx, testEmail); err != nil {
+		t.Fatal(err)
+	}
+	token := regexp.MustCompile(`token=([A-Za-z0-9_-]+)`).FindStringSubmatch(lastSentText(t, fs))[1]
+	if err := svc.ResetPassword(ctx, token, "new correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+
+	var challenges int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM mfa_challenges WHERE user_id=$1`, user.ID).Scan(&challenges); err != nil {
+		t.Fatal(err)
+	}
+	if challenges != 0 {
+		t.Fatalf("challenges after reset = %d, want 0", challenges)
+	}
+
+	var pendingEnc *string
+	var pendingExpires *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT totp_pending_enc, totp_pending_expires_at FROM users WHERE id=$1`,
+		user.ID).Scan(&pendingEnc, &pendingExpires); err != nil {
+		t.Fatal(err)
+	}
+	if pendingEnc != nil || pendingExpires != nil {
+		t.Fatalf("pending TOTP state after reset: enc=%v expires=%v", pendingEnc, pendingExpires)
+	}
+
+	var afterEnabledAt time.Time
+	var afterSecretEnc string
+	var afterLastStep int64
+	if err := pool.QueryRow(ctx,
+		`SELECT totp_enabled_at, totp_secret_enc, totp_last_used_step FROM users WHERE id=$1`,
+		user.ID).Scan(&afterEnabledAt, &afterSecretEnc, &afterLastStep); err != nil {
+		t.Fatal(err)
+	}
+	if !afterEnabledAt.Equal(enabledAt) || afterSecretEnc != secretEnc || afterLastStep != lastStep {
+		t.Fatalf("active TOTP state changed across reset: enabled %v->%v secretChanged=%v step %d->%d",
+			enabledAt, afterEnabledAt, afterSecretEnc != secretEnc, lastStep, afterLastStep)
+	}
+
+	afterHashes := recoveryHashes(t, ctx, pool, user.ID)
+	if len(afterHashes) != len(beforeHashes) {
+		t.Fatalf("recovery codes after reset = %d, want %d", len(afterHashes), len(beforeHashes))
+	}
+	for i := range beforeHashes {
+		if !bytes.Equal(beforeHashes[i], afterHashes[i]) {
+			t.Fatalf("recovery code %d changed across reset", i)
+		}
+	}
+}
+
+// recoveryHashes returns the stored recovery-code hashes in stable order.
+func recoveryHashes(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID) [][]byte {
+	t.Helper()
+	rows, err := pool.Query(ctx,
+		`SELECT code_hash FROM user_recovery_codes WHERE user_id=$1 ORDER BY id`, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var hashes [][]byte
+	for rows.Next() {
+		var hash []byte
+		if err := rows.Scan(&hash); err != nil {
+			t.Fatal(err)
+		}
+		hashes = append(hashes, hash)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return hashes
 }
 
 func TestAuditLoginEvents(t *testing.T) {
