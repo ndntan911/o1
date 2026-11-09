@@ -9,6 +9,7 @@ sql:
         out: "internal/db/sqlc"
         sql_package: "pgx/v5"
         emit_pointers_for_null_types: true
+        initialisms: ["id", "api"]
         rename:
           actor_api_key_id: ActorAPIKeyID
         overrides:

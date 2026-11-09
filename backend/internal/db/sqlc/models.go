@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type APIKey struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Name        string
+	Prefix      string
+	TokenHash   []byte
+	Role        string
+	CreatedBy   uuid.UUID
+	CreatedAt   time.Time
+	LastUsedAt  *time.Time
+	RevokedAt   *time.Time
+}
+
 type AlertChannel struct {
 	ID          uuid.UUID
 	WorkspaceID uuid.UUID
@@ -36,19 +49,6 @@ type AlertDelivery struct {
 	SentAt     *time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-}
-
-type ApiKey struct {
-	ID          uuid.UUID
-	WorkspaceID uuid.UUID
-	Name        string
-	Prefix      string
-	TokenHash   []byte
-	Role        string
-	CreatedBy   uuid.UUID
-	CreatedAt   time.Time
-	LastUsedAt  *time.Time
-	RevokedAt   *time.Time
 }
 
 type EmailVerificationToken struct {

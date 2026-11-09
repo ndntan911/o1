@@ -39,7 +39,7 @@ type CreateAPIKeyParams struct {
 	CreatedBy   uuid.UUID
 }
 
-func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error) {
+func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (APIKey, error) {
 	row := q.db.QueryRow(ctx, createAPIKey,
 		arg.ID,
 		arg.WorkspaceID,
@@ -49,7 +49,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 		arg.Role,
 		arg.CreatedBy,
 	)
-	var i ApiKey
+	var i APIKey
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -75,9 +75,9 @@ type GetAPIKeyParams struct {
 	WorkspaceID uuid.UUID
 }
 
-func (q *Queries) GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (ApiKey, error) {
+func (q *Queries) GetAPIKey(ctx context.Context, arg GetAPIKeyParams) (APIKey, error) {
 	row := q.db.QueryRow(ctx, getAPIKey, arg.ID, arg.WorkspaceID)
-	var i ApiKey
+	var i APIKey
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -98,9 +98,9 @@ SELECT id, workspace_id, name, prefix, token_hash, role, created_by, created_at,
 WHERE prefix=$1 AND revoked_at IS NULL
 `
 
-func (q *Queries) GetActiveAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey, error) {
+func (q *Queries) GetActiveAPIKeyByPrefix(ctx context.Context, prefix string) (APIKey, error) {
 	row := q.db.QueryRow(ctx, getActiveAPIKeyByPrefix, prefix)
-	var i ApiKey
+	var i APIKey
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -122,15 +122,15 @@ WHERE workspace_id=$1 AND revoked_at IS NULL
 ORDER BY created_at DESC, id DESC
 `
 
-func (q *Queries) ListActiveAPIKeys(ctx context.Context, workspaceID uuid.UUID) ([]ApiKey, error) {
+func (q *Queries) ListActiveAPIKeys(ctx context.Context, workspaceID uuid.UUID) ([]APIKey, error) {
 	rows, err := q.db.Query(ctx, listActiveAPIKeys, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ApiKey
+	var items []APIKey
 	for rows.Next() {
-		var i ApiKey
+		var i APIKey
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
