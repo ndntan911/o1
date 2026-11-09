@@ -17,6 +17,7 @@ import (
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
+	"o1/internal/secretbox"
 )
 
 // Sentinel errors returned by the service. Handlers map them onto HTTP
@@ -53,12 +54,16 @@ type Service struct {
 	sender     email.Sender
 	cfg        config.Config
 	resetQueue *passwordResetQueue
+	box        *secretbox.Box
 }
 
 // NewService wires a Service together.
 func NewService(pool *pgxpool.Pool, q *sqlc.Queries, sender email.Sender, cfg config.Config) *Service {
 	s := &Service{pool: pool, q: q, sender: sender, cfg: cfg}
 	s.resetQueue = newPasswordResetQueue(passwordResetWorkers, passwordResetQueueCapacity, s.runPasswordResetJob)
+	if box, err := secretbox.New(cfg.EncryptionKey); err == nil {
+		s.box = box
+	}
 	return s
 }
 

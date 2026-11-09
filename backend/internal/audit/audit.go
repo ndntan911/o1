@@ -17,17 +17,20 @@ import (
 
 // Security event kinds recorded by this package.
 const (
-	KindLoginSucceeded      = "login_succeeded"
-	KindLoginFailed         = "login_failed"
-	KindMemberAdded         = "member_added"
-	KindMemberRoleChanged   = "member_role_changed"
-	KindMonitorDeleted      = "monitor_deleted"
-	KindAlertChannelCreated = "alert_channel_created"
-	KindAlertChannelUpdated = "alert_channel_updated"
-	KindAlertChannelDeleted = "alert_channel_deleted"
-	KindStatusPageUpdated   = "status_page_updated"
-	KindAPIKeyCreated       = "api_key_created"
-	KindAPIKeyRevoked       = "api_key_revoked"
+	KindLoginSucceeded               = "login_succeeded"
+	KindLoginFailed                  = "login_failed"
+	KindMemberAdded                  = "member_added"
+	KindMemberRoleChanged            = "member_role_changed"
+	KindMonitorDeleted               = "monitor_deleted"
+	KindAlertChannelCreated          = "alert_channel_created"
+	KindAlertChannelUpdated          = "alert_channel_updated"
+	KindAlertChannelDeleted          = "alert_channel_deleted"
+	KindStatusPageUpdated            = "status_page_updated"
+	KindAPIKeyCreated                = "api_key_created"
+	KindAPIKeyRevoked                = "api_key_revoked"
+	KindTOTPEnabled                  = "totp_enabled"
+	KindTOTPDisabled                 = "totp_disabled"
+	KindTOTPRecoveryCodesRegenerated = "totp_recovery_codes_regenerated"
 )
 
 // Event is one security event to record. WorkspaceID and actor IDs are nil for
