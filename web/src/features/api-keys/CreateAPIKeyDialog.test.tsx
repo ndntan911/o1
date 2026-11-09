@@ -148,6 +148,57 @@ describe('CreateAPIKeyDialog', () => {
 		expect(toast.success).toHaveBeenCalledWith('API key copied');
 	});
 
+	test('focuses the secret and announces the warning after success', async () => {
+		serveCreate();
+		const user = userEvent.setup();
+
+		renderWithProviders(
+			<CreateAPIKeyDialog workspaceId="w1" onClose={vi.fn()} />,
+		);
+
+		await user.type(screen.getByLabelText('Name'), 'CI');
+		await user.click(screen.getByRole('button', { name: 'Create key' }));
+
+		const secret = await screen.findByDisplayValue(created.secret);
+		await waitFor(() => expect(secret).toHaveFocus());
+
+		const warning = screen.getByRole('status');
+		expect(warning).toHaveTextContent(/never be shown again/i);
+		expect(warning).toHaveAttribute('aria-live', 'polite');
+	});
+
+	test('ignores dismissal while the create is pending', async () => {
+		let releaseRequest: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			releaseRequest = resolve;
+		});
+		server.use(
+			http.post(keysPath, async () => {
+				await gate;
+				return HttpResponse.json(created, { status: 201 });
+			}),
+		);
+		const onClose = vi.fn();
+		const user = userEvent.setup();
+
+		renderWithProviders(
+			<CreateAPIKeyDialog workspaceId="w1" onClose={onClose} />,
+		);
+
+		await user.type(screen.getByLabelText('Name'), 'CI');
+		await user.click(screen.getByRole('button', { name: 'Create key' }));
+		await screen.findByRole('button', { name: 'Creating…' });
+
+		await user.keyboard('{Escape}');
+		expect(onClose).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole('heading', { name: 'Create API key' }),
+		).toBeInTheDocument();
+
+		releaseRequest();
+		expect(await screen.findByDisplayValue(created.secret)).toBeInTheDocument();
+	});
+
 	test('a failed copy shows the error toast', async () => {
 		serveCreate();
 		const user = userEvent.setup();

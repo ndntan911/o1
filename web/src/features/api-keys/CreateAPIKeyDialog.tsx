@@ -3,6 +3,7 @@ import {
 	useEffect,
 	useId,
 	useMemo,
+	useRef,
 	useState,
 	type FormEvent,
 } from 'react';
@@ -67,6 +68,7 @@ export function CreateAPIKeyDialog({
 	const [role, setRole] = useState<APIKeyRole>('viewer');
 	const [secret, setSecret] = useState<string | null>(null);
 	const [problem, setProblem] = useState<ApiProblem | null>(null);
+	const secretInputRef = useRef<HTMLInputElement>(null);
 
 	const discardCreateMutation = useCallback(() => {
 		// reset() only detaches the observer and schedules GC; removing the entry
@@ -82,7 +84,14 @@ export function CreateAPIKeyDialog({
 		[discardCreateMutation],
 	);
 
+	useEffect(() => {
+		if (secret) secretInputRef.current?.focus();
+	}, [secret]);
+
 	function handleClose() {
+		// A pending create may still return a one-time secret; ignoring dismissal
+		// keeps that secret from being lost.
+		if (create.isPending) return;
 		// The secret exists only in this component's state. Clearing it and
 		// evicting the mutation guarantees a reopened dialog can never show it.
 		setSecret(null);
@@ -119,7 +128,15 @@ export function CreateAPIKeyDialog({
 
 	return (
 		<Dialog open onOpenChange={(open) => !open && handleClose()}>
-			<DialogContent className="sm:max-w-md">
+			<DialogContent
+				className="sm:max-w-md"
+				onEscapeKeyDown={(event) => {
+					if (create.isPending) event.preventDefault();
+				}}
+				onPointerDownOutside={(event) => {
+					if (create.isPending) event.preventDefault();
+				}}
+			>
 				<DialogHeader>
 					<DialogTitle>Create API key</DialogTitle>
 					<DialogDescription>
@@ -132,13 +149,18 @@ export function CreateAPIKeyDialog({
 						<div className="space-y-2">
 							<Label htmlFor="api-key-secret">API key</Label>
 							<Input
+								ref={secretInputRef}
 								id="api-key-secret"
 								readOnly
 								value={secret}
 								className="font-mono"
 								onFocus={(event) => event.currentTarget.select()}
 							/>
-							<p className="text-sm text-destructive">
+							<p
+								role="status"
+								aria-live="polite"
+								className="text-sm text-destructive"
+							>
 								Copy this key now. It will never be shown again.
 							</p>
 						</div>

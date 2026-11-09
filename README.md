@@ -200,8 +200,9 @@ Neither role can manage members, alert channels, the status page, API keys, or
 itself always requires a browser session. A key is scoped to exactly one
 workspace, so using a workspace A key against workspace B returns `404`.
 
-Send the key with the Bearer scheme. The workspace ID is the UUID returned by
-`GET /api/v1/me` or `GET /api/v1/workspaces`:
+Send the key with the Bearer scheme. The workspace UUID comes from the dashboard
+URL or workspace settings, or from a browser-session call to `GET /api/v1/me`
+or `GET /api/v1/workspaces`:
 
 ```sh
 curl -H "Authorization: Bearer o1_..." \
@@ -223,10 +224,12 @@ path.
 
 Global administrators can read the audit trail from
 `GET /api/v1/admin/security-events` and from the dashboard's Security events
-page. Each event records the workspace, the acting user (`actor_user_id`), the
-acting API key when one was used (`actor_api_key_id`), the event kind, a
-redacted detail object, and a timestamp. The page shows "via API key" when the
-key attribution is present.
+page. Each event records the workspace, the acting user (`actor_user_id`), and
+the acting API key when one was used (`actor_api_key_id`), where applicable,
+plus the event kind, a redacted detail object, and a timestamp. Login events
+are global (no workspace), and failed logins may have no actor; their detail
+carries only the request IP and a redacted failure reason. The page shows "via
+API key" when the key attribution is present.
 
 Recorded kinds:
 
@@ -236,16 +239,17 @@ Recorded kinds:
 - `monitor_created`, `monitor_create_rate_limited`, and `monitor_deleted`.
 - `ssrf_blocked` for blocked monitor URLs and alert destinations.
 - `alert_channel_created`, `alert_channel_updated`, and
-  `alert_channel_deleted`.
+  `alert_channel_deleted` (including the workspace email channel).
 - `status_page_updated`.
 - `api_key_created` and `api_key_revoked`.
 - `workspace_suspended` and `workspace_unsuspended`.
 
 Key-driven monitor creation, rate-limit, SSRF, and deletion events carry
 `actor_api_key_id`; worker dial-time SSRF events have no key attribution.
-Audit detail contains workspace-owned identifiers and names only. It never
-includes passwords, session tokens, API key secrets or hashes, raw URLs with
-query strings, headers, or request bodies. Audit writes are best-effort: a
+Audit detail contains workspace-owned identifiers and names, redacted request
+metadata such as the login IP and failure reason, and simple booleans or counts.
+It never includes passwords, session tokens, API key secrets or hashes, raw URLs
+with query strings, headers, or request bodies. Audit writes are best-effort: a
 failed insert is logged at warning level and never fails the action that was
 being recorded. Incidents keep their own timeline and probe state separately,
 so those records are not duplicated here.

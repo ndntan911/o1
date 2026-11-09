@@ -80,6 +80,7 @@ func logAuditFailure(e Event, err error) {
 		"actor_user_id", e.ActorUserID,
 		"actor_api_key_id", e.ActorAPIKeyID,
 		"error_type", fmt.Sprintf("%T", err),
+		"error", err.Error(),
 	)
 }
 

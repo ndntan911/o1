@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/audit"
+	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 	"o1/internal/httpx"
 	"o1/internal/workspaces"
@@ -348,6 +350,17 @@ func (s *Service) PutEmailChannel(ctx context.Context, actorID, workspaceID uuid
 	if err := tx.Commit(ctx); err != nil {
 		return AlertChannel{}, fmt.Errorf("commit email alert channel: %w", err)
 	}
+	audit.RecordBestEffort(ctx, s.q, audit.Event{
+		WorkspaceID:   &workspaceID,
+		ActorUserID:   &actorID,
+		ActorAPIKeyID: auth.APIKeyIDFrom(ctx),
+		Kind:          audit.KindAlertChannelUpdated,
+		Detail: map[string]any{
+			"channel_id": row.ID.String(),
+			"kind":       "email",
+			"enabled":    enabled,
+		},
+	})
 	return alertChannelFromRow(row)
 }
 
