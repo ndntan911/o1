@@ -315,10 +315,11 @@ func (s *Service) recordEvent(ctx context.Context, q *sqlc.Queries, workspaceID 
 		return fmt.Errorf("encode security event: %w", err)
 	}
 	params := sqlc.CreateSecurityEventParams{
-		ID:          id,
-		WorkspaceID: pgtype.UUID{Bytes: workspaceID, Valid: true},
-		Kind:        kind,
-		Detail:      payload,
+		ID:            id,
+		WorkspaceID:   pgtype.UUID{Bytes: workspaceID, Valid: true},
+		Kind:          kind,
+		Detail:        payload,
+		ActorAPIKeyID: pgtype.UUID{},
 	}
 	if actorID != nil {
 		params.ActorUserID = pgtype.UUID{Bytes: *actorID, Valid: true}

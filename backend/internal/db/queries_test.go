@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 	"o1/internal/testutil"
 )
@@ -414,20 +415,22 @@ func TestAdminQueries_FiltersSuspensionAndEvents(t *testing.T) {
 
 	eventID := mustUUIDv7(t)
 	if err := q.CreateSecurityEvent(ctx, sqlc.CreateSecurityEventParams{
-		ID:          eventID,
-		WorkspaceID: pgtype.UUID{Bytes: wsID, Valid: true},
-		ActorUserID: pgtype.UUID{Bytes: adminID, Valid: true},
-		Kind:        "workspace_suspended",
-		Detail:      []byte(`{"reason":"abuse"}`),
+		ID:            eventID,
+		WorkspaceID:   pgtype.UUID{Bytes: wsID, Valid: true},
+		ActorUserID:   pgtype.UUID{Bytes: adminID, Valid: true},
+		Kind:          "workspace_suspended",
+		Detail:        []byte(`{"reason":"abuse"}`),
+		ActorAPIKeyID: pgtype.UUID{},
 	}); err != nil {
 		t.Fatalf("create security event: %v", err)
 	}
 	if err := q.CreateSecurityEvent(ctx, sqlc.CreateSecurityEventParams{
-		ID:          mustUUIDv7(t),
-		WorkspaceID: pgtype.UUID{Bytes: wsID, Valid: true},
-		ActorUserID: pgtype.UUID{Bytes: adminID, Valid: true},
-		Kind:        "monitor_created",
-		Detail:      []byte(`{}`),
+		ID:            mustUUIDv7(t),
+		WorkspaceID:   pgtype.UUID{Bytes: wsID, Valid: true},
+		ActorUserID:   pgtype.UUID{Bytes: adminID, Valid: true},
+		Kind:          "monitor_created",
+		Detail:        []byte(`{}`),
+		ActorAPIKeyID: pgtype.UUID{},
 	}); err != nil {
 		t.Fatalf("create second security event: %v", err)
 	}
@@ -711,5 +714,66 @@ func TestProbeDayStats_GroupsByUTCDate(t *testing.T) {
 	next := day.AddDate(0, 0, 1)
 	if rows[1].Day != next.Format("2006-01-02") || rows[1].Checks != 1 || rows[1].UpCount != 1 {
 		t.Fatalf("second day = %+v", rows[1])
+	}
+}
+
+func TestAPIKeySchema_ConstraintsAndCascades(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	userID := testutil.CreateVerifiedUser(t, pool, "apikey-schema@example.com", "correct horse battery staple")
+	keyOwner := testutil.CreateVerifiedUser(t, pool, "apikey-owner@example.com", "correct horse battery staple")
+	wsID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO workspaces (id, name, slug, created_by) VALUES ($1,'Keys','keys-schema',$2)`, wsID, userID); err != nil {
+		t.Fatal(err)
+	}
+	q := sqlc.New(pool)
+	keyID := uuid.New()
+	hash := auth.HashToken("o1_abcdefghijkl_secret")
+	key, err := q.CreateAPIKey(ctx, sqlc.CreateAPIKeyParams{
+		ID: keyID, WorkspaceID: wsID, Name: "CI", Prefix: "abcdefghijkl",
+		TokenHash: hash, Role: "viewer", CreatedBy: keyOwner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Prefix != "abcdefghijkl" || key.Role != "viewer" || key.RevokedAt != nil {
+		t.Fatalf("key = %+v", key)
+	}
+
+	if _, err := q.CreateAPIKey(ctx, sqlc.CreateAPIKeyParams{
+		ID: uuid.New(), WorkspaceID: wsID, Name: "CI", Prefix: "mnopqrstuvwx",
+		TokenHash: auth.HashToken("o1_mnopqrstuvwx_secret"), Role: "member", CreatedBy: keyOwner,
+	}); err == nil {
+		t.Fatal("duplicate active name was accepted")
+	}
+
+	if rows, err := q.RevokeAPIKey(ctx, sqlc.RevokeAPIKeyParams{ID: keyID, WorkspaceID: wsID}); err != nil || rows != 1 {
+		t.Fatalf("revoke rows = %d, err = %v", rows, err)
+	}
+	if _, err := q.GetActiveAPIKeyByPrefix(ctx, "abcdefghijkl"); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("revoked key lookup error = %v, want pgx.ErrNoRows", err)
+	}
+
+	// A revoked name can be reused.
+	if _, err := q.CreateAPIKey(ctx, sqlc.CreateAPIKeyParams{
+		ID: uuid.New(), WorkspaceID: wsID, Name: "CI", Prefix: "zzzzzzzzzzzz",
+		TokenHash: auth.HashToken("o1_zzzzzzzzzzzz_secret"), Role: "viewer", CreatedBy: keyOwner,
+	}); err != nil {
+		t.Fatalf("reuse revoked name: %v", err)
+	}
+
+	// Security events can attribute an actor key.
+	if _, err := pool.Exec(ctx, `INSERT INTO security_events (id, workspace_id, actor_user_id, actor_api_key_id, kind, detail) VALUES ($1,$2,$3,$4,'api_key_created','{}')`, uuid.New(), wsID, keyOwner, keyID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deleting the key's creator deletes their keys.
+	if _, err := pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, keyOwner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.GetAPIKey(ctx, sqlc.GetAPIKeyParams{ID: keyID, WorkspaceID: wsID}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("key after user delete error = %v, want pgx.ErrNoRows", err)
 	}
 }

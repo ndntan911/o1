@@ -299,10 +299,11 @@ func (w *ProbeWorker) recordSSRFEvent(ctx context.Context, q *sqlc.Queries, moni
 		return fmt.Errorf("encode ssrf security event: %w", err)
 	}
 	if err := q.CreateSecurityEvent(ctx, sqlc.CreateSecurityEventParams{
-		ID:          id,
-		WorkspaceID: pgtype.UUID{Bytes: monitor.WorkspaceID, Valid: true},
-		Kind:        "ssrf_blocked",
-		Detail:      detail,
+		ID:            id,
+		WorkspaceID:   pgtype.UUID{Bytes: monitor.WorkspaceID, Valid: true},
+		Kind:          "ssrf_blocked",
+		Detail:        detail,
+		ActorAPIKeyID: pgtype.UUID{},
 	}); err != nil {
 		return fmt.Errorf("record ssrf security event: %w", err)
 	}

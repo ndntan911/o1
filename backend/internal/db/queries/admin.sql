@@ -69,8 +69,8 @@ ORDER BY m.created_at DESC, m.id DESC
 LIMIT sqlc.arg('page_limit')::int;
 
 -- name: CreateSecurityEvent :exec
-INSERT INTO security_events (id, workspace_id, actor_user_id, kind, detail)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO security_events (id, workspace_id, actor_user_id, kind, detail, actor_api_key_id)
+VALUES ($1, $2, $3, $4, $5, sqlc.arg('actor_api_key_id'));
 
 -- name: ListSecurityEvents :many
 SELECT *

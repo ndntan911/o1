@@ -38,6 +38,19 @@ type AlertDelivery struct {
 	UpdatedAt  time.Time
 }
 
+type ApiKey struct {
+	ID          uuid.UUID
+	WorkspaceID uuid.UUID
+	Name        string
+	Prefix      string
+	TokenHash   []byte
+	Role        string
+	CreatedBy   uuid.UUID
+	CreatedAt   time.Time
+	LastUsedAt  *time.Time
+	RevokedAt   *time.Time
+}
+
 type EmailVerificationToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -135,12 +148,13 @@ type ProbeResult struct {
 }
 
 type SecurityEvent struct {
-	ID          uuid.UUID
-	WorkspaceID pgtype.UUID
-	ActorUserID pgtype.UUID
-	Kind        string
-	Detail      []byte
-	CreatedAt   time.Time
+	ID            uuid.UUID
+	WorkspaceID   pgtype.UUID
+	ActorUserID   pgtype.UUID
+	Kind          string
+	Detail        []byte
+	CreatedAt     time.Time
+	ActorAPIKeyID pgtype.UUID
 }
 
 type Session struct {

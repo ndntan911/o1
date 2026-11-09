@@ -14,16 +14,17 @@ import (
 )
 
 const createSecurityEvent = `-- name: CreateSecurityEvent :exec
-INSERT INTO security_events (id, workspace_id, actor_user_id, kind, detail)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO security_events (id, workspace_id, actor_user_id, kind, detail, actor_api_key_id)
+VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type CreateSecurityEventParams struct {
-	ID          uuid.UUID
-	WorkspaceID pgtype.UUID
-	ActorUserID pgtype.UUID
-	Kind        string
-	Detail      []byte
+	ID            uuid.UUID
+	WorkspaceID   pgtype.UUID
+	ActorUserID   pgtype.UUID
+	Kind          string
+	Detail        []byte
+	ActorAPIKeyID pgtype.UUID
 }
 
 func (q *Queries) CreateSecurityEvent(ctx context.Context, arg CreateSecurityEventParams) error {
@@ -33,6 +34,7 @@ func (q *Queries) CreateSecurityEvent(ctx context.Context, arg CreateSecurityEve
 		arg.ActorUserID,
 		arg.Kind,
 		arg.Detail,
+		arg.ActorAPIKeyID,
 	)
 	return err
 }
@@ -159,7 +161,7 @@ func (q *Queries) ListMonitorsForAdmin(ctx context.Context, arg ListMonitorsForA
 }
 
 const listSecurityEvents = `-- name: ListSecurityEvents :many
-SELECT id, workspace_id, actor_user_id, kind, detail, created_at
+SELECT id, workspace_id, actor_user_id, kind, detail, created_at, actor_api_key_id
 FROM security_events
 WHERE (
     $1::text IS NULL
@@ -207,6 +209,7 @@ func (q *Queries) ListSecurityEvents(ctx context.Context, arg ListSecurityEvents
 			&i.Kind,
 			&i.Detail,
 			&i.CreatedAt,
+			&i.ActorAPIKeyID,
 		); err != nil {
 			return nil, err
 		}

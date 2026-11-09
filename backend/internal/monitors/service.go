@@ -866,11 +866,12 @@ func (s *Service) insertEvent(ctx context.Context, q *sqlc.Queries, workspaceID,
 		return fmt.Errorf("encode %s event: %w", kind, err)
 	}
 	if err := q.CreateSecurityEvent(ctx, sqlc.CreateSecurityEventParams{
-		ID:          id,
-		WorkspaceID: pgUUID(workspaceID),
-		ActorUserID: pgUUID(actorID),
-		Kind:        kind,
-		Detail:      raw,
+		ID:            id,
+		WorkspaceID:   pgUUID(workspaceID),
+		ActorUserID:   pgUUID(actorID),
+		Kind:          kind,
+		Detail:        raw,
+		ActorAPIKeyID: pgtype.UUID{},
 	}); err != nil {
 		return fmt.Errorf("record %s event: %w", kind, err)
 	}
