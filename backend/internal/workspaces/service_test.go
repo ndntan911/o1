@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
+	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 	"o1/internal/testutil"
 	"o1/internal/workspaces"
@@ -335,5 +338,33 @@ func TestRole_ParseAndAtLeast(t *testing.T) {
 	}
 	if workspaces.RoleViewer.AtLeast(workspaces.RoleMember) {
 		t.Fatal("viewer should not be at least member")
+	}
+}
+
+func TestAuthorize_APIKeyScopeAndRole(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	owner := testutil.CreateVerifiedUser(t, pool, "key-scope@example.com", "correct horse battery staple")
+	svc := workspaces.NewService(pool, sqlc.New(pool))
+	ws, err := svc.Create(context.Background(), owner, "Key Scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keyCtx := auth.ContextWithAPIKey(context.Background(), auth.APIKeyPrincipal{
+		ID: uuid.New(), WorkspaceID: ws.ID, Role: "viewer", CreatedBy: owner,
+	})
+	if _, err := svc.Authorize(keyCtx, owner, ws.ID, workspaces.RoleViewer); err != nil {
+		t.Fatalf("viewer read: %v", err)
+	}
+	if _, err := svc.Authorize(keyCtx, owner, ws.ID, workspaces.RoleMember); !errors.Is(err, workspaces.ErrForbidden) {
+		t.Fatalf("viewer write error = %v, want ErrForbidden", err)
+	}
+
+	otherKeyCtx := auth.ContextWithAPIKey(context.Background(), auth.APIKeyPrincipal{
+		ID: uuid.New(), WorkspaceID: uuid.New(), Role: "member", CreatedBy: owner,
+	})
+	if _, err := svc.Authorize(otherKeyCtx, owner, ws.ID, workspaces.RoleViewer); !errors.Is(err, workspaces.ErrNotFound) {
+		t.Fatalf("cross-workspace error = %v, want ErrNotFound", err)
 	}
 }

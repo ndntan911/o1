@@ -174,3 +174,42 @@ func TestRateLimit_GlobalBucket(t *testing.T) {
 		t.Fatalf("second request from another IP = %d, want %d", got, http.StatusTooManyRequests)
 	}
 }
+
+func TestKeyedRateLimit_IsolatesKeys(t *testing.T) {
+	h := httpx.KeyedRateLimit(func(r *http.Request) string {
+		return r.Header.Get("X-Test-Key")
+	}, 1, 2)(okHandler())
+
+	// okHandler passes allowed requests through with 204.
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Test-Key", "a")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("key a request %d status = %d", i, rec.Code)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Test-Key", "a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("key a third status = %d, want 429", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Test-Key", "b")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("key b status = %d, want 204", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("empty key status = %d, want 204", rec.Code)
+	}
+}

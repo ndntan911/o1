@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"o1/internal/auth"
 	"o1/internal/db/sqlc"
 )
 
@@ -338,7 +339,23 @@ func (s *Service) AddMember(ctx context.Context, actorID, workspaceID uuid.UUID,
 // Authorize returns the caller's role when it is at least min. Non-members get
 // ErrNotFound so cross-tenant probes cannot distinguish missing workspaces
 // from forbidden ones; members with an insufficient role get ErrForbidden.
+// Requests authenticated by an API key are scoped to the key's workspace and
+// its stored role, never the key owner's membership.
 func (s *Service) Authorize(ctx context.Context, userID, workspaceID uuid.UUID, min Role) (Role, error) {
+	if key, ok := auth.APIKeyFrom(ctx); ok {
+		if key.WorkspaceID != workspaceID {
+			return RoleViewer, ErrNotFound
+		}
+		keyRole, err := ParseRole(key.Role)
+		if err != nil {
+			return RoleViewer, ErrForbidden
+		}
+		if !keyRole.AtLeast(min) {
+			return keyRole, ErrForbidden
+		}
+		return keyRole, nil
+	}
+
 	member, err := s.q.GetWorkspaceMember(ctx, sqlc.GetWorkspaceMemberParams{
 		WorkspaceID: workspaceID,
 		UserID:      userID,

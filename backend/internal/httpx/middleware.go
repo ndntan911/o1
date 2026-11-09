@@ -151,19 +151,49 @@ func RateLimit(rps float64, burst int, keyByIP bool) func(http.Handler) http.Han
 				allowed = global.Allow()
 			}
 			if !allowed {
-				w.Header().Set("Retry-After", retryAfter)
-				WriteProblem(w, Problem{
-					Type:   "about:blank",
-					Title:  "Too Many Requests",
-					Status: http.StatusTooManyRequests,
-					Detail: "Rate limit exceeded; retry later.",
-					Code:   CodeRateLimited,
-				})
+				writeRateLimited(w, retryAfter)
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// KeyedRateLimit limits requests per key returned by key. An empty key means
+// the request is not keyed (for example, a session request) and is always
+// allowed. Each middleware instance keeps its own bounded bucket store, so
+// key buckets never share state with the per-IP or global limiters.
+func KeyedRateLimit(key func(*http.Request) string, rps float64, burst int) func(http.Handler) http.Handler {
+	if burst < 1 {
+		burst = 1
+	}
+	store := newIPBucketStore()
+	retryAfter := strconv.Itoa(retryAfterSeconds(rps))
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if k := key(r); k != "" {
+				if !store.allow(k, rps, burst, time.Now()) {
+					writeRateLimited(w, retryAfter)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// writeRateLimited emits the shared 429 problem response with a Retry-After
+// header.
+func writeRateLimited(w http.ResponseWriter, retryAfter string) {
+	w.Header().Set("Retry-After", retryAfter)
+	WriteProblem(w, Problem{
+		Type:   "about:blank",
+		Title:  "Too Many Requests",
+		Status: http.StatusTooManyRequests,
+		Detail: "Rate limit exceeded; retry later.",
+		Code:   CodeRateLimited,
+	})
 }
 
 // retryAfterSeconds is the time until one token refills, rounded up to whole
