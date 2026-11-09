@@ -195,4 +195,166 @@ describe('LoginScreen', () => {
 			screen.getByRole('button', { name: 'Resend verification email' }),
 		).toBeInTheDocument();
 	});
+
+	async function signInForMFA(redirectTo?: string) {
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login`, () =>
+				HttpResponse.json({
+					mfa_required: true,
+					challenge_token: 'c1',
+				}),
+			),
+		);
+		const user = userEvent.setup();
+		renderWithProviders(<LoginScreen redirectTo={redirectTo} />);
+
+		await user.type(screen.getByLabelText('Email'), 'alice@example.com');
+		await user.type(
+			screen.getByLabelText('Password'),
+			'correct horse battery staple',
+		);
+		await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+		await screen.findByLabelText('Authentication code');
+		return user;
+	}
+
+	test('switches to the authenticator step without navigating when MFA is required', async () => {
+		await signInForMFA('/w/acme/monitors');
+
+		const input = screen.getByLabelText('Authentication code');
+		expect(input).toHaveAttribute('inputmode', 'numeric');
+		expect(input).toHaveAttribute('autocomplete', 'one-time-code');
+		expect(input).toHaveAttribute('maxlength', '6');
+		expect(
+			screen.getByRole('button', { name: 'Use a recovery code' }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole('button', { name: 'Back to sign in' }),
+		).toBeInTheDocument();
+		expect(navigate).not.toHaveBeenCalled();
+		expect(window.location.href).not.toContain('c1');
+	});
+
+	test('submits the six-digit code with the challenge and navigates on success', async () => {
+		const bodies: unknown[] = [];
+		const user = await signInForMFA('/w/acme/monitors');
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, async ({ request }) => {
+				bodies.push(await request.json());
+				return HttpResponse.json({
+					user: { id: 'u1', email: 'alice@example.com' },
+				});
+			}),
+		);
+
+		await user.type(screen.getByLabelText('Authentication code'), '123456');
+		await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+		await waitFor(() =>
+			expect(navigate).toHaveBeenCalledWith({ to: '/w/acme/monitors' }),
+		);
+		expect(bodies).toEqual([{ challenge_token: 'c1', code: '123456' }]);
+	});
+
+	test('clears cached non-me queries after completing the second factor', async () => {
+		const queryClient = createTestQueryClient();
+		const staleMonitorsKey = queryKeys.monitors('w1');
+		queryClient.setQueryData(staleMonitorsKey, {
+			pages: [],
+			pageParams: [],
+		});
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login`, () =>
+				HttpResponse.json({
+					mfa_required: true,
+					challenge_token: 'c1',
+				}),
+			),
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, () =>
+				HttpResponse.json({
+					user: { id: 'u1', email: 'alice@example.com' },
+				}),
+			),
+		);
+		const user = userEvent.setup();
+		renderWithProviders(<LoginScreen redirectTo="/" />, { queryClient });
+
+		await user.type(screen.getByLabelText('Email'), 'alice@example.com');
+		await user.type(
+			screen.getByLabelText('Password'),
+			'correct horse battery staple',
+		);
+		await user.click(screen.getByRole('button', { name: 'Sign in' }));
+		await user.type(
+			await screen.findByLabelText('Authentication code'),
+			'123456',
+		);
+		await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+		expect(queryClient.getQueryData(staleMonitorsKey)).toBeUndefined();
+	});
+
+	test('toggles to the recovery-code input and submits a normalized recovery code', async () => {
+		const bodies: unknown[] = [];
+		const user = await signInForMFA('/');
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, async ({ request }) => {
+				bodies.push(await request.json());
+				return HttpResponse.json({
+					user: { id: 'u1', email: 'alice@example.com' },
+				});
+			}),
+		);
+
+		await user.click(
+			screen.getByRole('button', { name: 'Use a recovery code' }),
+		);
+
+		const recovery = screen.getByLabelText('Recovery code');
+		expect(recovery).toHaveAttribute('autocomplete', 'off');
+		expect(
+			screen.getByRole('button', { name: 'Use an authenticator code' }),
+		).toBeInTheDocument();
+
+		await user.type(recovery, ' abcde-fghjk ');
+		await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+		expect(bodies).toEqual([
+			{ challenge_token: 'c1', recovery_code: 'ABCDEFGHJK' },
+		]);
+	});
+
+	test('renders a problem and keeps the second step for a wrong code', async () => {
+		const user = await signInForMFA('/');
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, () =>
+				problem('invalid_totp', 401, 'Invalid authentication code'),
+			),
+		);
+
+		await user.type(screen.getByLabelText('Authentication code'), '000000');
+		await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+		expect(
+			await screen.findByText('Invalid authentication code'),
+		).toBeInTheDocument();
+		expect(screen.getByLabelText('Authentication code')).toBeInTheDocument();
+		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	test('returns to the password step from back to sign in', async () => {
+		const user = await signInForMFA('/');
+
+		await user.click(screen.getByRole('button', { name: 'Back to sign in' }));
+
+		expect(screen.getByLabelText('Email')).toBeInTheDocument();
+		expect(screen.getByLabelText('Password')).toBeInTheDocument();
+		expect(
+			screen.queryByLabelText('Authentication code'),
+		).not.toBeInTheDocument();
+		expect(navigate).not.toHaveBeenCalled();
+	});
 });

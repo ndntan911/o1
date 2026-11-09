@@ -16,6 +16,28 @@ export const loginSchema = z.object({
 	password: z.string().min(1, 'Password is required'),
 });
 
+export const totpCodeSchema = z
+	.string()
+	.trim()
+	.regex(/^\d{6}$/, 'Enter a 6-digit authentication code');
+
+// Mirror the server's normalization so formatting differences (case, spaces,
+// the display separator, and ambiguous letters) still match a recovery code.
+function normalizeRecoveryCode(value: string): string {
+	return value
+		.trim()
+		.toUpperCase()
+		.replace(/[-\s]+/g, '')
+		.replace(/O/g, '0')
+		.replace(/I/g, '1')
+		.replace(/L/g, '1');
+}
+
+export const recoveryCodeSchema = z
+	.string()
+	.transform(normalizeRecoveryCode)
+	.refine((value) => value.length > 0, 'Enter a recovery code');
+
 export const registerSchema = z
 	.object({
 		email: emailSchema,

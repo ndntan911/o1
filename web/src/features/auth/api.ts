@@ -1,9 +1,7 @@
 import { apiRequest } from '@/lib/api/client';
+import type { LoginResponse } from '@/lib/api/types';
 
-export interface AuthUser {
-	id: string;
-	email: string;
-}
+export type { AuthUser, LoginResponse } from '@/lib/api/types';
 
 export interface RegisterInput {
 	email: string;
@@ -25,8 +23,10 @@ export interface RegisterResponse {
 	email: string;
 }
 
-export interface LoginResponse {
-	user: AuthUser;
+export interface CompleteTOTPLoginInput {
+	challenge_token: string;
+	code?: string;
+	recovery_code?: string;
 }
 
 export function register(input: RegisterInput): Promise<RegisterResponse> {
@@ -54,6 +54,15 @@ export function login(input: LoginInput): Promise<LoginResponse> {
 	return apiRequest<LoginResponse>('/auth/login', {
 		method: 'POST',
 		body: { email: input.email, password: input.password },
+	});
+}
+
+export function completeTOTPLogin(
+	input: CompleteTOTPLoginInput,
+): Promise<LoginResponse> {
+	return apiRequest<LoginResponse>('/auth/login/totp', {
+		method: 'POST',
+		body: input,
 	});
 }
 

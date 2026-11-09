@@ -9,6 +9,17 @@ export interface User {
 	is_admin: boolean;
 }
 
+export interface AuthUser {
+	id: string;
+	email: string;
+}
+
+export interface LoginResponse {
+	user?: AuthUser;
+	mfa_required?: boolean;
+	challenge_token?: string;
+}
+
 export interface Workspace {
 	id: string;
 	name: string;

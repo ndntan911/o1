@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { HttpResponse, http } from 'msw';
 import { server } from '@/test/msw/server';
 import {
+	completeTOTPLogin,
 	forgotPassword,
 	login,
 	logout,
@@ -120,6 +121,65 @@ describe('auth api', () => {
 			login({ email: 'alice@example.com', password: 'wrong password' }),
 		).rejects.toMatchObject({
 			problem: { code: 'invalid_credentials', status: 401 },
+		});
+	});
+
+	test('completeTOTPLogin POSTs the challenge and code and returns the user', async () => {
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, async ({ request }) => {
+				expect(request.method).toBe('POST');
+				await expect(request.json()).resolves.toEqual({
+					challenge_token: 'c1',
+					code: '123456',
+				});
+				return HttpResponse.json({
+					user: { id: 'u1', email: 'alice@example.com' },
+				});
+			}),
+		);
+
+		await expect(
+			completeTOTPLogin({ challenge_token: 'c1', code: '123456' }),
+		).resolves.toEqual({
+			user: { id: 'u1', email: 'alice@example.com' },
+		});
+	});
+
+	test('completeTOTPLogin POSTs a recovery code instead of a code', async () => {
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, async ({ request }) => {
+				expect(request.method).toBe('POST');
+				await expect(request.json()).resolves.toEqual({
+					challenge_token: 'c1',
+					recovery_code: 'ABCDEFGHIJ',
+				});
+				return HttpResponse.json({
+					user: { id: 'u1', email: 'alice@example.com' },
+				});
+			}),
+		);
+
+		await expect(
+			completeTOTPLogin({
+				challenge_token: 'c1',
+				recovery_code: 'ABCDEFGHIJ',
+			}),
+		).resolves.toEqual({
+			user: { id: 'u1', email: 'alice@example.com' },
+		});
+	});
+
+	test('completeTOTPLogin surfaces an invalid code as an ApiError', async () => {
+		server.use(
+			http.post(`${ORIGIN}/api/v1/auth/login/totp`, () =>
+				problem('invalid_totp', 401),
+			),
+		);
+
+		await expect(
+			completeTOTPLogin({ challenge_token: 'c1', code: '000000' }),
+		).rejects.toMatchObject({
+			problem: { code: 'invalid_totp', status: 401 },
 		});
 	});
 

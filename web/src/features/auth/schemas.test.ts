@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { loginSchema, registerSchema, resetPasswordSchema } from './schemas';
+import {
+	loginSchema,
+	recoveryCodeSchema,
+	registerSchema,
+	resetPasswordSchema,
+	totpCodeSchema,
+} from './schemas';
 
 describe('auth schemas', () => {
 	test('trims and lowercases emails', () => {
@@ -24,6 +30,19 @@ describe('auth schemas', () => {
 				confirmPassword: 'different password value',
 			}).success,
 		).toBe(false);
+	});
+
+	test('totpCodeSchema requires exactly six digits', () => {
+		expect(totpCodeSchema.parse(' 123456 ')).toBe('123456');
+		expect(totpCodeSchema.safeParse('12345').success).toBe(false);
+		expect(totpCodeSchema.safeParse('1234567').success).toBe(false);
+		expect(totpCodeSchema.safeParse('12a456').success).toBe(false);
+	});
+
+	test('recoveryCodeSchema normalizes formatting and rejects empty input', () => {
+		expect(recoveryCodeSchema.parse(' abcd-efghj ')).toBe('ABCDEFGHJ');
+		expect(recoveryCodeSchema.parse(' o1l0 2abc ')).toBe('01102ABC');
+		expect(recoveryCodeSchema.safeParse('   ').success).toBe(false);
 	});
 
 	test('reset requires matching passwords', () => {
