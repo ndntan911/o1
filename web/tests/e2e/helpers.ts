@@ -85,6 +85,60 @@ export function composePsql(
 	});
 }
 
+/**
+ * Looks up the internal workspace id from its public slug. Bearer API routes
+ * address workspaces by id, while the dashboard URLs only carry the slug.
+ */
+export function workspaceIdForSlug(slug: string): string {
+	const output = composePsql(
+		`SELECT id FROM workspaces WHERE slug = :'slug' LIMIT 1;`,
+		{ variables: { slug }, tuplesOnly: true },
+	).trim();
+	if (!output) {
+		throw new Error(`No workspace found with slug ${slug}`);
+	}
+	return output;
+}
+
+export interface SecurityEventRow {
+	kind: string;
+	detail: Record<string, unknown>;
+	actor_user_id: string | null;
+	actor_api_key_id: string | null;
+	created_at: string;
+}
+
+/**
+ * Reads security events for a workspace directly from PostgreSQL. Passing a
+ * kind filters the result; an empty kind returns every event for the
+ * workspace, newest first. Details are decoded from JSONB into objects.
+ */
+export function securityEvents(
+	workspaceID: string,
+	kind = '',
+): SecurityEventRow[] {
+	const output = composePsql(
+		`SELECT COALESCE(
+			jsonb_agg(
+				jsonb_build_object(
+					'kind', kind,
+					'detail', detail,
+					'actor_user_id', actor_user_id,
+					'actor_api_key_id', actor_api_key_id,
+					'created_at', created_at
+				)
+				ORDER BY created_at DESC, id DESC
+			),
+			'[]'::jsonb
+		)::text
+		FROM security_events
+		WHERE workspace_id = :'workspace_id'
+		  AND (:'kind' = '' OR kind = :'kind');`,
+		{ variables: { workspace_id: workspaceID, kind }, tuplesOnly: true },
+	);
+	return JSON.parse(output.trim()) as SecurityEventRow[];
+}
+
 export interface SeededIncident {
 	incidentId: string;
 	workspaceSlug: string;

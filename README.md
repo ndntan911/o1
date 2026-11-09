@@ -69,7 +69,8 @@ npm run build
 
 The Playwright smoke test drives the deployed stack through registration,
 email verification, workspace and monitor management, incident
-acknowledgement, public status page publishing, and administrator suspension.
+acknowledgement, public status page publishing, API key creation and
+authorization, audit attribution, and administrator suspension.
 With Compose running:
 
 ```sh
@@ -179,6 +180,75 @@ limited to 60 requests per minute per IP.
 V1 limits: one page per workspace, no custom domains, no separate page slug, no
 subscriber notifications, and no public incident detail pages. Suspended
 workspaces keep the public page read-only.
+
+## API keys
+
+Workspace admins create and revoke script credentials under **Settings → API
+keys**. A key has a name, a role, and a public prefix (`o1_<prefix>`); the full
+secret is shown once in the creation panel, can be copied there, and is never
+returned again. Only a SHA-256 hash and the prefix are stored, so a lost key
+must be revoked and replaced.
+
+Roles are capped at the workspace level:
+
+- **Viewer** keys can read the workspace, monitors, results, and incidents.
+- **Member** keys can also create, edit, pause, resume, and delete monitors,
+  acknowledge incidents, and toggle per-monitor alert switches.
+
+Neither role can manage members, alert channels, the status page, API keys, or
+`/api/v1/admin/*`. Keys never carry global administrator rights; key management
+itself always requires a browser session. A key is scoped to exactly one
+workspace, so using a workspace A key against workspace B returns `404`.
+
+Send the key with the Bearer scheme. The workspace ID is the UUID returned by
+`GET /api/v1/me` or `GET /api/v1/workspaces`:
+
+```sh
+curl -H "Authorization: Bearer o1_..." \
+  http://localhost:8080/api/v1/workspaces/{workspace-id}/monitors
+```
+
+An `Authorization` header is authoritative: a malformed, unknown, or revoked
+key returns `401` and never falls back to a session cookie. Each key is limited
+to 600 requests per minute (10 rps, burst 60), and `last_used_at` is updated at
+most once a minute. A workspace can have 20 active keys, with unique names
+among active keys. Revocation takes effect immediately; revoked keys disappear
+from the list but keep their audit history.
+
+V1 limits: no key expiry, rotation, custom scopes, admin/owner keys, IP
+allowlists, or per-key usage analytics. Revoke and recreate is the rotation
+path.
+
+## Audit log
+
+Global administrators can read the audit trail from
+`GET /api/v1/admin/security-events` and from the dashboard's Security events
+page. Each event records the workspace, the acting user (`actor_user_id`), the
+acting API key when one was used (`actor_api_key_id`), the event kind, a
+redacted detail object, and a timestamp. The page shows "via API key" when the
+key attribution is present.
+
+Recorded kinds:
+
+- `login_succeeded` and `login_failed` (IP and reason only, never the email or
+  password).
+- `member_added` and `member_role_changed`.
+- `monitor_created`, `monitor_create_rate_limited`, and `monitor_deleted`.
+- `ssrf_blocked` for blocked monitor URLs and alert destinations.
+- `alert_channel_created`, `alert_channel_updated`, and
+  `alert_channel_deleted`.
+- `status_page_updated`.
+- `api_key_created` and `api_key_revoked`.
+- `workspace_suspended` and `workspace_unsuspended`.
+
+Key-driven monitor creation, rate-limit, SSRF, and deletion events carry
+`actor_api_key_id`; worker dial-time SSRF events have no key attribution.
+Audit detail contains workspace-owned identifiers and names only. It never
+includes passwords, session tokens, API key secrets or hashes, raw URLs with
+query strings, headers, or request bodies. Audit writes are best-effort: a
+failed insert is logged at warning level and never fails the action that was
+being recorded. Incidents keep their own timeline and probe state separately,
+so those records are not duplicated here.
 
 ## Configuration
 

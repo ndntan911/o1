@@ -10,7 +10,9 @@ import {
 	MailpitTimeoutError,
 	seedIncident,
 	seedProbeResults,
+	securityEvents,
 	waitForVerificationLink,
+	workspaceIdForSlug,
 } from './helpers';
 
 const WORKSPACE_NAME = 'E2E Workspace';
@@ -474,6 +476,145 @@ test('register, verify, create a monitor, and administer the workspace', async (
 		unpublishedPage.getByText('Status page not found', { exact: true }),
 	).toBeVisible();
 	await unpublishedContext.close();
+
+	// API keys. Create a viewer key through Settings and prove the secret is
+	// shown once, copyable, and gone after closing and reloading.
+	const workspaceID = workspaceIdForSlug(workspaceSlug);
+	const monitorsURL = `/api/v1/workspaces/${workspaceID}/monitors`;
+	const apiMonitor = {
+		name: 'API monitor',
+		url: 'https://api-key.example.com',
+		method: 'GET',
+		expected_status: '2xx',
+		interval_seconds: 300,
+		timeout_seconds: 10,
+		confirmation_threshold: 1,
+		recovery_threshold: 1,
+	};
+
+	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+	await page.goto(`/w/${workspaceSlug}/settings/api-keys`);
+	await expect(
+		page.getByRole('heading', { name: 'API keys', exact: true }),
+	).toBeVisible();
+	await expect(
+		page.getByText('No API keys yet.', { exact: true }),
+	).toBeVisible();
+
+	await page.getByRole('button', { name: 'Create key' }).click();
+	let keyDialog = page.getByRole('dialog');
+	await keyDialog.getByLabel('Name', { exact: true }).fill('Viewer key');
+	await expect(keyDialog.getByRole('combobox', { name: 'Role' })).toContainText(
+		'Viewer',
+	);
+	await keyDialog.getByRole('button', { name: 'Create key' }).click();
+
+	const viewerSecretField = keyDialog.getByLabel('API key');
+	await expect(viewerSecretField).toHaveValue(/^o1_[a-z0-9]{12}_.+/);
+	const viewerSecret = await viewerSecretField.inputValue();
+	await keyDialog.getByRole('button', { name: 'Copy key' }).click();
+	await expect(page.getByText('API key copied', { exact: true })).toBeVisible();
+	await keyDialog.getByRole('button', { name: 'Done' }).click();
+	await expect(keyDialog).toBeHidden();
+
+	await page.reload();
+	await expect(
+		page.getByRole('heading', { name: 'API keys', exact: true }),
+	).toBeVisible();
+	await expect(page.getByText('Viewer key', { exact: true })).toBeVisible();
+	await expect(page.locator('body')).not.toContainText(viewerSecret);
+
+	// A viewer key can read but not write.
+	const viewerHeaders = { Authorization: `Bearer ${viewerSecret}` };
+	const viewerList = await request.get(monitorsURL, {
+		headers: viewerHeaders,
+	});
+	expect(viewerList.status()).toBe(200);
+	const viewerCreate = await request.post(monitorsURL, {
+		headers: viewerHeaders,
+		data: apiMonitor,
+	});
+	expect(viewerCreate.status()).toBe(403);
+
+	// A member key can create and delete monitors.
+	await page.getByRole('button', { name: 'Create key' }).click();
+	keyDialog = page.getByRole('dialog');
+	await keyDialog.getByLabel('Name', { exact: true }).fill('Member key');
+	await keyDialog.getByRole('combobox', { name: 'Role' }).click();
+	await page.getByRole('option', { name: 'Member' }).click();
+	await keyDialog.getByRole('button', { name: 'Create key' }).click();
+
+	const memberSecretField = keyDialog.getByLabel('API key');
+	await expect(memberSecretField).toHaveValue(/^o1_[a-z0-9]{12}_.+/);
+	const memberSecret = await memberSecretField.inputValue();
+	await keyDialog.getByRole('button', { name: 'Done' }).click();
+	await expect(keyDialog).toBeHidden();
+
+	const memberHeaders = { Authorization: `Bearer ${memberSecret}` };
+	const memberCreate = await request.post(monitorsURL, {
+		headers: memberHeaders,
+		data: apiMonitor,
+	});
+	expect(memberCreate.status()).toBe(201);
+	const createdMonitor = (await memberCreate.json()) as { id: string };
+	const memberDelete = await request.delete(
+		`${monitorsURL}/${createdMonitor.id}`,
+		{ headers: memberHeaders },
+	);
+	expect(memberDelete.status()).toBe(204);
+
+	// Revoking the viewer key stops it immediately.
+	await page.getByRole('button', { name: 'Revoke Viewer key' }).click();
+	await page.getByRole('button', { name: 'Revoke key' }).click();
+	await expect(
+		page.getByText('API key revoked', { exact: true }),
+	).toBeVisible();
+	await expect(page.getByText('Viewer key', { exact: true })).toHaveCount(0);
+	const revokedList = await request.get(monitorsURL, {
+		headers: viewerHeaders,
+	});
+	expect(revokedList.status()).toBe(401);
+
+	// Audit rows are written directly to security_events. The UI creates keys
+	// with a browser session, so api_key_created has a user actor and no API
+	// key actor; key-driven monitor mutations carry the member key's id.
+	const createdEvents = securityEvents(workspaceID, 'api_key_created');
+	const viewerCreated = createdEvents.find(
+		(event) => event.detail.name === 'Viewer key',
+	);
+	expect(viewerCreated).toBeDefined();
+	expect(viewerCreated?.actor_user_id).toBeTruthy();
+	expect(viewerCreated?.actor_api_key_id).toBeNull();
+	expect(viewerCreated?.detail).not.toHaveProperty('secret');
+
+	const memberKeyID = createdEvents.find(
+		(event) => event.detail.name === 'Member key',
+	)?.detail.api_key_id;
+	expect(typeof memberKeyID).toBe('string');
+	const memberCreated = createdEvents.find(
+		(event) => event.detail.name === 'Member key',
+	);
+	expect(memberCreated?.actor_api_key_id).toBeNull();
+
+	const deletedEvents = securityEvents(workspaceID, 'monitor_deleted');
+	const apiMonitorDeleted = deletedEvents.find(
+		(event) => event.detail.monitor_id === createdMonitor.id,
+	);
+	expect(apiMonitorDeleted).toBeDefined();
+	expect(apiMonitorDeleted?.actor_api_key_id).toBe(memberKeyID);
+	expect(apiMonitorDeleted?.detail.name).toBe(apiMonitor.name);
+
+	const revokedEvents = securityEvents(workspaceID, 'api_key_revoked');
+	expect(
+		revokedEvents.some((event) => event.detail.name === 'Viewer key'),
+	).toBe(true);
+	const auditDump = JSON.stringify([
+		...createdEvents,
+		...deletedEvents,
+		...revokedEvents,
+	]);
+	expect(auditDump).not.toContain(viewerSecret);
+	expect(auditDump).not.toContain(memberSecret);
 
 	// Delete the monitor from its detail screen.
 	await page.goto(`/w/${workspaceSlug}/monitors`);
