@@ -96,6 +96,11 @@ export function SecurityEventsScreen() {
 									</span>
 								</div>
 								<EventDetail detail={event.detail} />
+								{event.actor_api_key_id ? (
+									<p className="text-xs text-muted-foreground">
+										{`via API key ${event.actor_api_key_id}`}
+									</p>
+								) : null}
 							</li>
 						))}
 					</ul>

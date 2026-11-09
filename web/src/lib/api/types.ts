@@ -163,6 +163,7 @@ export interface SecurityEvent {
 	id: string;
 	workspace_id: string | null;
 	actor_user_id: string | null;
+	actor_api_key_id: string | null;
 	kind: string;
 	detail: unknown;
 	created_at: string;

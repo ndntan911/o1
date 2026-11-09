@@ -14,6 +14,17 @@ export const SECURITY_EVENT_KINDS = [
 	'ssrf_blocked',
 	'workspace_suspended',
 	'workspace_unsuspended',
+	'login_succeeded',
+	'login_failed',
+	'member_added',
+	'member_role_changed',
+	'monitor_deleted',
+	'alert_channel_created',
+	'alert_channel_updated',
+	'alert_channel_deleted',
+	'status_page_updated',
+	'api_key_created',
+	'api_key_revoked',
 ] as const;
 
 export type SecurityEventKind = (typeof SECURITY_EVENT_KINDS)[number];

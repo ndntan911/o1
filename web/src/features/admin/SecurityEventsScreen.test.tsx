@@ -27,6 +27,7 @@ const events: SecurityEvent[] = [
 		id: 'e1',
 		workspace_id: 'w1',
 		actor_user_id: 'u1',
+		actor_api_key_id: null,
 		kind: 'ssrf_blocked',
 		detail,
 		created_at: '2026-02-03T10:00:00Z',
@@ -35,11 +36,26 @@ const events: SecurityEvent[] = [
 		id: 'e2',
 		workspace_id: null,
 		actor_user_id: null,
+		actor_api_key_id: null,
 		kind: 'monitor_created',
 		detail: { monitor_id: 'm1' },
 		created_at: '2026-02-02T10:00:00Z',
 	},
 ];
+
+const auditKinds = [
+	'login_succeeded',
+	'login_failed',
+	'member_added',
+	'member_role_changed',
+	'monitor_deleted',
+	'alert_channel_created',
+	'alert_channel_updated',
+	'alert_channel_deleted',
+	'status_page_updated',
+	'api_key_created',
+	'api_key_revoked',
+] as const;
 
 const workspace = {
 	id: 'w1',
@@ -74,7 +90,7 @@ function setupHandlers() {
 }
 
 describe('SecurityEventsScreen', () => {
-	test('renders the five kinds and sends the selected kind', async () => {
+	test('renders the audit kinds and sends the selected kind', async () => {
 		const user = userEvent.setup();
 		const urls = setupHandlers();
 
@@ -89,6 +105,9 @@ describe('SecurityEventsScreen', () => {
 			within(kind).getByRole('option', { name: 'All kinds' }),
 		).toBeVisible();
 		for (const value of SECURITY_EVENT_KINDS) {
+			expect(within(kind).getByRole('option', { name: value })).toBeVisible();
+		}
+		for (const value of auditKinds) {
 			expect(within(kind).getByRole('option', { name: value })).toBeVisible();
 		}
 
@@ -120,6 +139,32 @@ describe('SecurityEventsScreen', () => {
 			},
 			{ timeout: 2000 },
 		);
+	});
+
+	test('shows API key attribution only when the event has one', async () => {
+		server.use(
+			http.get(eventsPath, () =>
+				HttpResponse.json({
+					events: [
+						{ ...events[0], id: 'k1', actor_api_key_id: 'key-1' },
+						{ ...events[1], id: 'k2', actor_api_key_id: null },
+					],
+				} satisfies SecurityEventListResponse),
+			),
+			http.get(workspacesPath, () =>
+				HttpResponse.json({
+					workspaces: [workspace],
+				} satisfies AdminWorkspaceListResponse),
+			),
+		);
+
+		renderWithProviders(<SecurityEventsScreen />);
+
+		const list = await screen.findByRole('list', { name: 'Security events' });
+		const items = within(list).getAllByRole('listitem');
+
+		expect(within(items[0]).getByText(/via API key key-1/)).toBeInTheDocument();
+		expect(within(items[1]).queryByText(/via API key/)).not.toBeInTheDocument();
 	});
 
 	test('the detail viewer renders the redacted JSON exactly', async () => {
