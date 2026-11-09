@@ -777,3 +777,93 @@ func TestAPIKeySchema_ConstraintsAndCascades(t *testing.T) {
 		t.Fatalf("key after user delete error = %v, want pgx.ErrNoRows", err)
 	}
 }
+
+func TestTOTPSchema_StateRecoveryAndChallenges(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+	userID := testutil.CreateVerifiedUser(t, pool, "totp-schema@example.com", "correct horse battery staple")
+	q := sqlc.New(pool)
+
+	if err := q.SetTOTPPending(ctx, sqlc.SetTOTPPendingParams{
+		UserID: userID, PendingEnc: "sealed-pending", ExpiresAt: time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := q.GetTOTPState(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TOTPPendingEnc == nil || *state.TOTPPendingEnc != "sealed-pending" || state.TOTPEnabledAt != nil {
+		t.Fatalf("state = %+v", state)
+	}
+
+	if err := q.EnableTOTP(ctx, sqlc.EnableTOTPParams{
+		UserID: userID, SecretEnc: "sealed-active", LastUsedStep: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := q.UpdateTOTPLastUsedStepIfGreater(ctx, sqlc.UpdateTOTPLastUsedStepIfGreaterParams{
+		UserID: userID, LastUsedStep: 100,
+	}); err != nil || rows != 0 {
+		t.Fatalf("replay update rows = %d, err = %v, want 0", rows, err)
+	}
+	if rows, err := q.UpdateTOTPLastUsedStepIfGreater(ctx, sqlc.UpdateTOTPLastUsedStepIfGreaterParams{
+		UserID: userID, LastUsedStep: 101,
+	}); err != nil || rows != 1 {
+		t.Fatalf("advance update rows = %d, err = %v, want 1", rows, err)
+	}
+
+	// Recovery codes are hashed rows that cascade with the user.
+	for i := 0; i < 2; i++ {
+		if err := q.CreateRecoveryCode(ctx, sqlc.CreateRecoveryCodeParams{
+			ID: uuid.New(), UserID: userID, CodeHash: []byte{byte(i)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := q.CountUnusedRecoveryCodes(ctx, userID); err != nil || n != 2 {
+		t.Fatalf("unused codes = %d, err = %v", n, err)
+	}
+
+	// Challenges are unique by token hash and cascade with the user.
+	hash := []byte("challenge-hash")
+	if err := q.CreateMFAChallenge(ctx, sqlc.CreateMFAChallengeParams{
+		ID: uuid.New(), UserID: userID, TokenHash: hash, ExpiresAt: time.Now().Add(5 * time.Minute),
+		UserAgent: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateMFAChallenge(ctx, sqlc.CreateMFAChallengeParams{
+		ID: uuid.New(), UserID: userID, TokenHash: hash, ExpiresAt: time.Now().Add(5 * time.Minute),
+	}); err == nil {
+		t.Fatal("duplicate challenge hash was accepted")
+	}
+
+	// Deleting other sessions keeps the named session.
+	sessionID := uuid.New()
+	otherID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES ($1,$2,$3,now()+interval '1 hour'), ($4,$2,$5,now()+interval '1 hour')`,
+		sessionID, userID, []byte("keep"), otherID, []byte("drop")); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.DeleteOtherUserSessions(ctx, sqlc.DeleteOtherUserSessionsParams{
+		UserID: userID, SessionID: sessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1`, userID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("sessions = %d, want 1", count)
+	}
+
+	if _, err := pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := q.CountUnusedRecoveryCodes(ctx, userID); err != nil || n != 0 {
+		t.Fatalf("recovery after delete = %d, err = %v", n, err)
+	}
+}

@@ -84,6 +84,18 @@ type IncidentEvent struct {
 	CreatedAt   time.Time
 }
 
+type MFAChallenge struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	TokenHash  []byte
+	Attempts   int16
+	ExpiresAt  time.Time
+	ConsumedAt *time.Time
+	Ip         *string
+	UserAgent  string
+	CreatedAt  time.Time
+}
+
 type Monitor struct {
 	ID                    uuid.UUID
 	WorkspaceID           uuid.UUID
@@ -184,13 +196,26 @@ type StatusPageMonitor struct {
 }
 
 type User struct {
-	ID              uuid.UUID
-	Email           string
-	PasswordHash    string
-	EmailVerifiedAt *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	IsAdmin         bool
+	ID                   uuid.UUID
+	Email                string
+	PasswordHash         string
+	EmailVerifiedAt      *time.Time
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	IsAdmin              bool
+	TOTPSecretEnc        *string
+	TOTPPendingEnc       *string
+	TOTPPendingExpiresAt *time.Time
+	TOTPEnabledAt        *time.Time
+	TOTPLastUsedStep     *int64
+}
+
+type UserRecoveryCode struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	CodeHash  []byte
+	UsedAt    *time.Time
+	CreatedAt time.Time
 }
 
 type Workspace struct {
