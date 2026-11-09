@@ -92,7 +92,7 @@ WHERE user_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
--- name: RotateMFAChallenge :exec
+-- name: RotateMFAChallenge :execrows
 UPDATE mfa_challenges
 SET token_hash = sqlc.arg(token_hash),
     expires_at = sqlc.arg(expires_at)::timestamptz,
@@ -117,7 +117,7 @@ WHERE user_id = $1;
 -- name: DeleteExpiredMFAChallenges :exec
 DELETE FROM mfa_challenges
 WHERE user_id = $1
-  AND (expires_at < now() OR consumed_at IS NOT NULL);
+  AND expires_at < now();
 
 -- name: DeleteOtherUserSessions :exec
 DELETE FROM sessions

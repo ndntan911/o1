@@ -706,52 +706,82 @@ func TestCompleteTOTPLogin_AttemptsExpire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for attempt := 1; attempt <= 4; attempt++ {
+	for attempt := 1; attempt <= 5; attempt++ {
 		if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrInvalidTOTP) {
 			t.Fatalf("attempt %d err = %v, want ErrInvalidTOTP", attempt, err)
 		}
 	}
-	// A new password step rotates the live challenge, carrying the four failed
-	// attempts over instead of granting a fresh five-guess budget.
-	rotated, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rotated.Challenge == start.Challenge {
-		t.Fatal("BeginLogin reused the previous challenge token")
-	}
-	if _, _, err := svc.CompleteTOTPLogin(ctx, rotated.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrInvalidTOTP) {
-		t.Fatalf("fifth attempt err = %v, want ErrInvalidTOTP", err)
-	}
-	if _, _, err := svc.CompleteTOTPLogin(ctx, rotated.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAAttemptsExhausted) {
+	if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAAttemptsExhausted) {
 		t.Fatalf("exhausted err = %v, want ErrMFAAttemptsExhausted", err)
 	}
 
-	// An exhausted challenge blocks a fresh password step until it expires.
+	// The consumed challenge must survive cleanup so the user cannot reset the
+	// budget with another password step inside the same window.
 	if _, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAAttemptsExhausted) {
 		t.Fatalf("BeginLogin after exhaustion err = %v, want ErrMFAAttemptsExhausted", err)
 	}
+	var attempts int16
+	var consumedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT attempts, consumed_at FROM mfa_challenges WHERE token_hash=$1`,
+		auth.HashToken(start.Challenge)).Scan(&attempts, &consumedAt); err != nil {
+		t.Fatalf("exhausted challenge row missing: %v", err)
+	}
+	if attempts != 5 || consumedAt == nil {
+		t.Fatalf("exhausted row attempts = %d, consumed_at = %v; want 5 and set", attempts, consumedAt)
+	}
 
-	// Expiring the exhausted challenge opens a new budget window.
+	// Once the exhausted challenge expires, a new login window starts and a
+	// correct code completes normally.
 	if _, err := pool.Exec(ctx,
 		`UPDATE mfa_challenges SET expires_at = now() - interval '1 minute' WHERE token_hash=$1`,
-		auth.HashToken(rotated.Challenge)); err != nil {
+		auth.HashToken(start.Challenge)); err != nil {
 		t.Fatal(err)
 	}
-	expired, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	fresh, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.CompleteTOTPLogin(ctx, rotated.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAChallengeExpired) {
+	token, gotUser, err := svc.CompleteTOTPLogin(ctx, fresh.Challenge, mustTOTPCode(t, setup.Secret, time.Now().Add(30*time.Second)), "", "127.0.0.1", "test")
+	if err != nil || token == "" || gotUser.ID != user.ID {
+		t.Fatalf("login after expiry token=%q user=%+v err=%v", token, gotUser, err)
+	}
+}
+
+func TestCompleteTOTPLogin_ExpiredAndConsumedChallenges(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	svc := newVerifiedService(t, pool)
+	ctx := context.Background()
+	user, err := sqlc.New(pool).GetUserByEmail(ctx, testEmail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, err := svc.SetupTOTP(ctx, user.ID, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := mustTOTPCode(t, setup.Secret, time.Now())
+	if _, err := svc.EnableTOTP(ctx, user.ID, testPassword, code, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+
+	start, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE mfa_challenges SET expires_at = now() - interval '1 minute' WHERE token_hash=$1`,
+		auth.HashToken(start.Challenge)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.CompleteTOTPLogin(ctx, start.Challenge, "000000", "", "127.0.0.1", "test"); !errors.Is(err, auth.ErrMFAChallengeExpired) {
 		t.Fatalf("expired challenge err = %v, want ErrMFAChallengeExpired", err)
 	}
 
 	consumed, err := svc.BeginLogin(ctx, testEmail, testPassword, "127.0.0.1", "test")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if consumed.Challenge == expired.Challenge {
-		t.Fatal("BeginLogin reused an unconsumed challenge token")
 	}
 	if _, err := pool.Exec(ctx,
 		`UPDATE mfa_challenges SET consumed_at = now() WHERE token_hash=$1`,

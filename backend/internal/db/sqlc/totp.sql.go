@@ -98,7 +98,7 @@ func (q *Queries) CreateRecoveryCode(ctx context.Context, arg CreateRecoveryCode
 const deleteExpiredMFAChallenges = `-- name: DeleteExpiredMFAChallenges :exec
 DELETE FROM mfa_challenges
 WHERE user_id = $1
-  AND (expires_at < now() OR consumed_at IS NOT NULL)
+  AND expires_at < now()
 `
 
 func (q *Queries) DeleteExpiredMFAChallenges(ctx context.Context, userID uuid.UUID) error {
@@ -356,7 +356,7 @@ func (q *Queries) MarkRecoveryCodeUsed(ctx context.Context, arg MarkRecoveryCode
 	return result.RowsAffected(), nil
 }
 
-const rotateMFAChallenge = `-- name: RotateMFAChallenge :exec
+const rotateMFAChallenge = `-- name: RotateMFAChallenge :execrows
 UPDATE mfa_challenges
 SET token_hash = $1,
     expires_at = $2::timestamptz,
@@ -373,15 +373,18 @@ type RotateMFAChallengeParams struct {
 	ID        uuid.UUID
 }
 
-func (q *Queries) RotateMFAChallenge(ctx context.Context, arg RotateMFAChallengeParams) error {
-	_, err := q.db.Exec(ctx, rotateMFAChallenge,
+func (q *Queries) RotateMFAChallenge(ctx context.Context, arg RotateMFAChallengeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rotateMFAChallenge,
 		arg.TokenHash,
 		arg.ExpiresAt,
 		arg.Ip,
 		arg.UserAgent,
 		arg.ID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setTOTPPending = `-- name: SetTOTPPending :exec

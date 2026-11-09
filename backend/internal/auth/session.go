@@ -158,16 +158,21 @@ func (s *Service) createMFAChallenge(ctx context.Context, userID uuid.UUID, ip, 
 				return "", fmt.Errorf("create MFA challenge token: %w", err)
 			}
 			raw := mfaChallengePrefix + base
-			if err := s.q.RotateMFAChallenge(ctx, sqlc.RotateMFAChallengeParams{
+			rows, err := s.q.RotateMFAChallenge(ctx, sqlc.RotateMFAChallengeParams{
 				ID:        latest.ID,
 				TokenHash: HashToken(raw),
 				ExpiresAt: now.Add(mfaChallengeTTL),
 				Ip:        normalizeIP(ip),
 				UserAgent: truncateUserAgent(userAgent),
-			}); err != nil {
+			})
+			if err != nil {
 				return "", fmt.Errorf("rotate MFA challenge: %w", err)
 			}
-			return raw, nil
+			if rows > 0 {
+				return raw, nil
+			}
+			// A concurrent request consumed the challenge first; fall through
+			// and create a new one so the returned token is always stored.
 		}
 	}
 
