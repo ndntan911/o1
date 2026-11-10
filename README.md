@@ -166,9 +166,11 @@ endpoint is treated as a permanent failure.
 
 Development uses Mailpit as the SMTP sink. Compose starts Mailpit at
 <http://localhost:8025>, where every alert email and its rendered content can be
-inspected. Production sends through Resend: set `O1_EMAIL_PROVIDER=resend`, a
-Resend API key, and a from address on the verified sending domain. Production
-refuses to start with the `mailpit` provider or without a Resend key.
+inspected. Production sends through Resend: the production stack sets
+`O1_EMAIL_PROVIDER=resend`; when running the API outside that stack, set it
+yourself along with a Resend API key and a from address on the verified sending
+domain. Production refuses to start with the `mailpit` provider or without a
+Resend key.
 
 Transient send failures (timeouts, `408`, `425`, `429`, and `5xx`) are retried
 with short backoff and an idempotency key, so a lost response does not duplicate

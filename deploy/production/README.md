@@ -119,6 +119,14 @@ openssl rand -base64 32  # O1_ENCRYPTION_KEY
   request bodies at rest. Changing it later makes existing encrypted data
   unreadable; this plan has no key-rotation or re-encryption procedure.
 
+Do not start the stack with the placeholder `POSTGRES_PASSWORD` and change it
+afterwards. PostgreSQL sets the role password when it first initializes the
+`postgres-data` volume; later edits to the variable do not update the role, and
+the API cannot authenticate. Generate the real password before the first start.
+If the stack has already started with the placeholder, restore that value or
+recreate the volume (`docker compose ... down -v`, which deletes all data) and
+start again.
+
 ## 4. Configure the environment
 
 ```sh
