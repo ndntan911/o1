@@ -39,6 +39,35 @@ func TestRegister_SendsVerificationAndVerifies(t *testing.T) {
 	}
 }
 
+func TestRegister_VerificationEmailUsesTokenIdempotencyKey(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	fs := testutil.NewFakeSender()
+	svc := auth.NewService(pool, sqlc.New(pool), fs, testutil.TestConfig(t))
+	ctx := context.Background()
+
+	u, err := svc.Register(ctx, "idem-verify@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := fs.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("sent = %d, want 1", len(msgs))
+	}
+	keyID, err := uuid.Parse(msgs[0].IdempotencyKey)
+	if err != nil {
+		t.Fatalf("IdempotencyKey = %q, want token UUID: %v", msgs[0].IdempotencyKey, err)
+	}
+	var tokenID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM email_verification_tokens WHERE user_id = $1`, u.ID).Scan(&tokenID); err != nil {
+		t.Fatalf("load verification token: %v", err)
+	}
+	if keyID != tokenID {
+		t.Fatalf("IdempotencyKey = %s, want token id %s", keyID, tokenID)
+	}
+}
+
 func TestRegister_DuplicateEmailReturnsSentinel(t *testing.T) {
 	pool, cleanup := testutil.NewPostgres(t)
 	defer cleanup()
@@ -197,6 +226,35 @@ func TestResendVerification_SendsNewAndInvalidatesOldToken(t *testing.T) {
 	}
 	if err := svc.VerifyEmail(ctx, newToken); err != nil {
 		t.Fatalf("new token err = %v, want nil", err)
+	}
+}
+
+func TestRequestPasswordReset_UsesTokenIdempotencyKey(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	fs := testutil.NewFakeSender()
+	svc := auth.NewService(pool, sqlc.New(pool), fs, testutil.TestConfig(t))
+	ctx := context.Background()
+	userID := testutil.CreateVerifiedUser(t, pool, "idem-reset@example.com", testPassword)
+
+	if err := svc.RequestPasswordReset(ctx, "idem-reset@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	msgs := fs.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("sent = %d, want 1", len(msgs))
+	}
+	keyID, err := uuid.Parse(msgs[0].IdempotencyKey)
+	if err != nil {
+		t.Fatalf("IdempotencyKey = %q, want token UUID: %v", msgs[0].IdempotencyKey, err)
+	}
+	var tokenID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM password_reset_tokens WHERE user_id = $1`, userID).Scan(&tokenID); err != nil {
+		t.Fatalf("load password reset token: %v", err)
+	}
+	if keyID != tokenID {
+		t.Fatalf("IdempotencyKey = %s, want token id %s", keyID, tokenID)
 	}
 }
 

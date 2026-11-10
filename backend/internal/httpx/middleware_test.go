@@ -175,6 +175,58 @@ func TestRateLimit_GlobalBucket(t *testing.T) {
 	}
 }
 
+func TestClientIP_TrustsForwardedForOnlyBehindPrivatePeer(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		want       string
+	}{
+		{
+			name:       "loopback peer trusts forwarded header",
+			remoteAddr: "127.0.0.1:1234",
+			forwarded:  "203.0.113.10",
+			want:       "203.0.113.10",
+		},
+		{
+			name:       "private peer trusts forwarded header",
+			remoteAddr: "10.0.0.5:1234",
+			forwarded:  "203.0.113.11",
+			want:       "203.0.113.11",
+		},
+		{
+			name:       "public peer ignores forwarded header",
+			remoteAddr: "203.0.113.10:1234",
+			forwarded:  "198.51.100.1",
+			want:       "203.0.113.10",
+		},
+		{
+			name:       "no forwarded header uses peer",
+			remoteAddr: "10.0.0.5:1234",
+			want:       "10.0.0.5",
+		},
+		{
+			name:       "first valid forwarded address wins",
+			remoteAddr: "10.0.0.5:1234",
+			forwarded:  "unknown, 203.0.113.12, 198.51.100.1",
+			want:       "203.0.113.12",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+			req.RemoteAddr = tc.remoteAddr
+			if tc.forwarded != "" {
+				req.Header.Set("X-Forwarded-For", tc.forwarded)
+			}
+			if got := httpx.ClientIP(req); got != tc.want {
+				t.Fatalf("ClientIP = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestKeyedRateLimit_IsolatesKeys(t *testing.T) {
 	h := httpx.KeyedRateLimit(func(r *http.Request) string {
 		return r.Header.Get("X-Test-Key")

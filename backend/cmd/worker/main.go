@@ -55,12 +55,6 @@ func run() error {
 		}
 	}()
 
-	// Only the Mailpit development sender exists today. Refuse to start in
-	// production rather than silently dropping incident alert mail.
-	if rt.Config.Env == "production" {
-		return fmt.Errorf("no production email sender configured: Resend support is not implemented yet")
-	}
-
 	box, err := secretbox.New(rt.Config.EncryptionKey)
 	if err != nil {
 		return fmt.Errorf("create secret box: %w", err)
@@ -71,7 +65,10 @@ func run() error {
 
 	q := sqlc.New(rt.Pool)
 	probeWorker := worker.NewProbeWorker(rt.Pool, q, box, prober, limiter, rt.Logger, obs.Metrics)
-	sender := email.NewMailpitSender(rt.Config.SMTPAddr, rt.Config.EmailFrom)
+	sender, err := email.NewSender(rt.Config)
+	if err != nil {
+		return fmt.Errorf("create email sender: %w", err)
+	}
 	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, box, alerts.NewNotifier(guard, ""), rt.Config, rt.Logger, obs.Metrics)
 
 	// Queue and incident gauges are shared across the environment, so they are

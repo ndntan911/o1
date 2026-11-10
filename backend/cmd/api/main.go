@@ -46,13 +46,10 @@ func run() error {
 		}
 	}()
 
-	// Only the Mailpit development sender exists today. Refuse to start in
-	// production rather than silently dropping transactional mail.
-	if rt.Config.Env == "production" {
-		return fmt.Errorf("no production email sender configured: Resend support is not implemented yet")
+	sender, err := email.NewSender(rt.Config)
+	if err != nil {
+		return fmt.Errorf("create email sender: %w", err)
 	}
-
-	sender := email.NewMailpitSender(rt.Config.SMTPAddr, rt.Config.EmailFrom)
 	q := sqlc.New(rt.Pool)
 	authSvc := auth.NewService(rt.Pool, q, sender, rt.Config)
 	// Deferred after rt.Close, so LIFO ordering drains queued password resets
