@@ -27,6 +27,9 @@ func TestObservabilityProvider_EmptyConfigIsNoop(t *testing.T) {
 	if p.Tracer.Enabled() {
 		t.Fatal("Provider.Tracer.Enabled() = true with an empty OTLP endpoint")
 	}
+	if p.SentryEnabled {
+		t.Fatal("Provider.SentryEnabled = true with an empty Sentry DSN")
+	}
 	if body := gatherText(t, p.Metrics.Registry()); !strings.Contains(body, "o1_build_info") {
 		t.Fatalf("registry missing o1_build_info:\n%s", body)
 	}

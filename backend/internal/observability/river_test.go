@@ -3,6 +3,8 @@ package observability
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/riverqueue/river/rivertype"
@@ -109,5 +111,82 @@ func TestRiverMiddlewareDisabledTracer(t *testing.T) {
 				t.Fatal("middleware did not call doInner")
 			}
 		})
+	}
+}
+
+func TestRiverErrorHandlerCapturesErrorOnce(t *testing.T) {
+	rec := newCaptureRecorder(t)
+	handler := SentryErrorHandler{}
+	job := &rivertype.JobRow{ID: 7, Kind: "probe", Queue: "probe", Attempt: 2}
+	wantErr := errors.New("probe failed")
+
+	result := handler.HandleError(context.Background(), job, wantErr)
+	if result == nil {
+		t.Fatal("HandleError returned a nil ErrorHandlerResult")
+	}
+	if result.SetCancelled {
+		t.Fatal("HandleError cancelled retries for a normal error")
+	}
+	if got := rec.count(); got != 1 {
+		t.Fatalf("captured %d errors, want 1", got)
+	}
+	if got := rec.lastError(); !errors.Is(got, wantErr) {
+		t.Fatalf("captured error = %v, want %v", got, wantErr)
+	}
+	tags := rec.lastTags()
+	if tags["kind"] != "probe" || tags["queue"] != "probe" {
+		t.Fatalf("tags = %v, want kind=probe queue=probe", tags)
+	}
+}
+
+func TestRiverErrorHandlerCapturesPanicOnce(t *testing.T) {
+	rec := newCaptureRecorder(t)
+	handler := SentryErrorHandler{}
+	job := &rivertype.JobRow{ID: 8, Kind: "alert", Queue: "alert", Attempt: 1}
+
+	result := handler.HandlePanic(context.Background(), job, "boom", "goroutine stack")
+	if result == nil {
+		t.Fatal("HandlePanic returned a nil ErrorHandlerResult")
+	}
+	if result.SetCancelled {
+		t.Fatal("HandlePanic cancelled retries")
+	}
+	if got := rec.count(); got != 1 {
+		t.Fatalf("captured %d panics, want 1", got)
+	}
+	if got := rec.lastError(); got == nil || !strings.Contains(got.Error(), "boom") {
+		t.Fatalf("captured error = %v, want it to mention the panic value", got)
+	}
+	tags := rec.lastTags()
+	if tags["kind"] != "alert" || tags["queue"] != "alert" {
+		t.Fatalf("tags = %v, want kind=alert queue=alert", tags)
+	}
+}
+
+func TestRiverErrorHandlerDropsCanceledError(t *testing.T) {
+	rec := newCaptureRecorder(t)
+	handler := SentryErrorHandler{}
+	job := &rivertype.JobRow{Kind: "probe", Queue: "probe", Attempt: 1}
+
+	result := handler.HandleError(context.Background(), job, fmt.Errorf("shutdown: %w", context.Canceled))
+	if result == nil {
+		t.Fatal("HandleError returned a nil ErrorHandlerResult")
+	}
+	if got := rec.count(); got != 0 {
+		t.Fatalf("captured %d canceled errors, want 0", got)
+	}
+}
+
+func TestRiverErrorHandlerNilJobIsSafe(t *testing.T) {
+	rec := newCaptureRecorder(t)
+	handler := SentryErrorHandler{}
+	if result := handler.HandleError(context.Background(), nil, errors.New("boom")); result == nil {
+		t.Fatal("HandleError(nil job) returned nil")
+	}
+	if result := handler.HandlePanic(context.Background(), nil, "boom", ""); result == nil {
+		t.Fatal("HandlePanic(nil job) returned nil")
+	}
+	if got := rec.count(); got != 2 {
+		t.Fatalf("captured %d errors, want 2", got)
 	}
 }

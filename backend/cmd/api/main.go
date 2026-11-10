@@ -74,6 +74,7 @@ func run() error {
 	rt.Logger.Log(ctx, slog.LevelInfo, "starting server",
 		"env", rt.Config.Env,
 		"addr", rt.Config.HTTPAddr,
+		"sentry", obs.SentryEnabled,
 	)
 
 	srv := &http.Server{

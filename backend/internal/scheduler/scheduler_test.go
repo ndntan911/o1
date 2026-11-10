@@ -1,12 +1,15 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -302,5 +305,98 @@ func TestSchedulerMetrics_Tick(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("scheduler metrics missing %s:\n%s", want, body)
 		}
+	}
+}
+
+// TestSchedulerPanicIsCapturedAndLoopContinues verifies a panicking tick is
+// captured once, logged, and swallowed so the next tick still runs. It uses a
+// fake tick function and a fake tick channel, so no database is needed.
+func TestSchedulerPanicIsCapturedAndLoopContinues(t *testing.T) {
+	var mu sync.Mutex
+	var captures []error
+	restore := observability.SetCaptureHookForTest(func(_ context.Context, err error, _ map[string]string) {
+		mu.Lock()
+		defer mu.Unlock()
+		captures = append(captures, err)
+	})
+	t.Cleanup(restore)
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var tickCalls, reminderCalls atomic.Int32
+	s := &Scheduler{
+		logger: logger,
+		tickFn: func(context.Context) (int, error) {
+			if tickCalls.Add(1) == 1 {
+				panic("probe tick exploded")
+			}
+			cancel()
+			return 3, nil
+		},
+		reminderFn: func(context.Context) (int, error) {
+			reminderCalls.Add(1)
+			return 0, nil
+		},
+	}
+
+	ticks := make(chan time.Time)
+	partitions := make(chan time.Time)
+	done := make(chan error, 1)
+	go func() { done <- s.tickLoop(ctx, ticks, partitions) }()
+
+	ticks <- time.Now()
+	ticks <- time.Now()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("tickLoop: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tickLoop did not stop after the context was canceled")
+	}
+
+	if got := tickCalls.Load(); got != 2 {
+		t.Fatalf("tick calls = %d, want 2 (the loop must continue after a panic)", got)
+	}
+	if got := reminderCalls.Load(); got != 1 {
+		t.Fatalf("reminder calls = %d, want 1 (skipped for the panicking tick)", got)
+	}
+
+	mu.Lock()
+	captured := len(captures)
+	var capturedErr error
+	if captured > 0 {
+		capturedErr = captures[0]
+	}
+	mu.Unlock()
+	if captured != 1 {
+		t.Fatalf("captures = %d, want 1", captured)
+	}
+	if capturedErr == nil || !strings.Contains(capturedErr.Error(), "probe tick exploded") {
+		t.Fatalf("captured error = %v, want the panic value", capturedErr)
+	}
+	if !strings.Contains(logs.String(), "panic") {
+		t.Fatalf("scheduler log missing panic entry:\n%s", logs.String())
+	}
+}
+
+// TestSchedulerTickLoopStopsOnCancel verifies shutdown stays clean even when a
+// tick panics just before the context is canceled.
+func TestSchedulerTickLoopStopsOnCancel(t *testing.T) {
+	restore := observability.SetCaptureHookForTest(func(context.Context, error, map[string]string) {})
+	t.Cleanup(restore)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := &Scheduler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	err := s.tickLoop(ctx, make(chan time.Time), make(chan time.Time))
+	if err != nil {
+		t.Fatalf("tickLoop: %v", err)
 	}
 }

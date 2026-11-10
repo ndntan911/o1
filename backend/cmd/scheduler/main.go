@@ -69,7 +69,10 @@ func run() error {
 	schedCtx, cancelSched := context.WithCancel(ctx)
 	defer cancelSched()
 	go func() {
-		rt.Logger.Log(ctx, slog.LevelInfo, "scheduler started", "tick", rt.Config.SchedulerTick.String())
+		rt.Logger.Log(ctx, slog.LevelInfo, "scheduler started",
+			"tick", rt.Config.SchedulerTick.String(),
+			"sentry", obs.SentryEnabled,
+		)
 		runErr <- sched.Run(schedCtx)
 	}()
 

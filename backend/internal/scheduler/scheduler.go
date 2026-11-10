@@ -40,6 +40,10 @@ type Scheduler struct {
 	// Injectable for deterministic tests.
 	now    func() time.Time
 	jitter func(time.Duration) time.Duration
+	// tickFn and reminderFn run one probe or reminder pass. They default to
+	// Tick and enqueueReminders and are replaceable in tests.
+	tickFn     func(context.Context) (int, error)
+	reminderFn func(context.Context) (int, error)
 
 	batch int32
 	tick  time.Duration
@@ -58,7 +62,7 @@ func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx],
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Scheduler{
+	s := &Scheduler{
 		pool:    pool,
 		q:       q,
 		river:   riverClient,
@@ -71,6 +75,9 @@ func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx],
 		batch:   int32(batch), //nolint:gosec // positive config value validated by config.Load
 		tick:    tick,
 	}
+	s.tickFn = s.Tick
+	s.reminderFn = s.enqueueReminders
+	return s
 }
 
 // Tick enqueues one probe per due, active monitor and advances each monitor's
@@ -169,6 +176,39 @@ func (s *Scheduler) enqueueReminders(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// safeTick runs the probe pass behind a recover boundary. A panicking tick is
+// reported to Sentry, logged, and turned into an error so Run keeps ticking
+// instead of crashing the process.
+func (s *Scheduler) safeTick(ctx context.Context) (n int, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			observability.CapturePanic(ctx, rec)
+			s.logger.Log(ctx, slog.LevelError, "scheduler tick panicked", "panic", rec)
+			n, err = 0, fmt.Errorf("scheduler tick panic: %v", rec)
+		}
+	}()
+	if s.tickFn == nil {
+		return s.Tick(ctx)
+	}
+	return s.tickFn(ctx)
+}
+
+// safeReminders runs the reminder pass behind the same recover boundary as the
+// probe pass.
+func (s *Scheduler) safeReminders(ctx context.Context) (n int, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			observability.CapturePanic(ctx, rec)
+			s.logger.Log(ctx, slog.LevelError, "scheduler reminder tick panicked", "panic", rec)
+			n, err = 0, fmt.Errorf("scheduler reminder tick panic: %v", rec)
+		}
+	}()
+	if s.reminderFn == nil {
+		return s.enqueueReminders(ctx)
+	}
+	return s.reminderFn(ctx)
+}
+
 // Run ticks until ctx is canceled. Ticks are synchronous, so a slow tick
 // delays the next one rather than stacking. It also ensures probe partitions
 // at startup and once per day.
@@ -182,17 +222,23 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	partitionTicker := time.NewTicker(24 * time.Hour)
 	defer partitionTicker.Stop()
 
+	return s.tickLoop(ctx, ticker.C, partitionTicker.C)
+}
+
+// tickLoop drains tick and partition events until ctx is canceled. Each tick
+// runs behind a recover boundary, so one panic never stops the loop.
+func (s *Scheduler) tickLoop(ctx context.Context, ticks, partitions <-chan time.Time) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-partitionTicker.C:
+		case <-partitions:
 			if err := db.EnsureProbePartitions(ctx, s.pool, s.now().UTC()); err != nil {
 				s.logger.Log(ctx, slog.LevelError, "ensure probe partitions", "error", err)
 			}
-		case <-ticker.C:
+		case <-ticks:
 			start := time.Now()
-			n, err := s.Tick(ctx)
+			n, err := s.safeTick(ctx)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil
@@ -205,7 +251,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				"duration", time.Since(start).String(),
 			)
 
-			reminded, err := s.enqueueReminders(ctx)
+			reminded, err := s.safeReminders(ctx)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil

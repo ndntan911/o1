@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 	"go.opentelemetry.io/otel/attribute"
@@ -53,4 +54,38 @@ func (m *riverMiddleware) Work(ctx context.Context, job *rivertype.JobRow, doInn
 		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
+}
+
+// SentryErrorHandler captures River job errors and panics exactly once. It
+// never cancels retries; River keeps applying the configured retry policy.
+// Job args are deliberately not attached to the event.
+type SentryErrorHandler struct{}
+
+var _ river.ErrorHandler = SentryErrorHandler{}
+
+// HandleError implements river.ErrorHandler.
+func (SentryErrorHandler) HandleError(ctx context.Context, job *rivertype.JobRow, err error) *river.ErrorHandlerResult {
+	if !shouldIgnore(err) {
+		capture(ctx, err, jobTags(job), sentry.LevelError)
+	}
+	return &river.ErrorHandlerResult{}
+}
+
+// HandlePanic implements river.ErrorHandler.
+func (SentryErrorHandler) HandlePanic(ctx context.Context, job *rivertype.JobRow, panicVal any, _ string) *river.ErrorHandlerResult {
+	if panicVal != nil {
+		capture(ctx, panicError(panicVal), jobTags(job), sentry.LevelFatal)
+	}
+	return &river.ErrorHandlerResult{}
+}
+
+// jobTags builds bounded Sentry tags from the job row. It never reads args.
+func jobTags(job *rivertype.JobRow) map[string]string {
+	if job == nil {
+		return nil
+	}
+	return map[string]string{
+		"kind":  job.Kind,
+		"queue": job.Queue,
+	}
 }

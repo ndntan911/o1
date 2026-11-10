@@ -86,8 +86,9 @@ func run() error {
 	river.AddWorker(workers, alertWorker)
 
 	client, err := river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{
-		Logger:  rt.Logger,
-		Workers: workers,
+		Logger:       rt.Logger,
+		Workers:      workers,
+		ErrorHandler: observability.SentryErrorHandler{},
 		Queues: map[string]river.QueueConfig{
 			"probe": {MaxWorkers: rt.Config.WorkerConcurrency},
 			"alert": {MaxWorkers: 4},
@@ -113,7 +114,10 @@ func run() error {
 		}
 	}()
 
-	rt.Logger.Log(ctx, slog.LevelInfo, "worker started", "concurrency", rt.Config.WorkerConcurrency)
+	rt.Logger.Log(ctx, slog.LevelInfo, "worker started",
+		"concurrency", rt.Config.WorkerConcurrency,
+		"sentry", obs.SentryEnabled,
+	)
 
 	var result error
 	select {

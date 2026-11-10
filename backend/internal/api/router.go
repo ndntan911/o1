@@ -140,13 +140,15 @@ func requestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 }
 
 // recoverPanics converts panics into a 500 problem response instead of
-// crashing the server.
+// crashing the server. The panic is reported to Sentry exactly once; the
+// request is not re-panicked.
 func recoverPanics(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
 					logger.Log(r.Context(), slog.LevelError, "panic recovered", "panic", rec, "request_id", RequestID(r.Context()))
+					observability.CapturePanic(r.Context(), rec)
 					httpx.WriteProblem(w, httpx.Problem{
 						Type:   "about:blank",
 						Title:  "Internal Server Error",
