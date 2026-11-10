@@ -109,6 +109,7 @@ func TestLoad_AcceptsKnownEnvs(t *testing.T) {
 	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("O1_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("O1_RESEND_API_KEY", "re_test_key")
+	t.Setenv("O1_EMAIL_FROM", "o1@example.com")
 	for _, env := range []string{"development", "test", "production"} {
 		t.Setenv("O1_ENV", env)
 		if _, err := config.Load(); err != nil {
@@ -245,6 +246,7 @@ func TestObservabilityConfig_ReadsEnv(t *testing.T) {
 	t.Setenv("O1_ENV", "production")
 	t.Setenv("O1_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("O1_RESEND_API_KEY", "re_test_key")
+	t.Setenv("O1_EMAIL_FROM", "o1@example.com")
 	t.Setenv("O1_API_HEALTH_ADDR", ":9090")
 	t.Setenv("O1_OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
 	t.Setenv("O1_OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer token,X-Scope=o1")
@@ -425,6 +427,29 @@ func TestEmailProvider_RejectsMailpitInProduction(t *testing.T) {
 
 	if _, err := config.Load(); err == nil {
 		t.Fatal("Load() accepted mailpit in production")
+	}
+}
+
+func TestEmailProvider_ProductionRequiresExplicitFrom(t *testing.T) {
+	setEmailEnv(t, "production")
+	t.Setenv("O1_RESEND_API_KEY", "re_test_key")
+	t.Setenv("O1_EMAIL_FROM", "")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("Load() accepted production without O1_EMAIL_FROM")
+	}
+}
+
+func TestEmailProvider_DevelopmentDefaultsMissingFrom(t *testing.T) {
+	setEmailEnv(t, "development")
+	t.Setenv("O1_EMAIL_FROM", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.EmailFrom != "o1@localhost" {
+		t.Fatalf("EmailFrom = %q, want o1@localhost", cfg.EmailFrom)
 	}
 }
 

@@ -248,6 +248,12 @@ func Load() (Config, error) {
 	default:
 		return cfg, fmt.Errorf("invalid O1_ENV %q: must be one of development, test, production", cfg.Env)
 	}
+	// The o1@localhost sender is a development convenience. Production must
+	// configure a real address, so a missing O1_EMAIL_FROM fails validation
+	// instead of silently starting with an undeliverable mailbox.
+	if cfg.Env == "production" && strings.TrimSpace(os.Getenv("O1_EMAIL_FROM")) == "" {
+		cfg.EmailFrom = ""
+	}
 	if cfg.SentryEnvironment == "" {
 		cfg.SentryEnvironment = cfg.Env
 	}
