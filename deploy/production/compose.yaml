@@ -1,0 +1,153 @@
+# Standalone production stack for o1.
+#
+# It deliberately does not extend the development compose.yaml at the repository
+# root: no Mailpit, no published database/API/metrics ports, no development
+# keys, and no raised auth rate limits. Only the web container publishes ports
+# (80 and 443). All secrets come from the environment or an untracked
+# deploy/production/.env. See README.md in this directory for the runbook.
+#
+#   cp deploy/production/env.example deploy/production/.env
+#   $EDITOR deploy/production/.env
+#   docker compose --env-file deploy/production/.env \
+#     -f deploy/production/compose.yaml up -d --build
+
+name: o1-production
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: o1
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: o1
+    # No published port: only the Compose network can reach PostgreSQL.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U o1 -d o1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ../../backend
+    entrypoint: ["/api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &backend-env
+      O1_ENV: production
+      O1_DATABASE_URL: postgres://o1:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/o1?sslmode=disable
+      O1_SECRET_KEY: "${O1_SECRET_KEY:?set O1_SECRET_KEY in .env}"
+      O1_ENCRYPTION_KEY: "${O1_ENCRYPTION_KEY:?set O1_ENCRYPTION_KEY in .env}"
+      # Production email goes through Resend. The API and worker refuse to
+      # start in production with the mailpit provider.
+      O1_EMAIL_PROVIDER: resend
+      O1_RESEND_API_KEY: "${O1_RESEND_API_KEY:?set O1_RESEND_API_KEY in .env}"
+      O1_EMAIL_FROM: "${O1_EMAIL_FROM:?set O1_EMAIL_FROM in .env}"
+      O1_EMAIL_REPLY_TO: ${O1_EMAIL_REPLY_TO:-}
+      O1_RESEND_RPS: ${O1_RESEND_RPS:-2}
+      # Links in verification and password-reset mail, and the Origin allowlist,
+      # are derived from the public domain.
+      O1_APP_BASE_URL: "https://${O1_DOMAIN:?set O1_DOMAIN in .env}"
+      O1_ALLOWED_ORIGINS: "https://${O1_DOMAIN:?set O1_DOMAIN in .env}"
+      O1_BOOTSTRAP_ADMIN_EMAIL: ${O1_BOOTSTRAP_ADMIN_EMAIL:-}
+      # Observability is optional. Empty values disable tracing and error
+      # reporting. The metrics/health listeners stay internal to the Compose
+      # network; Caddy answers 404 for public /metrics.
+      O1_API_HEALTH_ADDR: ":8083"
+      O1_OTEL_EXPORTER_OTLP_ENDPOINT: ${O1_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      O1_OTEL_EXPORTER_OTLP_HEADERS: ${O1_OTEL_EXPORTER_OTLP_HEADERS:-}
+      O1_OTEL_SAMPLE_RATIO: ${O1_OTEL_SAMPLE_RATIO:-}
+      O1_SENTRY_DSN: ${O1_SENTRY_DSN:-}
+      O1_SENTRY_ENVIRONMENT: ${O1_SENTRY_ENVIRONMENT:-production}
+      O1_RELEASE: ${O1_RELEASE:-production}
+    # No published port: the web container is the only public entry point.
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: ../../backend
+    entrypoint: ["/scheduler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+      O1_SCHEDULER_HEALTH_ADDR: ":8081"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../../backend
+    entrypoint: ["/worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+      O1_WORKER_HEALTH_ADDR: ":8082"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../../web
+      args:
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_RELEASE: ${VITE_RELEASE:-production}
+    depends_on:
+      - api
+    environment:
+      # Caddy obtains and renews a TLS certificate for this hostname and
+      # redirects HTTP to HTTPS automatically.
+      O1_SITE_ADDRESS: ${O1_DOMAIN:?set O1_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # Optional scrape/remote-write agent for Grafana Cloud. It is not started by
+  # `docker compose up`; use the command in README.md with the observability
+  # profile. It refuses to start with empty remote-write credentials instead of
+  # silently dropping metrics. The config is shared with the development bundle.
+  alloy:
+    image: grafana/alloy:v1.21.3
+    profiles: ["observability"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for name in GRAFANA_REMOTE_WRITE_URL GRAFANA_REMOTE_WRITE_USER GRAFANA_REMOTE_WRITE_TOKEN; do
+          if [ -z "$$(printenv "$$name")" ]; then
+            echo "alloy: required environment variable $$name is not set; export GRAFANA_REMOTE_WRITE_URL, GRAFANA_REMOTE_WRITE_USER, and GRAFANA_REMOTE_WRITE_TOKEN before starting the observability profile" >&2
+            exit 1
+          fi
+        done
+        exec /bin/alloy run /etc/alloy/config.alloy \
+          --server.http.listen-addr=0.0.0.0:12345 \
+          --storage.path=/var/lib/alloy/data
+    environment:
+      O1_ENV: production
+      GRAFANA_REMOTE_WRITE_URL: ${GRAFANA_REMOTE_WRITE_URL:-}
+      GRAFANA_REMOTE_WRITE_USER: ${GRAFANA_REMOTE_WRITE_USER:-}
+      GRAFANA_REMOTE_WRITE_TOKEN: ${GRAFANA_REMOTE_WRITE_TOKEN:-}
+    volumes:
+      - ../../deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - api
+      - scheduler
+      - worker
+    # Do not restart-loop with missing credentials; fix the environment and
+    # start it again.
+    restart: "no"
+
+volumes:
+  postgres-data:
+  caddy_data:
+  caddy_config:
+  alloy-data:
