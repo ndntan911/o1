@@ -3,6 +3,7 @@ package config_test
 import (
 	"encoding/base64"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,7 @@ func TestLoad_AcceptsKnownEnvs(t *testing.T) {
 	t.Setenv("O1_DATABASE_URL", "postgres://localhost/o1")
 	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("O1_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_RESEND_API_KEY", "re_test_key")
 	for _, env := range []string{"development", "test", "production"} {
 		t.Setenv("O1_ENV", env)
 		if _, err := config.Load(); err != nil {
@@ -242,6 +244,7 @@ func TestObservabilityConfig_ReadsEnv(t *testing.T) {
 	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("O1_ENV", "production")
 	t.Setenv("O1_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_RESEND_API_KEY", "re_test_key")
 	t.Setenv("O1_API_HEALTH_ADDR", ":9090")
 	t.Setenv("O1_OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
 	t.Setenv("O1_OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer token,X-Scope=o1")
@@ -354,6 +357,202 @@ func TestLoad_AuthRateOverrides(t *testing.T) {
 	}
 	if cfg.AuthRateBurst != 60 {
 		t.Errorf("AuthRateBurst = %d, want 60", cfg.AuthRateBurst)
+	}
+}
+
+// setEmailEnv applies a minimal valid environment for email configuration
+// tests. Individual tests override the variables they exercise.
+func setEmailEnv(t *testing.T, envName string) {
+	t.Helper()
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_ENV", envName)
+	t.Setenv("O1_EMAIL_PROVIDER", "")
+	t.Setenv("O1_SMTP_ADDR", "localhost:1025")
+	t.Setenv("O1_EMAIL_FROM", "o1@example.com")
+	t.Setenv("O1_EMAIL_REPLY_TO", "")
+	t.Setenv("O1_RESEND_API_KEY", "")
+	t.Setenv("O1_RESEND_API_URL", "")
+	t.Setenv("O1_RESEND_RPS", "")
+	t.Setenv("O1_RESEND_BURST", "")
+}
+
+func TestEmailProvider_ResolvesDefaults(t *testing.T) {
+	for _, envName := range []string{"development", "test"} {
+		t.Run(envName, func(t *testing.T) {
+			setEmailEnv(t, envName)
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.EmailProvider != "mailpit" {
+				t.Fatalf("EmailProvider = %q, want mailpit", cfg.EmailProvider)
+			}
+		})
+	}
+
+	t.Run("production", func(t *testing.T) {
+		setEmailEnv(t, "production")
+		t.Setenv("O1_RESEND_API_KEY", "re_test_key")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.EmailProvider != "resend" {
+			t.Fatalf("EmailProvider = %q, want resend", cfg.EmailProvider)
+		}
+	})
+}
+
+func TestEmailProvider_ExplicitResendOutsideProduction(t *testing.T) {
+	setEmailEnv(t, "development")
+	t.Setenv("O1_EMAIL_PROVIDER", "resend")
+	t.Setenv("O1_RESEND_API_KEY", "re_test_key")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.EmailProvider != "resend" {
+		t.Fatalf("EmailProvider = %q, want resend", cfg.EmailProvider)
+	}
+}
+
+func TestEmailProvider_RejectsMailpitInProduction(t *testing.T) {
+	setEmailEnv(t, "production")
+	t.Setenv("O1_EMAIL_PROVIDER", "mailpit")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("Load() accepted mailpit in production")
+	}
+}
+
+func TestEmailProvider_RejectsResendWithoutKey(t *testing.T) {
+	setEmailEnv(t, "development")
+	t.Setenv("O1_EMAIL_PROVIDER", "resend")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("Load() accepted resend without O1_RESEND_API_KEY")
+	}
+}
+
+func TestEmailProvider_RejectsInvalidFrom(t *testing.T) {
+	setEmailEnv(t, "development")
+	t.Setenv("O1_EMAIL_PROVIDER", "resend")
+	t.Setenv("O1_RESEND_API_KEY", "re_super_secret")
+	t.Setenv("O1_EMAIL_FROM", "not-an-email")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() accepted a malformed O1_EMAIL_FROM")
+	}
+	if strings.Contains(err.Error(), "re_super_secret") {
+		t.Fatalf("error leaks the API key: %v", err)
+	}
+}
+
+func TestEmailProvider_RejectsInvalidReplyTo(t *testing.T) {
+	setEmailEnv(t, "development")
+	t.Setenv("O1_EMAIL_REPLY_TO", "not-an-email")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("Load() accepted a malformed O1_EMAIL_REPLY_TO")
+	}
+}
+
+func TestEmailProvider_AcceptsDisplayNameReplyTo(t *testing.T) {
+	setEmailEnv(t, "development")
+	t.Setenv("O1_EMAIL_REPLY_TO", "O1 Support <support@example.com>")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.EmailReplyTo != "O1 Support <support@example.com>" {
+		t.Fatalf("EmailReplyTo = %q", cfg.EmailReplyTo)
+	}
+}
+
+func TestEmailProvider_RejectsUnknownProvider(t *testing.T) {
+	for _, provider := range []string{"sendgrid", "smtp", "resendd"} {
+		t.Run(provider, func(t *testing.T) {
+			setEmailEnv(t, "development")
+			t.Setenv("O1_EMAIL_PROVIDER", provider)
+			t.Setenv("O1_RESEND_API_KEY", "re_test_key")
+
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load() accepted O1_EMAIL_PROVIDER=%q", provider)
+			}
+		})
+	}
+}
+
+func TestEmailProvider_ResendDefaults(t *testing.T) {
+	setEmailEnv(t, "development")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ResendAPIURL != "https://api.resend.com" {
+		t.Errorf("ResendAPIURL = %q, want https://api.resend.com", cfg.ResendAPIURL)
+	}
+	if cfg.ResendRPS != 2 {
+		t.Errorf("ResendRPS = %v, want 2", cfg.ResendRPS)
+	}
+	if cfg.ResendBurst != 2 {
+		t.Errorf("ResendBurst = %d, want 2", cfg.ResendBurst)
+	}
+	if cfg.EmailReplyTo != "" {
+		t.Errorf("EmailReplyTo = %q, want empty", cfg.EmailReplyTo)
+	}
+}
+
+func TestEmailProvider_ResendOverrides(t *testing.T) {
+	setEmailEnv(t, "development")
+	t.Setenv("O1_RESEND_API_URL", "https://resend.test")
+	t.Setenv("O1_RESEND_RPS", "5.5")
+	t.Setenv("O1_RESEND_BURST", "7")
+	t.Setenv("O1_EMAIL_REPLY_TO", "support@example.com")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ResendAPIURL != "https://resend.test" {
+		t.Errorf("ResendAPIURL = %q", cfg.ResendAPIURL)
+	}
+	if cfg.ResendRPS != 5.5 {
+		t.Errorf("ResendRPS = %v, want 5.5", cfg.ResendRPS)
+	}
+	if cfg.ResendBurst != 7 {
+		t.Errorf("ResendBurst = %d, want 7", cfg.ResendBurst)
+	}
+	if cfg.EmailReplyTo != "support@example.com" {
+		t.Errorf("EmailReplyTo = %q", cfg.EmailReplyTo)
+	}
+}
+
+func TestEmailProvider_RejectsInvalidResendLimits(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"O1_RESEND_RPS", "0"},
+		{"O1_RESEND_RPS", "-1"},
+		{"O1_RESEND_RPS", "NaN"},
+		{"O1_RESEND_RPS", "+Inf"},
+		{"O1_RESEND_RPS", "not-a-number"},
+		{"O1_RESEND_BURST", "0"},
+		{"O1_RESEND_BURST", "-1"},
+		{"O1_RESEND_BURST", "not-a-number"},
+	} {
+		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
+			setEmailEnv(t, "development")
+			t.Setenv(tc.name, tc.value)
+
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load() accepted %s=%s", tc.name, tc.value)
+			}
+		})
 	}
 }
 
