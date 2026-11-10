@@ -178,7 +178,7 @@ Fill in at minimum:
 
 Leave `O1_BOOTSTRAP_ADMIN_EMAIL` unset until the first account exists and is
 verified; the promotion runs only at process startup. See
-[Administrator bootstrap](#6-administrator-bootstrap).
+[Administrator bootstrap](#administrator-bootstrap).
 
 Check that Compose can resolve the file before building. Do not paste the output
 anywhere: it contains secrets.
@@ -213,9 +213,10 @@ docker compose --env-file deploy/production/.env \
   -f deploy/production/compose.build.yaml ps
 ```
 
-The base `compose.yaml` pulls digest-pinned images and has no build contexts;
-`compose.build.yaml` adds them and pins the local image names. A plain
-`up -d --build` without the override therefore fails on a fresh checkout.
+The base `compose.yaml` pulls digest-pinned images when an `images.env` is
+supplied, and it has no build contexts; `compose.build.yaml` adds them and pins
+the local image names. A plain `up -d --build` without the override therefore
+fails on a fresh checkout.
 
 ### Registry images
 

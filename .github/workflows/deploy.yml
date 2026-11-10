@@ -47,7 +47,11 @@ jobs:
           cp deploy/observability/alloy.alloy bundle/deploy/observability/
           printf 'O1_BACKEND_IMAGE=%s/o1-backend@%s\nO1_WEB_IMAGE=%s/o1-web@%s\n' \
             "$registry" "$backend_digest" "$registry" "$web_digest" > bundle/images.env
-          echo "RELEASE_ID=$release_id" >> "$GITHUB_ENV"
+          {
+            echo "BACKEND_IMAGE=$registry/o1-backend@$backend_digest"
+            echo "WEB_IMAGE=$registry/o1-web@$web_digest"
+            echo "RELEASE_ID=$release_id"
+          } >> "$GITHUB_ENV"
       - uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -77,4 +81,6 @@ jobs:
             echo "- environment: \`${{ inputs.environment }}\`"
             echo "- version: \`${{ inputs.version }}\`"
             echo "- release: \`$RELEASE_ID\`"
+            echo "- backend: \`$BACKEND_IMAGE\`"
+            echo "- web: \`$WEB_IMAGE\`"
           } >> "$GITHUB_STEP_SUMMARY"

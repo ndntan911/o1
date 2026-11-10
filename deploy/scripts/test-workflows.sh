@@ -109,6 +109,12 @@ for tag in '$VERSION' 'sha-$SHORT_SHA' '$MAJOR_MINOR'; do
 done
 check "release tags use version, sha-<12> and major.minor"
 
+grep -Fq 'base=${no_v%%-*}' "$release_file" ||
+  fail "$release_file does not strip the pre-release suffix before deriving X.Y"
+grep -Fq 'MAJOR_MINOR=${base%.*}' "$release_file" ||
+  fail "$release_file does not derive MAJOR_MINOR from the base version"
+check "release derives X.Y from the base version, ignoring a pre-release suffix"
+
 grep -Fq "tr '[:upper:]' '[:lower:]'" "$release_file" ||
   fail "$release_file does not lowercase the repository owner for GHCR"
 check "release lowercases the repository owner for GHCR"
@@ -202,6 +208,16 @@ for image in o1-backend o1-web; do
     fail "$deploy_file does not pin $image by digest in images.env"
 done
 check "$deploy_file pins both images by resolved digest"
+
+grep -Fq 'BACKEND_IMAGE=$registry/o1-backend@$backend_digest' "$deploy_file" ||
+  fail "$deploy_file does not export the resolved backend image ref"
+grep -Fq 'WEB_IMAGE=$registry/o1-web@$web_digest' "$deploy_file" ||
+  fail "$deploy_file does not export the resolved web image ref"
+grep -Fq 'echo "- backend: \`$BACKEND_IMAGE\`"' "$deploy_file" ||
+  fail "$deploy_file summary does not include the backend image ref"
+grep -Fq 'echo "- web: \`$WEB_IMAGE\`"' "$deploy_file" ||
+  fail "$deploy_file summary does not include the web image ref"
+check "$deploy_file summarizes both deployed image refs"
 
 for artifact in 'deploy/production/compose.yaml' 'deploy/observability/alloy.alloy'; do
   grep -Fq "cp ${artifact} " "$deploy_file" ||

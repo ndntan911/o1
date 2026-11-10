@@ -4,3 +4,5 @@
 node_modules/
 .env.*
 !.env.example
+# Real host image refs are written per deploy; never commit them.
+deploy/production/images.env

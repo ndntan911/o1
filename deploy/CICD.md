@@ -49,9 +49,10 @@ pull request ──► CI checks ──► merge to main
   requested tag, resolves the published image digests, uploads a release
   bundle, and runs the host's deploy script over SSH. It never builds images.
 - Published tags per image: `vX.Y.Z` (release), `sha-<12-char-commit>`
-  (immutable reference for pinning and debugging), and `X.Y` (convenience only,
-  never deployed). There is no `latest`. Images are `linux/amd64` with an SBOM
-  and provenance. Deploys pin images by `@sha256:` digest.
+  (immutable reference for pinning and debugging), and `X.Y` (derived from the
+  base version, so `v1.2.3-rc.1` publishes `1.2`; convenience only, never
+  deployed). There is no `latest`. Images are `linux/amd64` with an SBOM and
+  provenance. Deploys pin images by `@sha256:` digest.
 - The only supported deploy path is the Actions job. Running `deploy.sh` by
   hand on the host is recovery, not a release process.
 
@@ -231,8 +232,12 @@ Each environment needs its own host: staging and production both bind `80` and
      state/deploy.lock
    ```
 
-   Bootstrap does not start the stack. It validates the Compose file with
-   placeholder digest refs and never persists them.
+   Bootstrap creates the `bin`, `releases`, `incoming`, and `state`
+   directories. `state/deploy.lock` appears when the first deploy or rollback
+   takes the lock, and `incoming/<version>-<sha>/` appears when the deploy
+   workflow uploads a bundle; bootstrap creates neither. Bootstrap does not
+   start the stack. It validates the Compose file with placeholder digest refs
+   and never persists them.
 
 5. Edit `/opt/o1/.env`. It is operator-managed, lives outside the release
    directories, and is never written by CI. Bootstrap creates it from
@@ -367,10 +372,14 @@ docker compose --env-file /opt/o1/.env \
 /opt/o1/bin/deploy.sh /opt/o1/incoming/<release-id>
 ```
 
-`deploy.sh` consumes the incoming directory by moving it to
-`releases/<release-id>`. After a failed deploy the bundle is already under
-`releases/`, and the script refuses an existing release id. To retry the same
-bundle, copy it into a fresh incoming directory first:
+`deploy.sh` validates the bundle in `incoming/` and only then moves it to
+`releases/<release-id>`. A bundle that fails validation (missing file or key, a
+non-digest image ref, invalid Compose configuration) stays in `incoming/` and
+can be corrected and re-run in place. A duplicate release id is also rejected
+before the move; use a new incoming directory name, or activate the existing
+release with `rollback.sh`. Failures after the move (GHCR login, pull, compose
+up, or health) leave the bundle under `releases/`, and the script refuses an
+existing release id on a re-run; copy it into a fresh incoming directory first:
 
 ```sh
 cp -a /opt/o1/releases/<release-id> /opt/o1/incoming/<release-id>-retry
@@ -380,10 +389,10 @@ cp -a /opt/o1/releases/<release-id> /opt/o1/incoming/<release-id>-retry
 To activate a bundle that is already in `releases/` after fixing the cause,
 use `rollback.sh <release-id>` instead.
 
-A failed **first** deploy has no previous release. `deploy.sh` reports that
-there is nothing to roll back to, leaves the new release active with its
-containers in place for inspection, and exits non-zero. Fix the host or the
-bundle, then retry with a fresh incoming copy as above.
+A failed **first** deploy that reached the release switch has no previous
+release. `deploy.sh` reports that there is nothing to roll back to, leaves the
+new release active with its containers in place for inspection, and exits
+non-zero. Fix the host or the bundle, then retry from a fresh incoming copy.
 
 `deploy.sh` reads `O1_DOMAIN` from `/opt/o1/.env`, so the health check always
 targets the host's domain; CI never passes it. A missing `.env`, missing
@@ -520,8 +529,10 @@ cd ../web && npm test -- --run
 
 The script tests use fake `docker`, `curl`, and `flock` binaries on `PATH` to
 prove activation, readiness polling, rollback on failed login/pull/up/health,
-first-deploy behavior, lock exclusion, and dry-run. The Compose tests prove
-digest refs are required and the build override still validates.
+first-deploy behavior, lock exclusion, and dry-run. The Compose tests prove the
+fixture digests propagate into the rendered config and the build override still
+validates. Digest enforcement is not a Compose check: `deploy.sh` and
+`rollback.sh` reject non-digest refs, and `test-deploy.sh` covers that.
 
 ### Live acceptance checklist
 

@@ -34,11 +34,14 @@ jobs:
         run: |
           owner=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           no_v=${GITHUB_REF_NAME#v}
+          # Strip a pre-release suffix before deriving X.Y, so
+          # v1.2.3-rc.1 publishes 1.2 rather than 1.2.3-rc.
+          base=${no_v%%-*}
           {
             echo "REGISTRY=ghcr.io/$owner"
             echo "VERSION=${GITHUB_REF_NAME}"
             echo "SHORT_SHA=${GITHUB_SHA::12}"
-            echo "MAJOR_MINOR=${no_v%.*}"
+            echo "MAJOR_MINOR=${base%.*}"
           } >> "$GITHUB_ENV"
 
       - uses: aquasecurity/setup-trivy@v0.3.1

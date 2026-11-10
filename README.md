@@ -447,10 +447,11 @@ docker compose --env-file deploy/production/.env \
   -f deploy/production/compose.build.yaml up -d --build
 ```
 
-The base `compose.yaml` pulls digest-pinned registry images. Any manual or
-offline deploy from a checkout also passes `compose.build.yaml`, which adds the
-`build:` contexts and local image names; `up -d --build` without it fails on a
-fresh checkout.
+The base `compose.yaml` pulls digest-pinned registry images when an
+`images.env` supplies them; without it the local image defaults apply. Any
+manual or offline deploy from a checkout also passes `compose.build.yaml`,
+which adds the `build:` contexts and local image names; `up -d --build` without
+it fails on a fresh checkout.
 
 `O1_DOMAIN` is the public hostname. The stack derives `O1_APP_BASE_URL` and
 `O1_ALLOWED_ORIGINS` from it and sets the web container's `O1_SITE_ADDRESS` to
