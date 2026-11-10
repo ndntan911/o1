@@ -31,7 +31,8 @@ fi
 check "base compose file has no build contexts"
 
 # Registry config uses the fixture digests and the default project name.
-docker compose --env-file "$env_file" \
+env -u O1_COMPOSE_PROJECT -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  docker compose --env-file "$env_file" \
   --env-file "$images_file" \
   -f "$compose_file" config --format json \
   | python3 -c '
@@ -46,14 +47,17 @@ assert c["services"]["web"]["image"].startswith("ghcr.io/example/o1-web@sha256:"
 check "registry images come from the fixture and the default project name is used"
 
 # Project name is overridable.
-O1_COMPOSE_PROJECT=o1-staging docker compose --env-file "$env_file" \
+O1_COMPOSE_PROJECT=o1-staging \
+  env -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  docker compose --env-file "$env_file" \
   --env-file "$images_file" \
   -f "$compose_file" config --format json \
   | python3 -c 'import json,sys; assert json.load(sys.stdin)["name"] == "o1-staging"'
 check "O1_COMPOSE_PROJECT overrides the project name"
 
 # Build override adds contexts and keeps local image names.
-docker compose --env-file "$env_file" \
+env -u O1_COMPOSE_PROJECT -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  docker compose --env-file "$env_file" \
   -f "$compose_file" -f "$build_file" \
   config --format json \
   | python3 -c '
