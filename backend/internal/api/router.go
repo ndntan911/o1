@@ -51,15 +51,35 @@ type Dependencies struct {
 	Tracer            *observability.Tracer
 }
 
-// authRatePerSecond and authRateBurst implement 10 requests per minute for
-// the credential-handling endpoints.
-const (
-	authRatePerSecond = 10.0 / 60.0
-	authRateBurst     = 10
-)
-
 // maxBodyBytes limits the size of request bodies (1 MiB).
 const maxBodyBytes int64 = 1 << 20
+
+// defaultAuthRatePerMinute and defaultAuthRateBurst mirror the config
+// defaults. They only apply when a Config was built without Load (for example
+// in router tests), since Load rejects non-positive values.
+const (
+	defaultAuthRatePerMinute = 10
+	defaultAuthRateBurst     = 10
+)
+
+// authRPS converts the configured per-minute auth rate into the requests per
+// second value the token bucket expects.
+func authRPS(cfg config.Config) float64 {
+	perMinute := cfg.AuthRatePerMinute
+	if perMinute < 1 {
+		perMinute = defaultAuthRatePerMinute
+	}
+	return float64(perMinute) / 60.0
+}
+
+// authBurst returns the configured auth burst, falling back to the default
+// when the Config was not built by Load.
+func authBurst(cfg config.Config) int {
+	if cfg.AuthRateBurst < 1 {
+		return defaultAuthRateBurst
+	}
+	return cfg.AuthRateBurst
+}
 
 type statusRecorder struct {
 	http.ResponseWriter
@@ -251,7 +271,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	withKeyAuth := func(next http.Handler) http.Handler {
 		return requireAuth(keyLimiter(next))
 	}
-	authLimiter := httpx.RateLimit(authRatePerSecond, authRateBurst, true)
+	authLimiter := httpx.RateLimit(authRPS(deps.Config), authBurst(deps.Config), true)
 
 	mux.Handle("POST /api/v1/auth/register", authLimiter(http.HandlerFunc(auth.RegisterHandler(authSvc))))
 	mux.Handle("POST /api/v1/auth/verify-email", authLimiter(http.HandlerFunc(auth.VerifyEmailHandler(authSvc))))

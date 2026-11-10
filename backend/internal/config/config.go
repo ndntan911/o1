@@ -31,6 +31,12 @@ type Config struct {
 	EmailFrom            string
 	ResendAPIKey         string
 
+	// AuthRatePerMinute and AuthRateBurst configure the per-IP token bucket
+	// guarding the credential-handling auth endpoints. Compose raises them
+	// for local testing; production keeps the 10/10 defaults.
+	AuthRatePerMinute int
+	AuthRateBurst     int
+
 	MonitorMinInterval time.Duration
 	MonitorMaxInterval time.Duration
 	MonitorCreateLimit int
@@ -266,6 +272,12 @@ func Load() (Config, error) {
 	if cfg.MonitorCreateLimit, err = envInt("O1_MONITOR_CREATE_LIMIT", 10); err != nil {
 		return cfg, err
 	}
+	if cfg.AuthRatePerMinute, err = envInt("O1_AUTH_RATE_PER_MINUTE", 10); err != nil {
+		return cfg, err
+	}
+	if cfg.AuthRateBurst, err = envInt("O1_AUTH_RATE_BURST", 10); err != nil {
+		return cfg, err
+	}
 	if cfg.ProbeAllowedPorts, err = envPorts("O1_PROBE_ALLOWED_PORTS", []int{80, 443}); err != nil {
 		return cfg, err
 	}
@@ -331,6 +343,12 @@ func (cfg Config) validate() error {
 	}
 	if cfg.MonitorCreateLimit <= 0 {
 		return fmt.Errorf("invalid O1_MONITOR_CREATE_LIMIT: must be positive")
+	}
+	if cfg.AuthRatePerMinute < 1 {
+		return fmt.Errorf("invalid O1_AUTH_RATE_PER_MINUTE: must be at least 1, got %d", cfg.AuthRatePerMinute)
+	}
+	if cfg.AuthRateBurst < 1 {
+		return fmt.Errorf("invalid O1_AUTH_RATE_BURST: must be at least 1, got %d", cfg.AuthRateBurst)
 	}
 	if cfg.ProbeMaxRedirects < 0 || cfg.ProbeMaxRedirects > 10 {
 		return fmt.Errorf("invalid O1_PROBE_MAX_REDIRECTS: must be between 0 and 10")

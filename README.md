@@ -447,6 +447,11 @@ Common optional settings:
   `24h`.
 - `O1_MONITOR_CREATE_LIMIT` — monitor creations per workspace per hour,
   default `10`.
+- `O1_AUTH_RATE_PER_MINUTE` / `O1_AUTH_RATE_BURST` — per-IP rate limit for
+  credential-handling auth endpoints (login, TOTP, registration, password
+  reset), default `10` per minute with a burst of `10`. `compose.yaml` sets
+  `120`/`60` for development and E2E so the signup and 2FA test flows are not
+  throttled; production should leave both unset to keep the defaults.
 - `O1_PROBE_ALLOWED_PORTS` — comma-separated ports, default `80,443`.
 - `O1_PROBE_GLOBAL_RPS` — global probe rate limit, default `50`.
 - `O1_SCHEDULER_TICK` / `O1_SCHEDULER_BATCH` — default `10s` / `500`.

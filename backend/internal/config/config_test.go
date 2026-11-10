@@ -320,3 +320,54 @@ func TestLoad_UsesExplicitAllowedOrigins(t *testing.T) {
 		t.Fatalf("allowed origins = %v, want %v", cfg.AllowedOrigins, want)
 	}
 }
+
+func TestLoad_AuthRateDefaults(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_AUTH_RATE_PER_MINUTE", "")
+	t.Setenv("O1_AUTH_RATE_BURST", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AuthRatePerMinute != 10 {
+		t.Errorf("AuthRatePerMinute = %d, want 10", cfg.AuthRatePerMinute)
+	}
+	if cfg.AuthRateBurst != 10 {
+		t.Errorf("AuthRateBurst = %d, want 10", cfg.AuthRateBurst)
+	}
+}
+
+func TestLoad_AuthRateOverrides(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_AUTH_RATE_PER_MINUTE", "120")
+	t.Setenv("O1_AUTH_RATE_BURST", "60")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AuthRatePerMinute != 120 {
+		t.Errorf("AuthRatePerMinute = %d, want 120", cfg.AuthRatePerMinute)
+	}
+	if cfg.AuthRateBurst != 60 {
+		t.Errorf("AuthRateBurst = %d, want 60", cfg.AuthRateBurst)
+	}
+}
+
+func TestLoad_RejectsInvalidAuthRate(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	for _, variable := range []string{"O1_AUTH_RATE_PER_MINUTE", "O1_AUTH_RATE_BURST"} {
+		for _, value := range []string{"0", "-1", "not-a-number"} {
+			t.Setenv("O1_AUTH_RATE_PER_MINUTE", "")
+			t.Setenv("O1_AUTH_RATE_BURST", "")
+			t.Setenv(variable, value)
+			if _, err := config.Load(); err == nil {
+				t.Errorf("Load() accepted %s=%s", variable, value)
+			}
+		}
+	}
+}

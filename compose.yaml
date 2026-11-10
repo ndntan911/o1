@@ -51,6 +51,11 @@ services:
       O1_SENTRY_DSN: ${O1_SENTRY_DSN:-}
       O1_SENTRY_ENVIRONMENT: ${O1_SENTRY_ENVIRONMENT:-}
       O1_RELEASE: ${O1_RELEASE:-dev}
+      # The credential endpoints are rate limited per client IP. Raise the
+      # default 10/min (burst 10) so local signup, 2FA, and E2E flows are not
+      # throttled. Production should leave these unset to keep the defaults.
+      O1_AUTH_RATE_PER_MINUTE: ${O1_AUTH_RATE_PER_MINUTE:-120}
+      O1_AUTH_RATE_BURST: ${O1_AUTH_RATE_BURST:-60}
     ports:
       - "8080:8080"
 
