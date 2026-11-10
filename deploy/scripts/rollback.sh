@@ -143,20 +143,6 @@ if ! compose "$target_dir" config --quiet; then
   exit 1
 fi
 
-old_previous=$(readlink "$O1_ROOT/previous" 2>/dev/null || true)
-
-link "$target_rel" "$O1_ROOT/current"
-link "$current_target" "$O1_ROOT/previous"
-
-ghcr_user=$(env_get "$O1_ROOT/.env" GHCR_USER)
-ghcr_token=$(env_get "$O1_ROOT/.env" GHCR_READ_TOKEN)
-if [[ -n $ghcr_user && -n $ghcr_token ]]; then
-  printf '%s' "$ghcr_token" | docker login ghcr.io -u "$ghcr_user" --password-stdin >/dev/null
-fi
-
-compose "$target_dir" pull api web
-compose "$target_dir" up -d --remove-orphans
-
 health_timeout=${DEPLOY_HEALTH_TIMEOUT:-}
 if [[ -z $health_timeout ]]; then
   health_timeout=$(env_get "$O1_ROOT/.env" DEPLOY_HEALTH_TIMEOUT)
@@ -164,8 +150,12 @@ fi
 health_timeout=${health_timeout:-300}
 health_url="https://$domain/readyz"
 
-if ! "$script_dir/healthcheck.sh" "$health_url" "$health_timeout"; then
-  echo "rollback: target release $target_rel is unhealthy; recent logs:" >&2
+old_previous=$(readlink "$O1_ROOT/previous" 2>/dev/null || true)
+
+# Single recovery path for any post-switch failure: GHCR login, pull, up, or
+# health. Restores the release that was current before this rollback and exits.
+recover() {
+  echo "rollback: release $target_rel failed; recent logs:" >&2
   compose "$target_dir" logs --tail=100 || true
 
   link "$current_target" "$O1_ROOT/current"
@@ -181,6 +171,32 @@ if ! "$script_dir/healthcheck.sh" "$health_url" "$health_timeout"; then
     echo "rollback: restored release $current_target is also unhealthy" >&2
   fi
   exit 1
+}
+
+link "$target_rel" "$O1_ROOT/current"
+link "$current_target" "$O1_ROOT/previous"
+
+ghcr_user=$(env_get "$O1_ROOT/.env" GHCR_USER)
+ghcr_token=$(env_get "$O1_ROOT/.env" GHCR_READ_TOKEN)
+if [[ -n $ghcr_user && -n $ghcr_token ]]; then
+  if ! printf '%s' "$ghcr_token" | docker login ghcr.io -u "$ghcr_user" --password-stdin >/dev/null; then
+    echo "rollback: GHCR login failed" >&2
+    recover
+  fi
+fi
+
+if ! compose "$target_dir" pull api web; then
+  echo "rollback: image pull failed" >&2
+  recover
+fi
+if ! compose "$target_dir" up -d --remove-orphans; then
+  echo "rollback: compose up failed" >&2
+  recover
+fi
+
+if ! "$script_dir/healthcheck.sh" "$health_url" "$health_timeout"; then
+  echo "rollback: target release $target_rel is unhealthy" >&2
+  recover
 fi
 
 compose "$target_dir" ps

@@ -154,24 +154,11 @@ fi
 old_current=$(readlink "$O1_ROOT/current" 2>/dev/null || true)
 old_previous=$(readlink "$O1_ROOT/previous" 2>/dev/null || true)
 
-mv "$incoming" "$target"
-
-if [[ -n $old_current ]]; then
-  link "$old_current" "$O1_ROOT/previous"
-fi
-link "$target_rel" "$O1_ROOT/current"
-
-ghcr_user=$(env_get "$O1_ROOT/.env" GHCR_USER)
-ghcr_token=$(env_get "$O1_ROOT/.env" GHCR_READ_TOKEN)
-if [[ -n $ghcr_user && -n $ghcr_token ]]; then
-  printf '%s' "$ghcr_token" | docker login ghcr.io -u "$ghcr_user" --password-stdin >/dev/null
-fi
-
-compose "$target" pull api web
-compose "$target" up -d --remove-orphans
-
-if ! "$script_dir/healthcheck.sh" "$health_url" "$health_timeout"; then
-  echo "deploy: release $id is unhealthy; recent logs:" >&2
+# Single recovery path for any post-switch failure: GHCR login, pull, up, or
+# health. Restores the release that was current before this deploy, or leaves a
+# first deploy running for inspection. Always exits 1.
+recover() {
+  echo "deploy: release $id failed; recent logs:" >&2
   compose "$target" logs --tail=100 || true
 
   if [[ -n $old_current ]]; then
@@ -196,6 +183,36 @@ if ! "$script_dir/healthcheck.sh" "$health_url" "$health_timeout"; then
     echo "deploy: first deploy has no previous release to roll back to; containers left running for inspection" >&2
   fi
   exit 1
+}
+
+mv "$incoming" "$target"
+
+if [[ -n $old_current ]]; then
+  link "$old_current" "$O1_ROOT/previous"
+fi
+link "$target_rel" "$O1_ROOT/current"
+
+ghcr_user=$(env_get "$O1_ROOT/.env" GHCR_USER)
+ghcr_token=$(env_get "$O1_ROOT/.env" GHCR_READ_TOKEN)
+if [[ -n $ghcr_user && -n $ghcr_token ]]; then
+  if ! printf '%s' "$ghcr_token" | docker login ghcr.io -u "$ghcr_user" --password-stdin >/dev/null; then
+    echo "deploy: GHCR login failed" >&2
+    recover
+  fi
+fi
+
+if ! compose "$target" pull api web; then
+  echo "deploy: image pull failed" >&2
+  recover
+fi
+if ! compose "$target" up -d --remove-orphans; then
+  echo "deploy: compose up failed" >&2
+  recover
+fi
+
+if ! "$script_dir/healthcheck.sh" "$health_url" "$health_timeout"; then
+  echo "deploy: release $id is unhealthy" >&2
+  recover
 fi
 
 compose "$target" ps

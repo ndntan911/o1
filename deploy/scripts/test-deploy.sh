@@ -26,14 +26,21 @@ printf 'docker %s\n' "$*" >>"$FAKE_DIR/docker.log"
 
 if [[ ${1:-} == login ]]; then
   cat >"$FAKE_DIR/login.stdin"
-  exit 0
+  exit "${FAKE_LOGIN_EXIT:-0}"
 fi
 
 if [[ ${1:-} == compose ]]; then
   for arg in "$@"; do
     case $arg in
       pull) exit "${FAKE_PULL_EXIT:-0}" ;;
-      config|up|ps|logs|down) exit 0 ;;
+      up)
+        if [[ -n ${FAKE_UP_EXIT:-} && ! -e "$FAKE_DIR/up.failed" ]]; then
+          : >"$FAKE_DIR/up.failed"
+          exit "$FAKE_UP_EXIT"
+        fi
+        exit 0
+        ;;
+      config|ps|logs|down) exit 0 ;;
     esac
   done
 fi
@@ -106,9 +113,9 @@ assert_no_link() { # assert_no_link LINKPATH
 reset_root() {
   rm -rf "$ROOT/releases" "$ROOT/incoming"
   rm -f "$ROOT/current" "$ROOT/previous" "$ROOT/current.new" "$ROOT/previous.new"
-  rm -f "$FAKE_DIR/docker.log" "$FAKE_DIR/curl.log" "$FAKE_DIR/login.stdin"
+  rm -f "$FAKE_DIR/docker.log" "$FAKE_DIR/curl.log" "$FAKE_DIR/login.stdin" "$FAKE_DIR/up.failed"
   mkdir -p "$ROOT/releases" "$ROOT/incoming"
-  unset FAKE_CURL_EXIT FAKE_PULL_EXIT FAKE_FLOCK_EXIT DEPLOY_HEALTH_TIMEOUT
+  unset FAKE_CURL_EXIT FAKE_PULL_EXIT FAKE_UP_EXIT FAKE_LOGIN_EXIT FAKE_FLOCK_EXIT DEPLOY_HEALTH_TIMEOUT
 }
 
 HEX64="$(printf 'a%.0s' {1..64})"
@@ -232,7 +239,56 @@ assert_link "$ROOT/current" releases/old
 [[ ! -e "$ROOT/releases/release-new" ]] || fail "deploy: lock contention activated the release"
 pass "deploy: lock contention exits 3 without touching state"
 
-# --- 8. rollback -----------------------------------------------------------
+# --- 8. pull failure uses the recovery path -------------------------------
+
+reset_root
+seed_release old
+ln -s releases/old "$ROOT/current"
+seed_incoming release-new
+export DEPLOY_HEALTH_TIMEOUT=0
+export FAKE_PULL_EXIT=1
+run_script bash deploy/scripts/deploy.sh "$ROOT/incoming/release-new"
+[[ $STATUS -eq 1 ]] || fail "deploy: pull failure exit $STATUS, expected 1"
+assert_link "$ROOT/current" releases/old
+grep -q 'releases/old/.* up ' "$FAKE_DIR/docker.log" \
+  || fail "deploy: pull failure did not bring the previous release up"
+pass "deploy: pull failure restores and re-ups the previous release"
+
+# --- 9. compose up failure uses the recovery path -------------------------
+
+reset_root
+seed_release old
+ln -s releases/old "$ROOT/current"
+seed_incoming release-new
+export DEPLOY_HEALTH_TIMEOUT=0
+export FAKE_UP_EXIT=1
+run_script bash deploy/scripts/deploy.sh "$ROOT/incoming/release-new"
+[[ $STATUS -eq 1 ]] || fail "deploy: up failure exit $STATUS, expected 1"
+assert_link "$ROOT/current" releases/old
+grep -q 'releases/old/.* up ' "$FAKE_DIR/docker.log" \
+  || fail "deploy: up failure did not bring the previous release up"
+ups="$(grep -c ' compose .* up ' "$FAKE_DIR/docker.log" || true)"
+[[ $ups -eq 2 ]] || fail "deploy: up failure expected two compose up calls, saw $ups"
+pass "deploy: compose up failure restores and re-ups the previous release"
+
+# --- 10. GHCR login failure uses the recovery path ------------------------
+
+reset_root
+seed_release old
+ln -s releases/old "$ROOT/current"
+seed_incoming release-new
+printf 'O1_DOMAIN=o1.example.com\nGHCR_USER=deploy-bot\nGHCR_READ_TOKEN=super-secret\n' >"$ROOT/.env"
+chmod 600 "$ROOT/.env"
+export DEPLOY_HEALTH_TIMEOUT=0
+export FAKE_LOGIN_EXIT=1
+run_script bash deploy/scripts/deploy.sh "$ROOT/incoming/release-new"
+[[ $STATUS -eq 1 ]] || fail "deploy: login failure exit $STATUS, expected 1"
+assert_link "$ROOT/current" releases/old
+grep -q 'releases/old/.* up ' "$FAKE_DIR/docker.log" \
+  || fail "deploy: login failure did not bring the previous release up"
+pass "deploy: login failure restores and re-ups the previous release"
+
+# --- 11. rollback ----------------------------------------------------------
 
 reset_root
 seed_release old
@@ -246,7 +302,7 @@ assert_link "$ROOT/current" releases/old
 assert_link "$ROOT/previous" releases/new
 pass "rollback: swaps current and previous"
 
-# --- 9. credential hygiene -------------------------------------------------
+# --- 12. credential hygiene -------------------------------------------------
 
 reset_root
 seed_release old
