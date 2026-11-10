@@ -31,7 +31,7 @@ func newSchedulerForTest(t *testing.T, e *monitorAPIEnv) *scheduler.Scheduler {
 	if err != nil {
 		t.Fatalf("new river client: %v", err)
 	}
-	return scheduler.New(e.pool, sqlc.New(e.pool), client, e.cfg, logger)
+	return scheduler.New(e.pool, sqlc.New(e.pool), client, e.cfg, logger, nil)
 }
 
 type adminWorkspaceJSON struct {

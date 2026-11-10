@@ -69,9 +69,16 @@ func run() error {
 	limiter := probeLimiter(rt.Config.ProbeGlobalRPS)
 
 	q := sqlc.New(rt.Pool)
-	probeWorker := worker.NewProbeWorker(rt.Pool, q, box, prober, limiter, rt.Logger)
+	probeWorker := worker.NewProbeWorker(rt.Pool, q, box, prober, limiter, rt.Logger, obs.Metrics)
 	sender := email.NewMailpitSender(rt.Config.SMTPAddr, rt.Config.EmailFrom)
-	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, box, alerts.NewNotifier(guard, ""), rt.Config, rt.Logger)
+	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, box, alerts.NewNotifier(guard, ""), rt.Config, rt.Logger, obs.Metrics)
+
+	// Queue and incident gauges are shared across the environment, so they are
+	// refreshed by exactly one process: the worker. Other processes expose
+	// their own request, probe, and pool metrics only.
+	obs.Metrics.Register(observability.NewPoolCollector(rt.Pool))
+	go observability.NewQueueCollector(rt.Pool, obs.Metrics).Start(ctx)
+	go observability.NewIncidentCollector(rt.Pool, obs.Metrics).Start(ctx)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, probeWorker)

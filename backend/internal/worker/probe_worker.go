@@ -19,6 +19,7 @@ import (
 	"o1/internal/incidents"
 	"o1/internal/jobs"
 	"o1/internal/monitors"
+	"o1/internal/observability"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
 )
@@ -37,14 +38,15 @@ type ProbeWorker struct {
 	limiter  *rate.Limiter
 	logger   *slog.Logger
 	inserter incidents.JobInserter
+	metrics  *observability.Metrics
 }
 
-// NewProbeWorker builds a ProbeWorker.
-func NewProbeWorker(pool *pgxpool.Pool, q *sqlc.Queries, box *secretbox.Box, prober *probe.Prober, limiter *rate.Limiter, logger *slog.Logger) *ProbeWorker {
+// NewProbeWorker builds a ProbeWorker. metrics may be nil.
+func NewProbeWorker(pool *pgxpool.Pool, q *sqlc.Queries, box *secretbox.Box, prober *probe.Prober, limiter *rate.Limiter, logger *slog.Logger, metrics *observability.Metrics) *ProbeWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &ProbeWorker{pool: pool, q: q, box: box, prober: prober, limiter: limiter, logger: logger}
+	return &ProbeWorker{pool: pool, q: q, box: box, prober: prober, limiter: limiter, logger: logger, metrics: metrics}
 }
 
 // SetJobInserter wires the River client used to enqueue alert jobs. The client
@@ -68,11 +70,18 @@ func (w *ProbeWorker) Process(ctx context.Context, args jobs.ProbeArgs) error {
 	monitor, err := w.q.GetMonitorForProbe(ctx, args.MonitorID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			w.metrics.ObserveProbeSkipped("missing")
 			return nil
 		}
 		return fmt.Errorf("load monitor for probe: %w", err)
 	}
 	if monitor.SuspendedAt != nil || monitor.Paused {
+		switch {
+		case monitor.SuspendedAt != nil:
+			w.metrics.ObserveProbeSkipped("suspended")
+		default:
+			w.metrics.ObserveProbeSkipped("paused")
+		}
 		return nil
 	}
 
@@ -90,6 +99,7 @@ func (w *ProbeWorker) Process(ctx context.Context, args jobs.ProbeArgs) error {
 		return fmt.Errorf("check probe result: %w", err)
 	}
 	if exists {
+		w.metrics.ObserveProbeSkipped("replay")
 		return nil
 	}
 
@@ -125,15 +135,28 @@ func (w *ProbeWorker) Process(ctx context.Context, args jobs.ProbeArgs) error {
 		request.ContentType = *monitor.ContentType
 	}
 
+	start := time.Now()
 	result := w.prober.Probe(ctx, request)
+	duration := time.Since(start)
 	checkedAt := time.Now().UTC()
-	return w.record(ctx, monitor, scheduledFor, checkedAt, result)
+	recorded, err := w.record(ctx, monitor, scheduledFor, checkedAt, result)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		outcome := "down"
+		if result.Up {
+			outcome = "up"
+		}
+		w.metrics.ObserveProbe(outcome, duration)
+	}
+	return nil
 }
 
-func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProbeRow, scheduledFor, checkedAt time.Time, result probe.Result) error {
+func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProbeRow, scheduledFor, checkedAt time.Time, result probe.Result) (bool, error) {
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin probe result tx: %w", err)
+		return false, fmt.Errorf("begin probe result tx: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback(ctx)
@@ -147,9 +170,9 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 	if _, err := q.LockWorkspaceForProbe(ctx, monitor.WorkspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The workspace disappeared; the monitor is gone with it.
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("lock workspace for probe: %w", err)
+		return false, fmt.Errorf("lock workspace for probe: %w", err)
 	}
 
 	// Locking the state row serializes concurrent jobs for this monitor. The
@@ -159,24 +182,24 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The monitor was deleted after the probe ran.
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("lock monitor state: %w", err)
+		return false, fmt.Errorf("lock monitor state: %w", err)
 	}
 	exists, err := q.ProbeResultExists(ctx, sqlc.ProbeResultExistsParams{
 		MonitorID:    monitor.ID,
 		ScheduledFor: scheduledFor,
 	})
 	if err != nil {
-		return fmt.Errorf("check probe result: %w", err)
+		return false, fmt.Errorf("check probe result: %w", err)
 	}
 	if exists {
-		return nil
+		return false, nil
 	}
 
 	id, err := uuid.NewV7()
 	if err != nil {
-		return fmt.Errorf("new probe result id: %w", err)
+		return false, fmt.Errorf("new probe result id: %w", err)
 	}
 
 	status := "down"
@@ -207,18 +230,18 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		Error:        errorText,
 	})
 	if err != nil {
-		return fmt.Errorf("insert probe result: %w", err)
+		return false, fmt.Errorf("insert probe result: %w", err)
 	}
 	if rows == 0 {
 		// The result already exists; the state lock makes this unreachable in
 		// practice, but never advance counters twice.
-		return nil
+		return false, nil
 	}
 
 	// Audit an SSRF block even if a pause or suspension wins the race below.
 	if result.ErrorClass == "ssrf_blocked" {
 		if err := w.recordSSRFEvent(ctx, q, monitor, result); err != nil {
-			return err
+			return false, err
 		}
 	}
 
@@ -226,17 +249,17 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 	// result for audit but do not advance state or open/resolve an incident.
 	suspended, err := q.GetWorkspaceSuspended(ctx, monitor.WorkspaceID)
 	if err != nil {
-		return fmt.Errorf("check workspace suspended: %w", err)
+		return false, fmt.Errorf("check workspace suspended: %w", err)
 	}
 	paused, err := q.GetMonitorPaused(ctx, monitor.ID)
 	if err != nil {
-		return fmt.Errorf("check monitor paused: %w", err)
+		return false, fmt.Errorf("check monitor paused: %w", err)
 	}
 	if suspended || paused {
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit probe result: %w", err)
+			return false, fmt.Errorf("commit probe result: %w", err)
 		}
-		return nil
+		return true, nil
 	}
 
 	previous := state.Status
@@ -256,7 +279,7 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		LastLatencyMs:        &latency32,
 		LastError:            errorText,
 	}); err != nil {
-		return fmt.Errorf("update monitor state: %w", err)
+		return false, fmt.Errorf("update monitor state: %w", err)
 	}
 	if err := incidents.ApplyProbeTransition(ctx, tx, q, w.inserter, incidents.Transition{
 		WorkspaceID: monitor.WorkspaceID,
@@ -265,10 +288,10 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 		Next:        next.Status,
 		At:          checkedAt,
 	}); err != nil {
-		return fmt.Errorf("apply incident transition: %w", err)
+		return false, fmt.Errorf("apply incident transition: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit probe result: %w", err)
+		return false, fmt.Errorf("commit probe result: %w", err)
 	}
 
 	if previous != next.Status {
@@ -279,7 +302,7 @@ func (w *ProbeWorker) record(ctx context.Context, monitor sqlc.GetMonitorForProb
 			"new_status", next.Status,
 		)
 	}
-	return nil
+	return true, nil
 }
 
 // recordSSRFEvent persists a dial-time or redirect-time block in the same

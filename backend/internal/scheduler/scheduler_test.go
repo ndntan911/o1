@@ -4,6 +4,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
+	"o1/internal/observability"
 	"o1/internal/testutil"
 	"o1/internal/workspaces"
 )
@@ -23,6 +27,7 @@ type schedulerEnv struct {
 	pool    *pgxpool.Pool
 	sched   *Scheduler
 	ownerID uuid.UUID
+	metrics *observability.Metrics
 }
 
 func newSchedulerEnv(t *testing.T) *schedulerEnv {
@@ -40,12 +45,21 @@ func newSchedulerEnv(t *testing.T) *schedulerEnv {
 	}
 	q := sqlc.New(pool)
 	ownerID := testutil.CreateVerifiedUser(t, pool, "owner@example.com", "correct horse battery staple")
+	metrics := observability.NewMetrics("o1-scheduler", "test")
 	return &schedulerEnv{
 		t:       t,
 		pool:    pool,
-		sched:   New(pool, q, client, cfg, logger),
+		sched:   New(pool, q, client, cfg, logger, metrics),
 		ownerID: ownerID,
+		metrics: metrics,
 	}
+}
+
+func gatherSchedulerMetrics(t *testing.T, m *observability.Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
 }
 
 func (e *schedulerEnv) addMonitor(t *testing.T, name string, interval int, paused, suspended bool, next time.Time) uuid.UUID {
@@ -268,5 +282,25 @@ func TestTick_AdvancesScheduleByInterval(t *testing.T) {
 	want := fixed.Add(132 * time.Second)
 	if !next.Equal(want) {
 		t.Fatalf("next_check_at = %v, want %v", next, want)
+	}
+}
+
+func TestSchedulerMetrics_Tick(t *testing.T) {
+	env := newSchedulerEnv(t)
+	env.addMonitor(t, "due", 60, false, false, time.Now().Add(-time.Minute))
+
+	if _, err := env.sched.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	body := gatherSchedulerMetrics(t, env.metrics)
+	for _, want := range []string{
+		"o1_scheduler_ticks_total 1",
+		"o1_scheduler_enqueued_total 1",
+		"o1_scheduler_tick_duration_seconds_count 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scheduler metrics missing %s:\n%s", want, body)
+		}
 	}
 }

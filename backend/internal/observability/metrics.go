@@ -145,6 +145,15 @@ func (m *Metrics) Registry() *prometheus.Registry {
 	return m.registry
 }
 
+// Register adds additional collectors, such as the pgxpool collector, to the
+// registry. It is a no-op for a nil Metrics.
+func (m *Metrics) Register(cs ...prometheus.Collector) {
+	if m == nil {
+		return
+	}
+	m.registry.MustRegister(cs...)
+}
+
 // Handler returns the Prometheus exposition handler, or a 404 handler for a
 // nil Metrics.
 func (m *Metrics) Handler() http.Handler {

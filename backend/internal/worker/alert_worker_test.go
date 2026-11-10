@@ -92,7 +92,7 @@ func guardForURL(t *testing.T, rawURL string) *probe.Guard {
 
 func newAlertWorkerWith(env *workerEnv, sender email.Sender, box *secretbox.Box, notifier alerts.NotificationSender) *AlertWorker {
 	return NewAlertWorker(env.pool, sqlc.New(env.pool), sender, box, notifier,
-		testutil.TestConfig(env.t), env.logger())
+		testutil.TestConfig(env.t), env.logger(), env.metrics)
 }
 
 func newAlertWorkerForTest(env *workerEnv, sender email.Sender) *AlertWorker {
@@ -463,7 +463,7 @@ func TestAlertJobInsertWithRealWorkerConfig(t *testing.T) {
 	env := newWorkerEnv(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	alertWorker := NewAlertWorker(env.pool, sqlc.New(env.pool), &alertTestSender{}, alertTestBox(t),
-		alerts.NewNotifier(nil, ""), testutil.TestConfig(t), logger)
+		alerts.NewNotifier(nil, ""), testutil.TestConfig(t), logger, env.metrics)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, env.worker)
@@ -723,5 +723,70 @@ func TestAlertWorker_SlackDispatch(t *testing.T) {
 	}
 	if state := readDeliveryState(t, env, fixture.deliveryID); state.status != "sent" {
 		t.Fatalf("delivery = %+v, want sent", state)
+	}
+}
+
+func TestWorkerMetrics_AlertDeliveries(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+
+	sentMonitor, sentWorkspace := env.createMonitor(t, "https://example.com/health", 1, 1, false, false)
+	sentChannel := env.attachEmailChannel(t, sentMonitor, sentWorkspace, "one@example.com")
+	sentFixture := createAlertFixture(t, env, sentMonitor, sentWorkspace, sentChannel, "opened", 0, time.Now().UTC())
+	if err := newAlertWorkerForTest(env, &alertTestSender{}).
+		Work(ctx, alertJob(sentFixture.deliveryID, 1, 5)); err != nil {
+		t.Fatalf("sent Work: %v", err)
+	}
+
+	failedMonitor, failedWorkspace := env.createMonitor(t, "https://example.com/health", 1, 1, false, false)
+	failedChannel := env.attachEmailChannel(t, failedMonitor, failedWorkspace, "one@example.com")
+	failedFixture := createAlertFixture(t, env, failedMonitor, failedWorkspace, failedChannel, "opened", 0, time.Now().UTC())
+	if err := newAlertWorkerForTest(env, &alertTestSender{err: errors.New("smtp down")}).
+		Work(ctx, alertJob(failedFixture.deliveryID, 5, 5)); err != nil {
+		t.Fatalf("failed Work: %v", err)
+	}
+
+	skippedMonitor, skippedWorkspace := env.createMonitor(t, "https://example.com/health", 1, 1, false, false)
+	skippedChannel := env.attachEmailChannel(t, skippedMonitor, skippedWorkspace, "one@example.com")
+	skippedFixture := createAlertFixture(t, env, skippedMonitor, skippedWorkspace, skippedChannel, "opened", 0, time.Now().UTC())
+	if _, err := env.pool.Exec(ctx, `UPDATE alert_channels SET deleted_at = now() WHERE id = $1`, skippedChannel); err != nil {
+		t.Fatalf("soft delete channel: %v", err)
+	}
+	if err := newAlertWorkerForTest(env, &alertTestSender{}).
+		Work(ctx, alertJob(skippedFixture.deliveryID, 1, 5)); err != nil {
+		t.Fatalf("skipped Work: %v", err)
+	}
+
+	body := gatherWorkerMetrics(t, env.metrics)
+	for _, status := range []string{"sent", "failed", "skipped"} {
+		want := `o1_alert_deliveries_total{channel_kind="email",status="` + status + `"} 1`
+		if !strings.Contains(body, want) {
+			t.Errorf("alert metrics missing %s:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(body, `o1_alert_delivery_duration_seconds_count{channel_kind="email"} 3`) {
+		t.Errorf("alert duration histogram count missing:\n%s", body)
+	}
+}
+
+func TestBoundedChannelKind(t *testing.T) {
+	for _, kind := range []string{"email", "webhook", "slack", "telegram"} {
+		if got := boundedChannelKind(kind); got != kind {
+			t.Errorf("boundedChannelKind(%q) = %q, want %q", kind, got, kind)
+		}
+	}
+	for _, kind := range []string{"", "carrier-pigeon", "EMAIL"} {
+		if got := boundedChannelKind(kind); got != "other" {
+			t.Errorf("boundedChannelKind(%q) = %q, want other", kind, got)
+		}
+	}
+}
+
+func TestWorkerMetrics_NilAlertMetricsIsSafe(t *testing.T) {
+	env := newWorkerEnv(t)
+	worker := NewAlertWorker(env.pool, sqlc.New(env.pool), &alertTestSender{}, alertTestBox(t),
+		alerts.NewNotifier(nil, ""), testutil.TestConfig(t), env.logger(), nil)
+	if err := worker.Work(context.Background(), alertJob(uuid.New(), 1, 5)); err != nil {
+		t.Fatalf("Work missing delivery: %v", err)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"o1/internal/db/sqlc"
 	"o1/internal/incidents"
 	"o1/internal/jobs"
+	"o1/internal/observability"
 )
 
 // probeQueue is the River queue the worker consumes.
@@ -26,11 +27,12 @@ const probeQueue = "probe"
 
 // Scheduler enqueues due probes on a fixed tick.
 type Scheduler struct {
-	pool   *pgxpool.Pool
-	q      *sqlc.Queries
-	river  *river.Client[pgx.Tx]
-	cfg    config.Config
-	logger *slog.Logger
+	pool    *pgxpool.Pool
+	q       *sqlc.Queries
+	river   *river.Client[pgx.Tx]
+	cfg     config.Config
+	logger  *slog.Logger
+	metrics *observability.Metrics
 
 	// Injectable for deterministic tests.
 	now    func() time.Time
@@ -40,8 +42,8 @@ type Scheduler struct {
 	tick  time.Duration
 }
 
-// New builds a Scheduler.
-func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx], cfg config.Config, logger *slog.Logger) *Scheduler {
+// New builds a Scheduler. metrics may be nil.
+func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx], cfg config.Config, logger *slog.Logger, metrics *observability.Metrics) *Scheduler {
 	tick := cfg.SchedulerTick
 	if tick <= 0 {
 		tick = 10 * time.Second
@@ -54,21 +56,27 @@ func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx],
 		logger = slog.Default()
 	}
 	return &Scheduler{
-		pool:   pool,
-		q:      q,
-		river:  riverClient,
-		cfg:    cfg,
-		logger: logger,
-		now:    time.Now,
-		jitter: randomJitter,
-		batch:  int32(batch), //nolint:gosec // positive config value validated by config.Load
-		tick:   tick,
+		pool:    pool,
+		q:       q,
+		river:   riverClient,
+		cfg:     cfg,
+		logger:  logger,
+		metrics: metrics,
+		now:     time.Now,
+		jitter:  randomJitter,
+		batch:   int32(batch), //nolint:gosec // positive config value validated by config.Load
+		tick:    tick,
 	}
 }
 
 // Tick enqueues one probe per due, active monitor and advances each monitor's
 // next check atomically. It returns the number of due rows processed.
-func (s *Scheduler) Tick(ctx context.Context) (int, error) {
+func (s *Scheduler) Tick(ctx context.Context) (n int, err error) {
+	start := time.Now()
+	defer func() {
+		s.metrics.ObserveSchedulerTick(n, time.Since(start))
+	}()
+
 	now := s.now().UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

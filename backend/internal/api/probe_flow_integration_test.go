@@ -92,11 +92,12 @@ func newFullStackEnv(t *testing.T, allowedPort int) *fullStackEnv {
 		probe.NewProber(guard),
 		rate.NewLimiter(rate.Inf, 1000),
 		logger,
+		nil,
 	)
 
 	return &fullStackEnv{
 		monitorAPIEnv: &monitorAPIEnv{t: t, pool: pool, cfg: cfg, router: router, server: server},
-		sched:         scheduler.New(pool, sqlc.New(pool), riverClient, cfg, logger),
+		sched:         scheduler.New(pool, sqlc.New(pool), riverClient, cfg, logger, nil),
 		worker:        probeWorker,
 	}
 }

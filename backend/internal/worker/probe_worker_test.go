@@ -25,6 +25,7 @@ import (
 
 	"o1/internal/db/sqlc"
 	"o1/internal/jobs"
+	"o1/internal/observability"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
 	"o1/internal/testutil"
@@ -65,6 +66,7 @@ type workerEnv struct {
 	worker   *ProbeWorker
 	ownerID  uuid.UUID
 	inserter *recordingInserter
+	metrics  *observability.Metrics
 }
 
 type staticResolver struct{}
@@ -89,7 +91,8 @@ func newWorkerEnv(t *testing.T) *workerEnv {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	q := sqlc.New(pool)
 	ownerID := testutil.CreateVerifiedUser(t, pool, "owner@example.com", "correct horse battery staple")
-	probeWorker := NewProbeWorker(pool, q, box, probe.NewProber(guard), rate.NewLimiter(rate.Inf, 1000), logger)
+	metrics := observability.NewMetrics("o1-worker", "test")
+	probeWorker := NewProbeWorker(pool, q, box, probe.NewProber(guard), rate.NewLimiter(rate.Inf, 1000), logger, metrics)
 	inserter := &recordingInserter{}
 	probeWorker.SetJobInserter(inserter)
 	return &workerEnv{
@@ -98,7 +101,17 @@ func newWorkerEnv(t *testing.T) *workerEnv {
 		worker:   probeWorker,
 		ownerID:  ownerID,
 		inserter: inserter,
+		metrics:  metrics,
 	}
+}
+
+// gatherWorkerMetrics renders a worker metrics registry in the Prometheus
+// text exposition format.
+func gatherWorkerMetrics(t *testing.T, m *observability.Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
 }
 
 func (e *workerEnv) createMonitor(t *testing.T, rawURL string, confirm, recover int, paused, suspended bool) (uuid.UUID, uuid.UUID) {
@@ -518,7 +531,7 @@ func TestRecord_ConcurrentSameScheduleRecordsOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			errs[i] = env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result)
+			_, errs[i] = env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result)
 		}(i)
 	}
 	close(start)
@@ -564,7 +577,7 @@ func TestRecord_PausedStoresResultWithoutStateOrIncident(t *testing.T) {
 
 	scheduledFor := time.Now().UTC().Truncate(time.Second)
 	result := probe.Result{Up: false, StatusCode: http.StatusInternalServerError, LatencyMS: 1}
-	if err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
+	if _, err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
@@ -613,7 +626,7 @@ func TestRecord_SuspendedStoresResultWithoutStateOrIncident(t *testing.T) {
 
 	scheduledFor := time.Now().UTC().Truncate(time.Second)
 	result := probe.Result{Up: false, StatusCode: http.StatusInternalServerError, LatencyMS: 1}
-	if err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
+	if _, err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
@@ -664,7 +677,7 @@ func TestRecord_PausedSSRFBlockStillAuditsSecurityEvent(t *testing.T) {
 		ErrorClass:   "ssrf_blocked",
 		ErrorMessage: "blocked private address",
 	}
-	if err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
+	if _, err := env.worker.record(context.Background(), monitor, scheduledFor, time.Now().UTC(), result); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
@@ -831,5 +844,101 @@ func TestProcess_SSRFBlockRecordsSecurityEvent(t *testing.T) {
 	}
 	if strings.Contains(string(detail), "super-secret") {
 		t.Fatalf("security event leaked the query string: %s", detail)
+	}
+}
+
+func TestWorkerMetrics_ProbeResultAndDuration(t *testing.T) {
+	env := newWorkerEnv(t)
+	upTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upTarget.Close()
+	downTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer downTarget.Close()
+
+	upID, _ := env.createMonitor(t, upTarget.URL, 1, 1, false, false)
+	downID, _ := env.createMonitor(t, downTarget.URL, 1, 1, false, false)
+	for _, id := range []uuid.UUID{upID, downID} {
+		if err := env.worker.Process(context.Background(), jobs.ProbeArgs{
+			MonitorID:    id,
+			ScheduledFor: time.Now().UTC().Truncate(time.Second),
+		}); err != nil {
+			t.Fatalf("Process %s: %v", id, err)
+		}
+	}
+
+	body := gatherWorkerMetrics(t, env.metrics)
+	for _, want := range []string{
+		`o1_probe_results_total{result="up"} 1`,
+		`o1_probe_results_total{result="down"} 1`,
+		`o1_probe_duration_seconds_count{result="up"} 1`,
+		`o1_probe_duration_seconds_count{result="down"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("probe metrics missing %s:\n%s", want, body)
+		}
+	}
+}
+
+func TestWorkerMetrics_SkippedReasons(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	pausedID, _ := env.createMonitor(t, target.URL, 1, 1, true, false)
+	suspendedID, _ := env.createMonitor(t, target.URL, 1, 1, false, true)
+	replayID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
+	ctx := context.Background()
+
+	args := func(id uuid.UUID) jobs.ProbeArgs {
+		return jobs.ProbeArgs{MonitorID: id, ScheduledFor: time.Now().UTC().Truncate(time.Second)}
+	}
+	for _, id := range []uuid.UUID{pausedID, suspendedID, uuid.New()} {
+		if err := env.worker.Process(ctx, args(id)); err != nil {
+			t.Fatalf("Process %s: %v", id, err)
+		}
+	}
+	replayArgs := args(replayID)
+	if err := env.worker.Process(ctx, replayArgs); err != nil {
+		t.Fatalf("first Process: %v", err)
+	}
+	if err := env.worker.Process(ctx, replayArgs); err != nil {
+		t.Fatalf("replay Process: %v", err)
+	}
+
+	body := gatherWorkerMetrics(t, env.metrics)
+	for _, reason := range []string{"paused", "suspended", "missing", "replay"} {
+		want := `o1_probe_skipped_total{reason="` + reason + `"} 1`
+		if !strings.Contains(body, want) {
+			t.Errorf("skipped metrics missing %s:\n%s", want, body)
+		}
+	}
+}
+
+func TestWorkerMetrics_NilMetricsIsSafe(t *testing.T) {
+	env := newWorkerEnv(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	monitorID, _ := env.createMonitor(t, target.URL, 1, 1, false, false)
+
+	worker := NewProbeWorker(env.pool, sqlc.New(env.pool), env.worker.box, env.worker.prober,
+		env.worker.limiter, env.logger(), nil)
+	if err := worker.Process(context.Background(), jobs.ProbeArgs{
+		MonitorID:    monitorID,
+		ScheduledFor: time.Now().UTC().Truncate(time.Second),
+	}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if err := worker.Process(context.Background(), jobs.ProbeArgs{
+		MonitorID:    uuid.New(),
+		ScheduledFor: time.Now().UTC().Truncate(time.Second),
+	}); err != nil {
+		t.Fatalf("Process missing monitor: %v", err)
 	}
 }
