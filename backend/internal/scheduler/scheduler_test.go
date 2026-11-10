@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -314,7 +315,7 @@ func TestSchedulerMetrics_Tick(t *testing.T) {
 func TestSchedulerPanicIsCapturedAndLoopContinues(t *testing.T) {
 	var mu sync.Mutex
 	var captures []error
-	restore := observability.SetCaptureHookForTest(func(_ context.Context, err error, _ map[string]string) {
+	restore := observability.SetCaptureHookForTest(func(_ context.Context, err error, _ map[string]string, _ map[string]sentry.Context) {
 		mu.Lock()
 		defer mu.Unlock()
 		captures = append(captures, err)
@@ -388,7 +389,7 @@ func TestSchedulerPanicIsCapturedAndLoopContinues(t *testing.T) {
 // TestSchedulerTickLoopStopsOnCancel verifies shutdown stays clean even when a
 // tick panics just before the context is canceled.
 func TestSchedulerTickLoopStopsOnCancel(t *testing.T) {
-	restore := observability.SetCaptureHookForTest(func(context.Context, error, map[string]string) {})
+	restore := observability.SetCaptureHookForTest(func(context.Context, error, map[string]string, map[string]sentry.Context) {})
 	t.Cleanup(restore)
 
 	ctx, cancel := context.WithCancel(context.Background())

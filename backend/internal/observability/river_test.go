@@ -161,6 +161,34 @@ func TestRiverErrorHandlerCapturesPanicOnce(t *testing.T) {
 	if tags["kind"] != "alert" || tags["queue"] != "alert" {
 		t.Fatalf("tags = %v, want kind=alert queue=alert", tags)
 	}
+	extras := rec.lastContexts()
+	if got := extras["panic"]["trace"]; got != "goroutine stack" {
+		t.Fatalf("panic context trace = %v, want the River panic trace", got)
+	}
+}
+
+func TestRiverErrorHandlerAttachesPanicTraceToEvent(t *testing.T) {
+	ctx, transport := newTestSentryContext(t)
+	handler := SentryErrorHandler{}
+	job := &rivertype.JobRow{ID: 9, Kind: "probe", Queue: "probe", Attempt: 1}
+	const trace = "goroutine 42 [running]:\no1/internal/worker.(*ProbeWorker).Work(...)"
+
+	result := handler.HandlePanic(ctx, job, "boom", trace)
+	if result == nil || result.SetCancelled {
+		t.Fatalf("HandlePanic result = %+v, want a non-cancelling result", result)
+	}
+
+	events := transport.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("captured %d events, want 1", len(events))
+	}
+	event := events[0]
+	if got := event.Contexts["panic"]["trace"]; got != trace {
+		t.Fatalf("panic context trace = %v, want the River trace", got)
+	}
+	if event.Tags["kind"] != "probe" || event.Tags["queue"] != "probe" {
+		t.Fatalf("event tags = %v, want kind=probe queue=probe", event.Tags)
+	}
 }
 
 func TestRiverErrorHandlerDropsCanceledError(t *testing.T) {

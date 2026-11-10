@@ -140,15 +140,30 @@ func requestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 }
 
 // recoverPanics converts panics into a 500 problem response instead of
-// crashing the server. The panic is reported to Sentry exactly once; the
-// request is not re-panicked.
-func recoverPanics(logger *slog.Logger) func(http.Handler) http.Handler {
+// crashing the server. The panic is reported to Sentry exactly once with the
+// bounded method, matched route pattern, and request ID; raw paths, query
+// strings, headers, and bodies are never captured. The request is not
+// re-panicked.
+func recoverPanics(logger *slog.Logger, resolveRoute func(*http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
 					logger.Log(r.Context(), slog.LevelError, "panic recovered", "panic", rec, "request_id", RequestID(r.Context()))
-					observability.CapturePanic(r.Context(), rec)
+					route := "unmatched"
+					if resolveRoute != nil {
+						if matched := resolveRoute(r); matched != "" {
+							route = matched
+						}
+					}
+					tags := map[string]string{
+						"method": r.Method,
+						"route":  route,
+					}
+					if id := RequestID(r.Context()); id != "" {
+						tags["request_id"] = id
+					}
+					observability.CapturePanicWithTags(r.Context(), rec, tags)
 					httpx.WriteProblem(w, httpx.Problem{
 						Type:   "about:blank",
 						Title:  "Internal Server Error",
@@ -314,7 +329,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	handler = httpx.CSRF(deps.Config.AllowedOrigins)(handler)
 	handler = withSecurityHeaders(handler)
 	handler = requestLogging(logger)(handler)
-	handler = recoverPanics(logger)(handler)
+	handler = recoverPanics(logger, resolveRoute)(handler)
 	handler = withRequestID(handler)
 	// Tracing is outermost so request logs, security headers, and panic
 	// recovery all run inside the request span and can read its context.

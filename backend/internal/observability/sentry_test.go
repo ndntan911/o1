@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 
@@ -18,20 +19,22 @@ import (
 
 // captureRecorder installs a test capture hook and records every capture.
 type captureRecorder struct {
-	mu      sync.Mutex
-	errs    []error
-	tags    []map[string]string
-	restore func()
+	mu       sync.Mutex
+	errs     []error
+	tags     []map[string]string
+	contexts []map[string]sentry.Context
+	restore  func()
 }
 
 func newCaptureRecorder(t *testing.T) *captureRecorder {
 	t.Helper()
 	r := &captureRecorder{}
-	r.restore = SetCaptureHookForTest(func(_ context.Context, err error, tags map[string]string) {
+	r.restore = SetCaptureHookForTest(func(_ context.Context, err error, tags map[string]string, contexts map[string]sentry.Context) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.errs = append(r.errs, err)
 		r.tags = append(r.tags, tags)
+		r.contexts = append(r.contexts, contexts)
 	})
 	t.Cleanup(r.restore)
 	return r
@@ -59,6 +62,15 @@ func (r *captureRecorder) lastTags() map[string]string {
 		return nil
 	}
 	return r.tags[len(r.tags)-1]
+}
+
+func (r *captureRecorder) lastContexts() map[string]sentry.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.contexts) == 0 {
+		return nil
+	}
+	return r.contexts[len(r.contexts)-1]
 }
 
 func TestSentryEmptyDSNIsDisabled(t *testing.T) {
@@ -97,7 +109,7 @@ func TestSentryEnvironmentFallback(t *testing.T) {
 
 func TestSentryBeforeSendRedactsSensitiveFields(t *testing.T) {
 	event := &sentry.Event{
-		Request: &sentry.Request{
+		Request: &sentry.Request{ //nolint:gosec // fake credentials are the redaction fixture, not real secrets
 			URL:         "https://user:pass@api.example.com/api/v1/monitors/123/results?token=secret&email=alice%40example.com",
 			Method:      http.MethodGet,
 			Data:        `{"email":"alice@example.com","password":"hunter2"}`,
@@ -212,4 +224,73 @@ func TestSentryDisabledCaptureIsSafe(t *testing.T) {
 	// must not panic or touch the network.
 	CaptureException(context.Background(), errors.New("boom"))
 	CapturePanic(context.Background(), 42)
+}
+
+// captureTransport records events in memory. It is bound to a per-test hub so
+// tests can assert the assembled event without a real DSN or network.
+type captureTransport struct {
+	mu     sync.Mutex
+	events []*sentry.Event
+}
+
+func (t *captureTransport) Configure(sentry.ClientOptions) {}
+
+func (t *captureTransport) SendEvent(event *sentry.Event) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events = append(t.events, event)
+}
+
+func (t *captureTransport) Flush(time.Duration) bool { return true }
+
+func (t *captureTransport) FlushWithContext(context.Context) bool { return true }
+
+func (t *captureTransport) Close() {}
+
+func (t *captureTransport) snapshot() []*sentry.Event {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]*sentry.Event(nil), t.events...)
+}
+
+func newTestSentryContext(t *testing.T) (context.Context, *captureTransport) {
+	t.Helper()
+	transport := &captureTransport{}
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:              "https://public@example.com/1",
+		Transport:        transport,
+		AttachStacktrace: true,
+		BeforeSend:       BeforeSend,
+	})
+	if err != nil {
+		t.Fatalf("new sentry client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	hub := sentry.NewHub(client, sentry.NewScope())
+	return sentry.SetHubOnContext(context.Background(), hub), transport
+}
+
+func TestSentryCapturePanicWithTagsReachesEvent(t *testing.T) {
+	ctx, transport := newTestSentryContext(t)
+	tags := map[string]string{
+		"method":     http.MethodGet,
+		"route":      "GET /api/v1/monitors",
+		"request_id": "req-123",
+	}
+
+	CapturePanicWithTags(ctx, "boom", tags)
+
+	events := transport.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("captured %d events, want 1", len(events))
+	}
+	event := events[0]
+	for key, want := range tags {
+		if got := event.Tags[key]; got != want {
+			t.Errorf("event tag %q = %q, want %q", key, got, want)
+		}
+	}
+	if event.Level != sentry.LevelFatal {
+		t.Errorf("event level = %v, want fatal", event.Level)
+	}
 }

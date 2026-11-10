@@ -66,15 +66,23 @@ var _ river.ErrorHandler = SentryErrorHandler{}
 // HandleError implements river.ErrorHandler.
 func (SentryErrorHandler) HandleError(ctx context.Context, job *rivertype.JobRow, err error) *river.ErrorHandlerResult {
 	if !shouldIgnore(err) {
-		capture(ctx, err, jobTags(job), sentry.LevelError)
+		capture(ctx, err, jobTags(job), nil, sentry.LevelError)
 	}
 	return &river.ErrorHandlerResult{}
 }
 
-// HandlePanic implements river.ErrorHandler.
-func (SentryErrorHandler) HandlePanic(ctx context.Context, job *rivertype.JobRow, panicVal any, _ string) *river.ErrorHandlerResult {
+// HandlePanic implements river.ErrorHandler. River's trace is the stack
+// captured at the panic site; attaching it as event context keeps the Sentry
+// stack truthful.
+func (SentryErrorHandler) HandlePanic(ctx context.Context, job *rivertype.JobRow, panicVal any, trace string) *river.ErrorHandlerResult {
 	if panicVal != nil {
-		capture(ctx, panicError(panicVal), jobTags(job), sentry.LevelFatal)
+		var contexts map[string]sentry.Context
+		if trace != "" {
+			contexts = map[string]sentry.Context{
+				"panic": {"trace": trace},
+			}
+		}
+		capture(ctx, panicError(panicVal), jobTags(job), contexts, sentry.LevelFatal)
 	}
 	return &river.ErrorHandlerResult{}
 }

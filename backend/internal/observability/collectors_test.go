@@ -231,10 +231,7 @@ func TestQueueCollector_StartStopsOnCancel(t *testing.T) {
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if strings.Contains(gatherText(t, m.Registry()), `o1_queue_jobs{queue="probe",state="available"} 1`) {
-			break
-		}
+	for !strings.Contains(gatherText(t, m.Registry()), `o1_queue_jobs{queue="probe",state="available"} 1`) {
 		if time.Now().After(deadline) {
 			cancel()
 			t.Fatal("Start did not refresh before the deadline")

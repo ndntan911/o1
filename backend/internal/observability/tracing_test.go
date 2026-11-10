@@ -185,8 +185,8 @@ func TestTracerHTTPHandler(t *testing.T) {
 		t.Fatalf("span name = %q, want METHOD route", got.Name)
 	}
 	for _, kv := range got.Attributes {
-		if strings.Contains(kv.Value.Emit(), "do-not-record") {
-			t.Fatalf("span captured query string in attribute %q = %q", kv.Key, kv.Value.Emit())
+		if strings.Contains(kv.Value.String(), "do-not-record") {
+			t.Fatalf("span captured query string in attribute %q = %q", kv.Key, kv.Value.String())
 		}
 	}
 }

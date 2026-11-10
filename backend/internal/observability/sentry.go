@@ -24,7 +24,8 @@ const (
 
 // CaptureHook observes a capture instead of sending it to Sentry. Tests install
 // one with SetCaptureHookForTest so capture paths never need a DSN or network.
-type CaptureHook func(ctx context.Context, err error, tags map[string]string)
+// tags and contexts are bounded event context; neither ever contains payloads.
+type CaptureHook func(ctx context.Context, err error, tags map[string]string, contexts map[string]sentry.Context)
 
 var (
 	captureHookMu sync.RWMutex
@@ -134,21 +135,29 @@ func CaptureException(ctx context.Context, err error) {
 	if shouldIgnore(err) {
 		return
 	}
-	capture(ctx, err, nil, sentry.LevelError)
+	capture(ctx, err, nil, nil, sentry.LevelError)
 }
 
 // CapturePanic reports a recovered panic. The caller decides whether to
 // re-panic; this function never does. A nil recover value is a no-op.
 func CapturePanic(ctx context.Context, rec any) {
+	CapturePanicWithTags(ctx, rec, nil)
+}
+
+// CapturePanicWithTags reports a recovered panic with bounded tags such as the
+// HTTP method, route pattern, and request ID. Callers must never pass raw
+// paths, query strings, headers, bodies, or job args.
+func CapturePanicWithTags(ctx context.Context, rec any, tags map[string]string) {
 	if rec == nil {
 		return
 	}
-	capture(ctx, panicError(rec), nil, sentry.LevelFatal)
+	capture(ctx, panicError(rec), tags, nil, sentry.LevelFatal)
 }
 
 // capture sends one event through the test hook when installed, otherwise
-// through the Sentry hub in ctx or the current hub.
-func capture(ctx context.Context, err error, tags map[string]string, level sentry.Level) {
+// through the Sentry hub in ctx or the current hub. tags become Sentry tags and
+// contexts become arbitrary event context.
+func capture(ctx context.Context, err error, tags map[string]string, contexts map[string]sentry.Context, level sentry.Level) {
 	if err == nil {
 		return
 	}
@@ -157,7 +166,7 @@ func capture(ctx context.Context, err error, tags map[string]string, level sentr
 	}
 
 	if hook := currentCaptureHook(); hook != nil {
-		hook(ctx, err, maps.Clone(tags))
+		hook(ctx, err, maps.Clone(tags), maps.Clone(contexts))
 		return
 	}
 
@@ -171,11 +180,38 @@ func capture(ctx context.Context, err error, tags map[string]string, level sentr
 	// Capture on a clone: a shared hub's scope stack is not safe to mutate
 	// from concurrent request or job goroutines.
 	local := hub.Clone()
-	local.Scope().SetLevel(level)
-	for key, value := range tags {
-		local.Scope().SetTag(key, value)
+	client := local.Client()
+	if client == nil {
+		return
 	}
-	local.CaptureException(err)
+	event := client.EventFromException(err, level)
+	applyEventContext(event, tags, contexts)
+	local.CaptureEvent(event)
+}
+
+// applyEventContext adds bounded tags and contexts to an event. Tags are
+// indexable dimensions; contexts carry non-searchable diagnostics such as a
+// panic trace. Neither ever holds request payloads.
+func applyEventContext(event *sentry.Event, tags map[string]string, contexts map[string]sentry.Context) {
+	if event == nil {
+		return
+	}
+	if len(tags) > 0 {
+		if event.Tags == nil {
+			event.Tags = make(map[string]string, len(tags))
+		}
+		for key, value := range tags {
+			event.Tags[key] = value
+		}
+	}
+	if len(contexts) > 0 {
+		if event.Contexts == nil {
+			event.Contexts = make(map[string]sentry.Context, len(contexts))
+		}
+		for key, value := range contexts {
+			event.Contexts[key] = value
+		}
+	}
 }
 
 // shouldIgnore reports whether an error is expected during normal shutdown or
