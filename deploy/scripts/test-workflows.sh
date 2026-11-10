@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # grep patterns intentionally contain $VAR literally
 # Structural checks for the GitHub Actions workflows.
 #
 # The release path (tag -> verify -> build -> scan -> push to GHCR) cannot be
@@ -112,8 +113,10 @@ grep -Fq "tr '[:upper:]' '[:lower:]'" "$release_file" ||
   fail "$release_file does not lowercase the repository owner for GHCR"
 check "release lowercases the repository owner for GHCR"
 
-grep -Eq 'sbom=true' "$release_file" && grep -Eq 'provenance=true' "$release_file" ||
+if ! grep -Eq 'sbom=true' "$release_file" ||
+  ! grep -Eq 'provenance=true' "$release_file"; then
   fail "$release_file does not attach SBOM and provenance on push"
+fi
 check "release pushes with SBOM and provenance"
 
 # --- deploy.yml: gated, digest pinned, dispatched workflow -----------------
