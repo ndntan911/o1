@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare tags
+        run: |
+          owner=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          no_v=${GITHUB_REF_NAME#v}
+          {
+            echo "REGISTRY=ghcr.io/$owner"
+            echo "VERSION=${GITHUB_REF_NAME}"
+            echo "SHORT_SHA=${GITHUB_SHA::12}"
+            echo "MAJOR_MINOR=${no_v%.*}"
+          } >> "$GITHUB_ENV"
+
+      - uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: v0.76.2
+
+      - name: Scan repository secrets and misconfiguration
+        run: trivy fs --scanners secret,misconfig --exit-code 1 .
+
+      # Both images are built for scanning first; nothing is pushed until both
+      # scans pass.
+      - name: Build backend for scan
+        run: >
+          docker buildx build --load --platform linux/amd64
+          --cache-from type=gha,scope=backend --cache-to type=gha,mode=max,scope=backend
+          -t "$REGISTRY/o1-backend:$VERSION" -f backend/Dockerfile backend
+
+      - name: Scan backend image
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$REGISTRY/o1-backend:$VERSION"
+
+      - name: Build web for scan
+        run: >
+          docker buildx build --load --platform linux/amd64
+          --cache-from type=gha,scope=web --cache-to type=gha,mode=max,scope=web
+          --build-arg VITE_SENTRY_DSN="${{ vars.VITE_SENTRY_DSN }}"
+          --build-arg VITE_RELEASE="$VERSION"
+          -t "$REGISTRY/o1-web:$VERSION" -f web/Dockerfile web
+
+      - name: Scan web image
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$REGISTRY/o1-web:$VERSION"
+
+      - name: Push backend
+        run: >
+          docker buildx build --push --platform linux/amd64 --sbom=true --provenance=true
+          --cache-from type=gha,scope=backend --cache-to type=gha,mode=max,scope=backend
+          -t "$REGISTRY/o1-backend:$VERSION"
+          -t "$REGISTRY/o1-backend:sha-$SHORT_SHA"
+          -t "$REGISTRY/o1-backend:$MAJOR_MINOR"
+          -f backend/Dockerfile backend
+
+      - name: Push web
+        run: >
+          docker buildx build --push --platform linux/amd64 --sbom=true --provenance=true
+          --cache-from type=gha,scope=web --cache-to type=gha,mode=max,scope=web
+          --build-arg VITE_SENTRY_DSN="${{ vars.VITE_SENTRY_DSN }}"
+          --build-arg VITE_RELEASE="$VERSION"
+          -t "$REGISTRY/o1-web:$VERSION"
+          -t "$REGISTRY/o1-web:sha-$SHORT_SHA"
+          -t "$REGISTRY/o1-web:$MAJOR_MINOR"
+          -f web/Dockerfile web
+
+      - name: Record scan results
+        run: |
+          {
+            echo "### Container scans"
+            echo "- backend: HIGH/CRITICAL scan passed before push"
+            echo "- web: HIGH/CRITICAL scan passed before push"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize published images
+        run: |
+          for image in o1-backend o1-web; do
+            digest=$(docker buildx imagetools inspect "$REGISTRY/$image:$VERSION" --format '{{.Manifest.Digest}}')
+            echo "- \`$REGISTRY/$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          done

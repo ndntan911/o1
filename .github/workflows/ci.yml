@@ -4,6 +4,7 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -24,6 +25,9 @@ jobs:
 
       - name: go vet
         run: go vet ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: go test (short)
         run: go test -short ./...
