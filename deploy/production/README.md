@@ -5,7 +5,9 @@ This directory holds the standalone production stack for o1:
 | File | Purpose |
 |------|---------|
 | `compose.yaml` | PostgreSQL, API, scheduler, worker, web (Caddy), and an optional Alloy profile. |
+| `compose.build.yaml` | Local-build override: builds the app images from this checkout instead of pulling registry images. |
 | `env.example` | Every required and optional production variable, with placeholders. |
+| `images.env.example` | Fixture showing the digest-pinned image refs a deploy writes to the host. |
 | `README.md` | This runbook. |
 
 The stack is intentionally separate from the development `compose.yaml` at the
@@ -14,20 +16,37 @@ no development keys, and no raised auth rate limits. Only the web container
 publishes ports `80` and `443`; Caddy serves the SPA, proxies the API on the same
 origin, and obtains the TLS certificate.
 
-All commands below run from the repository root. Each Compose command names the
-production compose file and environment file explicitly, so a development
-`.env` or development stack on the same host is not picked up accidentally.
+All commands below run from the repository root unless they use an absolute
+path. Each Compose command names the production compose file and environment
+file explicitly, so a development `.env` or development stack on the same host
+is not picked up accidentally.
+
+## CI/CD deploys
+
+Production and staging are normally deployed from GitHub Actions, not from a
+checkout on the host. A pushed `v*` tag is verified, built, scanned, and
+published to GHCR. A manually dispatched Deploy run then uploads a release
+bundle to `/opt/o1/incoming/<version>-<sha>` and runs
+`/opt/o1/bin/deploy.sh`, which activates it and polls `/readyz`. Rollback is
+`/opt/o1/bin/rollback.sh`.
+
+See [../CICD.md](../CICD.md) for the pipeline overview, GitHub Environments and
+secrets, branch and tag protection, GHCR visibility, host bootstrap, the
+release and rollback drill, migrations, and troubleshooting. The manual
+commands in this runbook remain the first-run, offline, and recovery path, and
+they exercise the same compose file the deploy script uses.
 
 ## Plan boundaries
 
 - **This plan (Plan 10)** ships production email through Resend and this manual
   go-live stack.
+- **CI/CD is Plan 11 and is implemented.** Deploys normally run from the
+  Deploy workflow with digest-pinned registry images; the manual commands here
+  remain for first-run, offline, and recovery use. See [../CICD.md](../CICD.md).
 - **Backups and restore are Plan 12.** There is no backup job, retention policy,
   or restore procedure in this stack yet. Until Plan 12 lands, take and store a
   `pg_dump` yourself if the data matters, and note that the Caddy volumes hold
   the TLS certificates, not application data.
-- **CI deployment is Plan 11.** Deploys here are manual, from a checked-out git
-  revision on the host.
 - `/metrics` is private. Caddy answers `404` and the metrics listeners are never
   published.
 - The Resend free tier has daily and monthly send caps. Verification mail,
@@ -173,23 +192,57 @@ docker compose --env-file deploy/production/.env \
 directory, the equivalent commands are `cp env.example .env` and
 `docker compose --env-file .env -f compose.yaml ...`.
 
+On a registry-deployed host the same variables live in `/opt/o1/.env`, created
+by `bootstrap-host.sh`. That file is operator-managed, lives outside every
+release directory, and is never written by CI, so secrets survive a rollback.
+See [../CICD.md](../CICD.md).
+
 ## 5. First deploy
+
+On a provisioned host the first release is activated by the Deploy workflow,
+which writes `images.env` and runs `/opt/o1/bin/deploy.sh`; see
+[CI/CD deploys](#cicd-deploys). To start the stack manually from a checkout
+instead, build locally with the override:
 
 ```sh
 docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml up -d --build
+  -f deploy/production/compose.yaml \
+  -f deploy/production/compose.build.yaml up -d --build
 docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml ps
+  -f deploy/production/compose.yaml \
+  -f deploy/production/compose.build.yaml ps
 ```
 
-What happens:
+The base `compose.yaml` pulls digest-pinned images and has no build contexts;
+`compose.build.yaml` adds them and pins the local image names. A plain
+`up -d --build` without the override therefore fails on a fresh checkout.
+
+### Registry images
+
+A registry deploy supplies digest-pinned references in an `images.env` file and
+uses the base compose file only; the build override is not involved:
+
+```sh
+docker compose --env-file deploy/production/.env \
+  --env-file deploy/production/images.env \
+  -f deploy/production/compose.yaml up -d --remove-orphans
+```
+
+On a host, `deploy.sh` does exactly this against `/opt/o1/current/images.env`
+and the active release's compose file, and it refuses any reference that is not
+pinned as `<image>@sha256:<64 hex>`. `images.env.example` is a fixture for
+config validation; never put it on a host as-is.
+
+What happens on first start:
 
 - PostgreSQL starts and becomes healthy.
-- The API, scheduler, and worker build from `backend/` and run migrations at
-  startup. A PostgreSQL advisory lock serializes migrations, so concurrent
-  starts are safe.
-- The web image builds the SPA and Caddy; Caddy obtains a certificate for
-  `O1_DOMAIN` and redirects HTTP to HTTPS.
+- The API, scheduler, and worker run migrations at startup. With the build
+  override they are built from `backend/`; a registry deploy pulls them instead.
+  A PostgreSQL advisory lock serializes migrations, so concurrent starts are
+  safe.
+- The web image serves the SPA and Caddy; Caddy obtains a certificate for
+  `O1_DOMAIN` and redirects HTTP to HTTPS. The build override builds it from
+  `web/`; a registry deploy pulls it.
 
 Watch the certificate request and the first startup:
 
@@ -298,26 +351,75 @@ Useful checks:
 
 ## 8. Update and restart
 
+Manual update from a checkout, with the local build override:
+
 ```sh
 git pull
 docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml build --pull
-docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml up -d
+  -f deploy/production/compose.yaml \
+  -f deploy/production/compose.build.yaml up -d --build
 ```
+
+On a registry-deployed host, dispatch the Deploy workflow instead. It resolves
+the published digests, writes `images.env`, and runs
+`/opt/o1/bin/deploy.sh`; there is no local build. See
+[../CICD.md](../CICD.md).
 
 Migrations run automatically at startup. To apply only environment changes,
 recreate the affected services:
 
 ```sh
 docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml up -d --force-recreate api scheduler worker
+  -f deploy/production/compose.yaml \
+  -f deploy/production/compose.build.yaml up -d --force-recreate api scheduler worker
 ```
+
+(Adding the override is harmless for environment-only changes and keeps the
+local image names consistent with the manual build.)
 
 Frontend `VITE_*` values are baked into the static bundle at build time. Changing
 `VITE_SENTRY_DSN` or `VITE_RELEASE` requires rebuilding the `web` image.
 
-## 9. Troubleshooting
+## 9. Rollback
+
+Each successful registry deploy stores an immutable bundle under
+`/opt/o1/releases/<version>-<sha>/` containing the release's
+`deploy/production/compose.yaml`, `deploy/observability/alloy.alloy`, and
+digest-pinned `images.env`. The `current` and `previous` symlinks select the
+active and prior bundles; `/opt/o1/.env` sits outside the releases so secrets
+are unchanged by a rollback.
+
+Roll back to the previous release:
+
+```sh
+/opt/o1/bin/rollback.sh
+```
+
+Roll back to a named release, or roll forward after a fix:
+
+```sh
+/opt/o1/bin/rollback.sh v1.2.2-abc123def456
+```
+
+`rollback.sh` takes the same `flock` as `deploy.sh`, switches `current`, pulls
+the pinned images, runs `up -d --remove-orphans`, and polls
+`https://$O1_DOMAIN/readyz`. If the target is unhealthy it restores the release
+that was active and exits non-zero. Inspect what is live with:
+
+```sh
+readlink -f /opt/o1/current
+readlink -f /opt/o1/previous
+cat /opt/o1/current/images.env
+```
+
+Image and config rollback does **not** undo migrations. Restoring an earlier
+release restores its compose file and image digests, not the database schema.
+If the failed release migrated the schema, the old code runs against the new
+schema; see [../CICD.md](../CICD.md#8-migrations). A manual rebuild from a
+checkout bypasses the release symlinks entirely and is replaced by the next
+deploy or rollback.
+
+## 10. Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
@@ -329,7 +431,7 @@ Frontend `VITE_*` values are baked into the static bundle at build time. Changin
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |
 
-## 10. Optional metrics with Grafana Alloy
+## 11. Optional metrics with Grafana Alloy
 
 Alloy is behind the `observability` profile and is not started by a normal
 `up`. Set `GRAFANA_REMOTE_WRITE_URL`, `GRAFANA_REMOTE_WRITE_USER`, and
@@ -350,7 +452,7 @@ dead-man's switch at `https://o1.example.com/healthz`, never at `/metrics`.
 Alloy's own UI on port `12345` is not published; use its logs for scrape and
 remote-write errors.
 
-## 11. Security notes
+## 12. Security notes
 
 - Only `80` and `443` are published. PostgreSQL, the API, the scheduler, the
   worker, and every health/metrics listener stay on the private Compose
@@ -362,4 +464,5 @@ remote-write errors.
   rejects the development email provider.
 - Keep Caddy's `caddy_data` volume; it holds the certificates and ACME account
   material. Application data lives in `postgres-data`.
-- Backups are Plan 12 and CI deploys are Plan 11, not part of this stack.
+- Backups are Plan 12. CI/CD deploys and the release/rollback process are
+  documented in [../CICD.md](../CICD.md).

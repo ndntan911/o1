@@ -443,8 +443,14 @@ proxies the API on the same origin, and obtains and renews the TLS certificate.
 cp deploy/production/env.example deploy/production/.env
 $EDITOR deploy/production/.env
 docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml up -d --build
+  -f deploy/production/compose.yaml \
+  -f deploy/production/compose.build.yaml up -d --build
 ```
+
+The base `compose.yaml` pulls digest-pinned registry images. Any manual or
+offline deploy from a checkout also passes `compose.build.yaml`, which adds the
+`build:` contexts and local image names; `up -d --build` without it fails on a
+fresh checkout.
 
 `O1_DOMAIN` is the public hostname. The stack derives `O1_APP_BASE_URL` and
 `O1_ALLOWED_ORIGINS` from it and sets the web container's `O1_SITE_ADDRESS` to
@@ -459,7 +465,29 @@ troubleshooting: [deploy/production/README.md](deploy/production/README.md).
 
 Production email is Resend only. `O1_ENV=production` requires
 `O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. Backups and restore
-are Plan 12 and CI deployment is Plan 11; this stack is deployed manually.
+are Plan 12.
+
+### CI/CD
+
+Releases are built, scanned, and published by GitHub Actions; deploys are
+dispatched deliberately, not run from a laptop.
+
+- Pushing a `v*` tag runs the full CI suite, builds `ghcr.io/<owner>/o1-backend`
+  and `ghcr.io/<owner>/o1-web` for `linux/amd64`, scans both with Trivy, and
+  pushes only if the scans pass. Each image gets the release tag,
+  `sha-<12-char-commit>`, and `X.Y`; deploys pin the `@sha256` digest.
+- Deploys run from **Actions → Deploy** with an `environment` (`staging` or
+  `production`) and a `version`. The job resolves the digests, uploads a release
+  bundle to `/opt/o1/incoming/<version>-<sha>`, and runs
+  `/opt/o1/bin/deploy.sh` over SSH. Production requires reviewer approval and
+  accepts only final `vX.Y.Z` releases from `main`.
+- `/opt/o1/bin/rollback.sh` restores the previous release bundle. Image and
+  config rollback does not undo migrations.
+
+The full operator guide, including GitHub Environments and secrets, branch and
+tag protection, GHCR visibility, host bootstrap, the release/rollback drill,
+migrations, troubleshooting, and the live acceptance checklist, is
+[deploy/CICD.md](deploy/CICD.md).
 
 ## Configuration
 
