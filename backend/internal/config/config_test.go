@@ -165,6 +165,130 @@ func TestLoad_RejectsIntervalsOutsideSchema(t *testing.T) {
 	}
 }
 
+func TestObservabilityConfig_Defaults(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_ENV", "development")
+	t.Setenv("O1_API_HEALTH_ADDR", "")
+	t.Setenv("O1_OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("O1_OTEL_EXPORTER_OTLP_HEADERS", "")
+	t.Setenv("O1_OTEL_SAMPLE_RATIO", "")
+	t.Setenv("O1_SENTRY_DSN", "")
+	t.Setenv("O1_SENTRY_ENVIRONMENT", "")
+	t.Setenv("O1_RELEASE", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.APIHealthAddr != ":8083" {
+		t.Errorf("APIHealthAddr = %q, want :8083", cfg.APIHealthAddr)
+	}
+	if cfg.OTELExporterEndpoint != "" {
+		t.Errorf("OTELExporterEndpoint = %q, want empty", cfg.OTELExporterEndpoint)
+	}
+	if len(cfg.OTELExporterHeaders) != 0 {
+		t.Errorf("OTELExporterHeaders = %v, want empty", cfg.OTELExporterHeaders)
+	}
+	if cfg.OTELSampleRatio != 0.05 {
+		t.Errorf("OTELSampleRatio = %v, want 0.05", cfg.OTELSampleRatio)
+	}
+	if cfg.SentryDSN != "" {
+		t.Errorf("SentryDSN = %q, want empty", cfg.SentryDSN)
+	}
+	if cfg.SentryEnvironment != cfg.Env {
+		t.Errorf("SentryEnvironment = %q, want Env %q", cfg.SentryEnvironment, cfg.Env)
+	}
+	if cfg.Release != "dev" {
+		t.Errorf("Release = %q, want dev", cfg.Release)
+	}
+}
+
+func TestObservabilityConfig_ClampsSampleRatio(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_OTEL_SAMPLE_RATIO", "2")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load with ratio 2: %v", err)
+	}
+	if cfg.OTELSampleRatio != 1 {
+		t.Errorf("ratio 2 clamped to %v, want 1", cfg.OTELSampleRatio)
+	}
+
+	t.Setenv("O1_OTEL_SAMPLE_RATIO", "-1")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load with ratio -1: %v", err)
+	}
+	if cfg.OTELSampleRatio != 0 {
+		t.Errorf("ratio -1 clamped to %v, want 0", cfg.OTELSampleRatio)
+	}
+}
+
+func TestObservabilityConfig_RejectsInvalidSampleRatio(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	for _, value := range []string{"NaN", "+Inf", "-Inf", "not-a-number"} {
+		t.Setenv("O1_OTEL_SAMPLE_RATIO", value)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("Load() accepted O1_OTEL_SAMPLE_RATIO=%s", value)
+		}
+	}
+}
+
+func TestObservabilityConfig_ReadsEnv(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_ENV", "production")
+	t.Setenv("O1_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_API_HEALTH_ADDR", ":9090")
+	t.Setenv("O1_OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+	t.Setenv("O1_OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer token,X-Scope=o1")
+	t.Setenv("O1_OTEL_SAMPLE_RATIO", "0.5")
+	t.Setenv("O1_SENTRY_DSN", "https://key@sentry.example/1")
+	t.Setenv("O1_SENTRY_ENVIRONMENT", "staging")
+	t.Setenv("O1_RELEASE", "v1.2.3")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.APIHealthAddr != ":9090" {
+		t.Errorf("APIHealthAddr = %q", cfg.APIHealthAddr)
+	}
+	if cfg.OTELExporterEndpoint != "http://collector:4318" {
+		t.Errorf("OTELExporterEndpoint = %q", cfg.OTELExporterEndpoint)
+	}
+	wantHeaders := map[string]string{"Authorization": "Bearer token", "X-Scope": "o1"}
+	if !reflect.DeepEqual(cfg.OTELExporterHeaders, wantHeaders) {
+		t.Errorf("OTELExporterHeaders = %v, want %v", cfg.OTELExporterHeaders, wantHeaders)
+	}
+	if cfg.OTELSampleRatio != 0.5 {
+		t.Errorf("OTELSampleRatio = %v", cfg.OTELSampleRatio)
+	}
+	if cfg.SentryDSN != "https://key@sentry.example/1" {
+		t.Errorf("SentryDSN = %q", cfg.SentryDSN)
+	}
+	if cfg.SentryEnvironment != "staging" {
+		t.Errorf("SentryEnvironment = %q", cfg.SentryEnvironment)
+	}
+	if cfg.Release != "v1.2.3" {
+		t.Errorf("Release = %q", cfg.Release)
+	}
+}
+
+func TestObservabilityConfig_RejectsMalformedHeaders(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	for _, value := range []string{"no-equals", "=missing-key", "missing-value=", "a=b,,c=d"} {
+		t.Setenv("O1_OTEL_EXPORTER_OTLP_HEADERS", value)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("Load() accepted malformed O1_OTEL_EXPORTER_OTLP_HEADERS=%q", value)
+		}
+	}
+}
+
 func TestLoad_DefaultsAllowedOriginsToAppBaseURL(t *testing.T) {
 	t.Setenv("O1_DATABASE_URL", "postgres://example")
 	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))

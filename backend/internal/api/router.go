@@ -23,6 +23,7 @@ import (
 	"o1/internal/httpx"
 	"o1/internal/incidents"
 	"o1/internal/monitors"
+	"o1/internal/observability"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
 	"o1/internal/statuspage"
@@ -46,6 +47,7 @@ type Dependencies struct {
 	AdminService      *admin.Service
 	StatusPageService *statuspage.Service
 	APIKeyService     *apikeys.Service
+	Metrics           *observability.Metrics
 }
 
 // authRatePerSecond and authRateBurst implement 10 requests per minute for
@@ -298,6 +300,13 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/admin/security-events", requireSession(requireAdmin(http.HandlerFunc(admin.SecurityEventsHandler(adminSvc)))))
 
 	var handler http.Handler = mux
+	if deps.Metrics != nil {
+		resolveRoute := func(r *http.Request) string {
+			_, pattern := mux.Handler(r)
+			return pattern
+		}
+		handler = deps.Metrics.HTTPMiddleware(handler, resolveRoute)
+	}
 	handler = withBodyLimit(handler)
 	handler = httpx.CSRF(deps.Config.AllowedOrigins)(handler)
 	handler = withSecurityHeaders(handler)

@@ -46,6 +46,16 @@ type Config struct {
 	SchedulerHealthAddr string
 	WorkerHealthAddr    string
 	BootstrapAdminEmail string
+
+	// Observability. Empty endpoints/DSNs disable the corresponding
+	// integration; defaults keep all three binaries fully functional.
+	APIHealthAddr        string
+	OTELExporterEndpoint string
+	OTELExporterHeaders  map[string]string
+	OTELSampleRatio      float64
+	SentryDSN            string
+	SentryEnvironment    string
+	Release              string
 }
 
 func env(key, fallback string) string {
@@ -127,6 +137,56 @@ func envPorts(key string, fallback []int) ([]int, error) {
 	return ports, nil
 }
 
+// envHeaders parses a comma-separated list of key=value pairs. Values are
+// secret (OTLP auth headers), so error messages never include them.
+func envHeaders(key string) (map[string]string, error) {
+	raw := env(key, "")
+	if raw == "" {
+		return nil, nil
+	}
+	headers := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			return nil, fmt.Errorf("invalid %s: empty header pair", key)
+		}
+		name, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid %s: header pair missing '='", key)
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			return nil, fmt.Errorf("invalid %s: header name and value must be non-empty", key)
+		}
+		headers[name] = value
+	}
+	return headers, nil
+}
+
+// envSampleRatio parses a trace sampling ratio, rejects non-finite values, and
+// clamps it to [0, 1].
+func envSampleRatio(key string, fallback float64) (float64, error) {
+	v := env(key, "")
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, fmt.Errorf("invalid %s %q: must be finite", key, v)
+	}
+	if n < 0 {
+		return 0, nil
+	}
+	if n > 1 {
+		return 1, nil
+	}
+	return n, nil
+}
+
 // Load reads configuration from the environment. It enforces
 // O1_DATABASE_URL and O1_SECRET_KEY (base64-encoded, exactly 32 bytes).
 func Load() (Config, error) {
@@ -144,12 +204,21 @@ func Load() (Config, error) {
 		SchedulerHealthAddr: env("O1_SCHEDULER_HEALTH_ADDR", ":8081"),
 		WorkerHealthAddr:    env("O1_WORKER_HEALTH_ADDR", ":8082"),
 		BootstrapAdminEmail: env("O1_BOOTSTRAP_ADMIN_EMAIL", ""),
+
+		APIHealthAddr:        env("O1_API_HEALTH_ADDR", ":8083"),
+		OTELExporterEndpoint: env("O1_OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		SentryDSN:            env("O1_SENTRY_DSN", ""),
+		SentryEnvironment:    env("O1_SENTRY_ENVIRONMENT", ""),
+		Release:              env("O1_RELEASE", "dev"),
 	}
 
 	switch cfg.Env {
 	case "development", "test", "production":
 	default:
 		return cfg, fmt.Errorf("invalid O1_ENV %q: must be one of development, test, production", cfg.Env)
+	}
+	if cfg.SentryEnvironment == "" {
+		cfg.SentryEnvironment = cfg.Env
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -216,6 +285,12 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	if cfg.WorkerConcurrency, err = envInt("O1_WORKER_CONCURRENCY", 50); err != nil {
+		return cfg, err
+	}
+	if cfg.OTELExporterHeaders, err = envHeaders("O1_OTEL_EXPORTER_OTLP_HEADERS"); err != nil {
+		return cfg, err
+	}
+	if cfg.OTELSampleRatio, err = envSampleRatio("O1_OTEL_SAMPLE_RATIO", 0.05); err != nil {
 		return cfg, err
 	}
 

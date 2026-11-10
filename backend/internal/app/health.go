@@ -9,10 +9,14 @@ import (
 	"o1/internal/httpx"
 )
 
-// StartHealthServer builds an HTTP server exposing /healthz and /readyz. The
-// caller starts it and shuts it down; ready is probed with a 2s timeout.
-func StartHealthServer(addr string, logger *slog.Logger, ready func(context.Context) error) *http.Server {
+// StartHealthServer builds an HTTP server exposing /healthz and /readyz. When
+// metrics is non-nil it also serves /metrics. The caller starts it and shuts
+// it down; ready is probed with a 2s timeout.
+func StartHealthServer(addr string, logger *slog.Logger, ready func(context.Context) error, metrics http.Handler) *http.Server {
 	mux := http.NewServeMux()
+	if metrics != nil {
+		mux.Handle("GET /metrics", metrics)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

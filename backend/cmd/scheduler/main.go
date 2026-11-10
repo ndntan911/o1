@@ -17,6 +17,7 @@ import (
 
 	"o1/internal/app"
 	"o1/internal/db/sqlc"
+	"o1/internal/observability"
 	"o1/internal/scheduler"
 )
 
@@ -37,6 +38,16 @@ func run() error {
 	}
 	defer rt.Close()
 
+	obs, err := observability.New(ctx, rt.Config, rt.Logger, "o1-scheduler")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := obs.Close(context.Background()); err != nil {
+			rt.Logger.Log(context.Background(), slog.LevelError, "observability shutdown failed", "error", err)
+		}
+	}()
+
 	riverClient, err := river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{Logger: rt.Logger})
 	if err != nil {
 		return fmt.Errorf("create river client: %w", err)
@@ -44,7 +55,7 @@ func run() error {
 
 	sched := scheduler.New(rt.Pool, sqlc.New(rt.Pool), riverClient, rt.Config, rt.Logger)
 
-	health := app.StartHealthServer(rt.Config.SchedulerHealthAddr, rt.Logger, rt.Pool.Ping)
+	health := app.StartHealthServer(rt.Config.SchedulerHealthAddr, rt.Logger, rt.Pool.Ping, obs.Metrics.Handler())
 	healthErr := make(chan error, 1)
 	go func() {
 		rt.Logger.Log(ctx, slog.LevelInfo, "starting scheduler health server", "addr", rt.Config.SchedulerHealthAddr)

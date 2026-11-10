@@ -21,6 +21,7 @@ import (
 	"o1/internal/app"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
+	"o1/internal/observability"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
 	"o1/internal/worker"
@@ -42,6 +43,16 @@ func run() error {
 		return err
 	}
 	defer rt.Close()
+
+	obs, err := observability.New(ctx, rt.Config, rt.Logger, "o1-worker")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := obs.Close(context.Background()); err != nil {
+			rt.Logger.Log(context.Background(), slog.LevelError, "observability shutdown failed", "error", err)
+		}
+	}()
 
 	// Only the Mailpit development sender exists today. Refuse to start in
 	// production rather than silently dropping incident alert mail.
@@ -82,7 +93,7 @@ func run() error {
 		return fmt.Errorf("start river client: %w", err)
 	}
 
-	health := app.StartHealthServer(rt.Config.WorkerHealthAddr, rt.Logger, rt.Pool.Ping)
+	health := app.StartHealthServer(rt.Config.WorkerHealthAddr, rt.Logger, rt.Pool.Ping, obs.Metrics.Handler())
 	healthErr := make(chan error, 1)
 	go func() {
 		rt.Logger.Log(ctx, slog.LevelInfo, "starting worker health server", "addr", rt.Config.WorkerHealthAddr)

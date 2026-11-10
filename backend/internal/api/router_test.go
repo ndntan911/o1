@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"o1/internal/api"
 	"o1/internal/config"
 	"o1/internal/httpx"
+	"o1/internal/observability"
 )
 
 // newTestRouter builds a router without a database. Only routes that do not
@@ -146,5 +148,40 @@ func TestRouter_AuthRateLimiterCoversTOTPRoutes(t *testing.T) {
 				t.Fatalf("request 11 = %d, want %d", rec.Code, http.StatusTooManyRequests)
 			}
 		})
+	}
+}
+
+func TestRouterMetrics_PublicMetricsNotServed(t *testing.T) {
+	h := newTestRouter(t)
+	rec := serve(t, h, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /metrics = %d, want 404 or 405", rec.Code)
+	}
+}
+
+func TestRouterMetrics_RecordsBoundedRoutePattern(t *testing.T) {
+	m := observability.NewMetrics("o1-api", "test")
+	h := api.NewRouter(api.Dependencies{
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:  config.Config{AllowedOrigins: []string{"https://app.example.com"}},
+		Metrics: m,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/01234567-89ab-cdef-0123-456789abcdef/monitors", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	rec := serve(t, h, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+
+	metricsRec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+	want := `o1_http_requests_total{method="GET",route="GET /api/v1/workspaces/{workspaceID}/monitors",status="401"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("metrics body missing bounded route labels:\n%s", body)
+	}
+	if strings.Contains(body, "01234567") {
+		t.Fatal("raw UUID leaked into metrics")
 	}
 }
