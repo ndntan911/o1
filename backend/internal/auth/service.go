@@ -155,12 +155,15 @@ func (s *Service) Register(ctx context.Context, emailAddr, password string) (sql
 	return user, nil
 }
 
-// verificationEmail builds the message shared by registration and resend.
-func (s *Service) verificationEmail(to, raw string) email.Message {
+// verificationEmail builds the message shared by registration and resend. The
+// token UUID is the provider idempotency key so a retried send cannot create a
+// duplicate verification mail.
+func (s *Service) verificationEmail(to, raw string, tokenID uuid.UUID) email.Message {
 	verifyURL := fmt.Sprintf("%s/verify-email?token=%s", s.cfg.AppBaseURL, raw)
 	return email.Message{
-		To:      to,
-		Subject: "Verify your email",
+		To:             to,
+		Subject:        "Verify your email",
+		IdempotencyKey: tokenID.String(),
 		Text: fmt.Sprintf("Please verify your email by opening the following link:\n%s\n\n"+
 			"The link expires in 24 hours and can be used once.\n", verifyURL),
 		HTML: fmt.Sprintf(`<p>Please verify your email by opening <a href=%q>this link</a>.</p>`+
@@ -172,7 +175,7 @@ func (s *Service) verificationEmail(to, raw string) email.Message {
 // fails, retires the token so the undelivered link cannot be used. Logs carry
 // only the error type (never the token, URL, or raw SMTP error).
 func (s *Service) deliverVerificationEmail(ctx context.Context, userID, tokenID uuid.UUID, to, raw string) {
-	if err := s.sender.Send(ctx, s.verificationEmail(to, raw)); err != nil {
+	if err := s.sender.Send(ctx, s.verificationEmail(to, raw, tokenID)); err != nil {
 		slog.Error("send verification email failed",
 			"user_id", userID, "error_type", fmt.Sprintf("%T", err))
 		markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenCleanupTimeout)

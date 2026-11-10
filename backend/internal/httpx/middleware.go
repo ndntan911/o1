@@ -146,7 +146,7 @@ func RateLimit(rps float64, burst int, keyByIP bool) func(http.Handler) http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var allowed bool
 			if keyByIP {
-				allowed = store.allow(clientIP(r), rps, burst, time.Now())
+				allowed = store.allow(ClientIP(r), rps, burst, time.Now())
 			} else {
 				allowed = global.Allow()
 			}
@@ -209,10 +209,11 @@ func retryAfterSeconds(rps float64) int {
 	return seconds
 }
 
-// clientIP derives the rate-limit key. X-Forwarded-For is only trusted when
-// the immediate peer is loopback or on a private network (the local Caddy
-// proxy); otherwise a public client could spoof the header and evade limits.
-func clientIP(r *http.Request) string {
+// ClientIP returns the client address used for rate limiting, sessions, and
+// audit records. X-Forwarded-For is only trusted when the immediate peer is
+// loopback or on a private network (the local Caddy proxy); otherwise a public
+// client could spoof the header and evade limits.
+func ClientIP(r *http.Request) string {
 	host := r.RemoteAddr
 	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		host = h

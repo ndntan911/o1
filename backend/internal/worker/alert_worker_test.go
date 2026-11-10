@@ -270,6 +270,27 @@ func TestAlertWorker_SendsOpenedDelivery(t *testing.T) {
 	}
 }
 
+func TestAlertWorker_EmailIdempotencyKeyIsDeliveryID(t *testing.T) {
+	env := newWorkerEnv(t)
+	monitorID, workspaceID := env.createMonitor(t, "https://example.com/health", 1, 1, false, false)
+	channelID := env.attachEmailChannel(t, monitorID, workspaceID, "one@example.com")
+	fixture := createAlertFixture(t, env, monitorID, workspaceID, channelID, "opened", 0, time.Now().UTC())
+
+	sender := &alertTestSender{}
+	worker := newAlertWorkerForTest(env, sender)
+	if err := worker.Work(context.Background(), alertJob(fixture.deliveryID, 1, 5)); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+
+	msgs := sender.messages()
+	if len(msgs) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(msgs))
+	}
+	if got, want := msgs[0].IdempotencyKey, fixture.deliveryID.String(); got != want {
+		t.Fatalf("IdempotencyKey = %q, want %q", got, want)
+	}
+}
+
 func TestAlertWorker_RedactsMonitorURLQueryAndFragment(t *testing.T) {
 	env := newWorkerEnv(t)
 	monitorID, workspaceID := env.createMonitor(
@@ -333,6 +354,54 @@ func TestAlertWorker_FailureRetriesThenMarksFailed(t *testing.T) {
 	state = readDeliveryState(t, env, fixture.deliveryID)
 	if state.status != "failed" || state.attempts != 2 || state.lastError == nil {
 		t.Fatalf("delivery after final failure = %+v, want failed/2/last_error", state)
+	}
+}
+
+func TestAlertWorker_EmailPermanentFailureFailsWithoutRetry(t *testing.T) {
+	env := newWorkerEnv(t)
+	monitorID, workspaceID := env.createMonitor(t, "https://example.com/health", 1, 1, false, false)
+	channelID := env.attachEmailChannel(t, monitorID, workspaceID, "one@example.com")
+	fixture := createAlertFixture(t, env, monitorID, workspaceID, channelID, "opened", 0, time.Now().UTC())
+
+	sender := &alertTestSender{err: &email.DeliveryError{
+		Message:   "resend returned HTTP 422",
+		Permanent: true,
+	}}
+	worker := newAlertWorkerForTest(env, sender)
+
+	if err := worker.Work(context.Background(), alertJob(fixture.deliveryID, 1, 5)); err != nil {
+		t.Fatalf("Work = %v, want nil (permanent failure must not retry)", err)
+	}
+	state := readDeliveryState(t, env, fixture.deliveryID)
+	if state.status != "failed" || state.attempts != 1 {
+		t.Fatalf("delivery = %+v, want failed/1", state)
+	}
+	if state.lastError == nil || *state.lastError != "resend returned HTTP 422" {
+		t.Fatalf("last_error = %v, want sanitized provider error", state.lastError)
+	}
+}
+
+func TestAlertWorker_EmailTransientDeliveryErrorRetries(t *testing.T) {
+	env := newWorkerEnv(t)
+	monitorID, workspaceID := env.createMonitor(t, "https://example.com/health", 1, 1, false, false)
+	channelID := env.attachEmailChannel(t, monitorID, workspaceID, "one@example.com")
+	fixture := createAlertFixture(t, env, monitorID, workspaceID, channelID, "opened", 0, time.Now().UTC())
+
+	sender := &alertTestSender{err: &email.DeliveryError{
+		Message: "resend returned HTTP 503",
+	}}
+	worker := newAlertWorkerForTest(env, sender)
+
+	err := worker.Work(context.Background(), alertJob(fixture.deliveryID, 1, 5))
+	if err == nil || !strings.Contains(err.Error(), "resend returned HTTP 503") {
+		t.Fatalf("Work error = %v, want retryable delivery error", err)
+	}
+	state := readDeliveryState(t, env, fixture.deliveryID)
+	if state.status != "pending" || state.attempts != 1 {
+		t.Fatalf("delivery = %+v, want pending/1", state)
+	}
+	if state.lastError == nil || *state.lastError != "resend returned HTTP 503" {
+		t.Fatalf("last_error = %v, want sanitized provider error", state.lastError)
 	}
 }
 

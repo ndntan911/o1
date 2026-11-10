@@ -67,6 +67,10 @@ services:
         VITE_RELEASE: ${VITE_RELEASE:-dev}
     depends_on:
       - api
+    environment:
+      # Development listens on plain HTTP on :80. Production sets the domain so
+      # Caddy obtains and serves a TLS certificate.
+      O1_SITE_ADDRESS: ":80"
     ports:
       - "5173:80"
 

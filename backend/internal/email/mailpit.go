@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"mime"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
@@ -44,7 +44,7 @@ func (s *MailpitSender) Send(ctx context.Context, msg Message) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.validate(msg); err != nil {
+	if err := validateMessage(s.from, msg); err != nil {
 		return err
 	}
 	defer func() {
@@ -116,11 +116,40 @@ func (s *MailpitSender) Send(ctx context.Context, msg Message) (err error) {
 	return nil
 }
 
-// validate rejects header injection attempts before any network I/O.
-func (s *MailpitSender) validate(msg Message) error {
-	for _, field := range []string{s.from, msg.To, msg.Subject} {
+// maxSubjectLength bounds the RFC 5322 header line length.
+const maxSubjectLength = 998
+
+// validateMessage rejects malformed messages and header injection attempts
+// before any network I/O. It is shared by every sender so validation behavior
+// is identical across providers.
+func validateMessage(from string, msg Message) error {
+	for _, field := range []string{from, msg.To, msg.Subject, msg.IdempotencyKey} {
 		if strings.ContainsAny(field, "\r\n") {
-			return errors.New("email: message header contains CR/LF")
+			return &DeliveryError{
+				Message:   "email: message header contains CR/LF",
+				Permanent: true,
+			}
+		}
+	}
+	if strings.TrimSpace(msg.To) == "" {
+		return &DeliveryError{
+			Message:   "email: recipient address is empty",
+			Permanent: true,
+		}
+	}
+	addr, err := mail.ParseAddress(strings.TrimSpace(msg.To))
+	if err != nil || addr.Address == "" {
+		// The underlying parser error is intentionally not surfaced: it can
+		// echo the recipient address.
+		return &DeliveryError{
+			Message:   "email: invalid recipient address",
+			Permanent: true,
+		}
+	}
+	if len(msg.Subject) > maxSubjectLength {
+		return &DeliveryError{
+			Message:   "email: subject is too long",
+			Permanent: true,
 		}
 	}
 	return nil

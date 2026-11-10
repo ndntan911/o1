@@ -39,7 +39,9 @@ curl http://localhost:8080/readyz
 ```
 
 The compose file uses a development-only `O1_SECRET_KEY`. Never use it outside
-local development.
+local development. Development is plain HTTP on <http://localhost:5173>;
+production TLS and the standalone production stack are covered in
+[Production deployment](#production-deployment).
 
 ## Dashboard
 
@@ -164,9 +166,21 @@ endpoint is treated as a permanent failure.
 
 Development uses Mailpit as the SMTP sink. Compose starts Mailpit at
 <http://localhost:8025>, where every alert email and its rendered content can be
-inspected. A production email sender is not implemented yet: the worker refuses
-to start with `O1_ENV=production`, and production delivery remains a later
-milestone. Paging integrations, Slack OAuth, custom webhook headers, maintenance
+inspected. Production sends through Resend: the production stack sets
+`O1_EMAIL_PROVIDER=resend`; when running the API outside that stack, set it
+yourself along with a Resend API key and a from address on the verified sending
+domain. Production refuses to start with the `mailpit` provider or without a
+Resend key.
+
+Transient send failures (timeouts, `408`, `425`, `429`, and `5xx`) are retried
+with short backoff and an idempotency key, so a lost response does not duplicate
+a message. Permanent failures such as authentication errors and other `4xx`
+responses are recorded as failed deliveries and are not retried. The Resend free
+tier has daily and monthly quotas; size the plan for incident volume. See
+[Configuration](#configuration) and the
+[production runbook](deploy/production/README.md).
+
+Paging integrations, Slack OAuth, custom webhook headers, maintenance
 windows, and per-channel reminder schedules are outside the current scope.
 
 ## Public status pages
@@ -377,6 +391,10 @@ optional Compose profile:
 docker compose --profile observability up -d alloy
 ```
 
+For the production stack the equivalent command is in
+[deploy/production/README.md](deploy/production/README.md); it mounts the same
+`deploy/observability/alloy.alloy` configuration.
+
 Alloy joins the Compose network, scrapes `api:8083`, `scheduler:8081`, and
 `worker:8082` every 15 seconds, and remote-writes to Grafana Cloud. A normal
 `docker compose up` does not start it, and Alloy exits with a clear error if
@@ -413,6 +431,36 @@ internal metrics listeners contain the catalog metrics, public `/metrics`
 returns `404`, and `/healthz` and `/readyz` return API JSON rather than the
 SPA.
 
+## Production deployment
+
+`deploy/production/` contains a standalone production Compose stack. It does
+not inherit the development `compose.yaml`: there is no Mailpit, no published
+PostgreSQL/API/metrics port, no development key, and no raised auth rate limit.
+Only the `web` container publishes ports `80` and `443`; Caddy serves the SPA,
+proxies the API on the same origin, and obtains and renews the TLS certificate.
+
+```sh
+cp deploy/production/env.example deploy/production/.env
+$EDITOR deploy/production/.env
+docker compose --env-file deploy/production/.env \
+  -f deploy/production/compose.yaml up -d --build
+```
+
+`O1_DOMAIN` is the public hostname. The stack derives `O1_APP_BASE_URL` and
+`O1_ALLOWED_ORIGINS` from it and sets the web container's `O1_SITE_ADDRESS` to
+it, so Caddy serves HTTPS for that name. `O1_SITE_ADDRESS` defaults to `:80`;
+the development Compose explicitly sets that value because it serves plain HTTP
+on <http://localhost:5173>.
+
+The full runbook covers DNS and firewall prerequisites, Resend domain
+verification and SPF/DKIM, secret generation, the first deploy, health and TLS
+checks, administrator bootstrap, email smoke tests, logs, updates, and
+troubleshooting: [deploy/production/README.md](deploy/production/README.md).
+
+Production email is Resend only. `O1_ENV=production` requires
+`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. Backups and restore
+are Plan 12 and CI deployment is Plan 11; this stack is deployed manually.
+
 ## Configuration
 
 Configuration is read from environment variables prefixed with `O1_`.
@@ -440,9 +488,20 @@ Common optional settings:
 - `O1_ALLOWED_ORIGINS` — comma-separated Origin allowlist for unsafe requests.
   Defaults to `O1_APP_BASE_URL`. Compose forwards this variable; leave it empty
   to use the dashboard origin.
-- `O1_SMTP_ADDR` and `O1_EMAIL_FROM` — transactional email. Development uses
-  Mailpit. A production email sender is not implemented yet, and the API
-  refuses to start with `O1_ENV=production`.
+- `O1_SMTP_ADDR` — Mailpit SMTP address for the `mailpit` provider, default
+  `localhost:1025`.
+- `O1_EMAIL_PROVIDER` — `mailpit` or `resend`. Empty resolves to `mailpit` in
+  development/test and `resend` in production. Production rejects `mailpit`.
+- `O1_EMAIL_FROM` — sender mailbox for transactional and alert email. Must be a
+  valid address and, in production, on the Resend verified domain.
+- `O1_RESEND_API_KEY` — Resend API key; required for the `resend` provider.
+- `O1_EMAIL_REPLY_TO` — optional Reply-To mailbox.
+- `O1_RESEND_RPS` / `O1_RESEND_BURST` — per-process Resend send rate limit,
+  default `2` requests/second with a burst of `2`.
+- `O1_RESEND_API_URL` — Resend API base URL, default `https://api.resend.com`;
+  overridable for tests.
+- `O1_SITE_ADDRESS` — Caddy site address used by the `web` container, default
+  `:80`. Production sets the public domain so Caddy serves HTTPS.
 - `O1_MONITOR_MIN_INTERVAL` / `O1_MONITOR_MAX_INTERVAL` — default `60s` /
   `24h`.
 - `O1_MONITOR_CREATE_LIMIT` — monitor creations per workspace per hour,
@@ -541,3 +600,10 @@ Integration tests start disposable PostgreSQL 16 containers and are skipped in
 - Failed probes (timeouts, TLS errors, status mismatches) are recorded as
   results, not as failed queue jobs.
 - The API emits RFC 9457 `application/problem+json` errors with stable codes.
+- The production stack publishes only `80`/`443`. PostgreSQL, the API, the
+  scheduler, the worker, and all health/metrics listeners stay on the private
+  Compose network.
+- Caddy overwrites `X-Forwarded-For` with the immediate peer address before
+  proxying to the API, so a client cannot spoof the source IP used for auth rate
+  limits and audit events. The API trusts forwarded headers only from loopback
+  or private peers.

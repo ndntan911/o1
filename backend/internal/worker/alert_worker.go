@@ -146,7 +146,13 @@ func (w *AlertWorker) sendEmail(ctx context.Context, job *river.Job[jobs.AlertAr
 		BaseURL:       w.cfg.AppBaseURL,
 		Recipient:     delivery.Recipient,
 	})
+	// The delivery UUID is stable across River attempts, so a provider that
+	// deduplicates idempotency keys cannot send the same alert twice.
+	message.IdempotencyKey = delivery.ID.String()
 	if err := w.sender.Send(ctx, message); err != nil {
+		if email.IsPermanent(err) {
+			return w.failWithoutRetry(ctx, delivery, err.Error(), start)
+		}
 		return w.handleSendError(ctx, job, delivery, err, start)
 	}
 	if err := w.q.MarkAlertDeliverySent(ctx, delivery.ID); err != nil {

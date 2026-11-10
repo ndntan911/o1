@@ -3,7 +3,6 @@ package auth
 import (
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 
 	"o1/internal/config"
@@ -266,14 +265,10 @@ func ResetPasswordHandler(svc *Service) http.HandlerFunc {
 	}
 }
 
-// requestIP extracts the client IP from RemoteAddr, leaving off the port. It
-// deliberately does not trust forwarding headers.
+// requestIP delegates to httpx.ClientIP so sessions and audit records use the
+// same trusted forwarded-header logic as HTTP rate limiting.
 func requestIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return httpx.ClientIP(r)
 }
 
 // writeValidationProblem responds 400 with code validation_error.

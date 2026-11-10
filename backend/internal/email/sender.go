@@ -5,12 +5,14 @@ package email
 import "context"
 
 // Message is an outgoing email. Text and HTML carry the same content in
-// the two representation formats.
+// the two representation formats. IdempotencyKey is optional; providers that
+// support it use it to deduplicate retried deliveries. Mailpit ignores it.
 type Message struct {
-	To      string
-	Subject string
-	Text    string
-	HTML    string
+	To             string
+	Subject        string
+	Text           string
+	HTML           string
+	IdempotencyKey string
 }
 
 // Sender delivers email messages.

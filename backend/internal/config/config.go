@@ -6,11 +6,23 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"net/mail"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// Supported transactional email providers.
+const (
+	// EmailProviderMailpit delivers over the local Mailpit SMTP server.
+	EmailProviderMailpit = "mailpit"
+	// EmailProviderResend delivers through the Resend HTTP API.
+	EmailProviderResend = "resend"
+)
+
+// defaultResendAPIURL is used when O1_RESEND_API_URL is unset.
+const defaultResendAPIURL = "https://api.resend.com"
 
 // Config holds all runtime configuration for the application. Values come
 // from environment variables with the O1_ prefix.
@@ -30,6 +42,16 @@ type Config struct {
 	SMTPAddr             string
 	EmailFrom            string
 	ResendAPIKey         string
+	// EmailProvider is the resolved transactional email provider, either
+	// EmailProviderMailpit or EmailProviderResend.
+	EmailProvider string
+	// EmailReplyTo is the optional Reply-To mailbox; empty means none.
+	EmailReplyTo string
+	// ResendAPIURL is the Resend API base URL.
+	ResendAPIURL string
+	// ResendRPS and ResendBurst configure the per-process Resend rate limiter.
+	ResendRPS   float64
+	ResendBurst int
 
 	// AuthRatePerMinute and AuthRateBurst configure the per-IP token bucket
 	// guarding the credential-handling auth endpoints. Compose raises them
@@ -206,6 +228,9 @@ func Load() (Config, error) {
 		SMTPAddr:          env("O1_SMTP_ADDR", "localhost:1025"),
 		EmailFrom:         env("O1_EMAIL_FROM", "o1@localhost"),
 		ResendAPIKey:      os.Getenv("O1_RESEND_API_KEY"),
+		EmailProvider:     strings.ToLower(strings.TrimSpace(env("O1_EMAIL_PROVIDER", ""))),
+		EmailReplyTo:      strings.TrimSpace(env("O1_EMAIL_REPLY_TO", "")),
+		ResendAPIURL:      env("O1_RESEND_API_URL", defaultResendAPIURL),
 
 		SchedulerHealthAddr: env("O1_SCHEDULER_HEALTH_ADDR", ":8081"),
 		WorkerHealthAddr:    env("O1_WORKER_HEALTH_ADDR", ":8082"),
@@ -222,6 +247,12 @@ func Load() (Config, error) {
 	case "development", "test", "production":
 	default:
 		return cfg, fmt.Errorf("invalid O1_ENV %q: must be one of development, test, production", cfg.Env)
+	}
+	// The o1@localhost sender is a development convenience. Production must
+	// configure a real address, so a missing O1_EMAIL_FROM fails validation
+	// instead of silently starting with an undeliverable mailbox.
+	if cfg.Env == "production" && strings.TrimSpace(os.Getenv("O1_EMAIL_FROM")) == "" {
+		cfg.EmailFrom = ""
 	}
 	if cfg.SentryEnvironment == "" {
 		cfg.SentryEnvironment = cfg.Env
@@ -305,6 +336,12 @@ func Load() (Config, error) {
 	if cfg.OTELSampleRatio, err = envSampleRatio("O1_OTEL_SAMPLE_RATIO", 0.05); err != nil {
 		return cfg, err
 	}
+	if cfg.ResendRPS, err = envFloat("O1_RESEND_RPS", 2); err != nil {
+		return cfg, err
+	}
+	if cfg.ResendBurst, err = envInt("O1_RESEND_BURST", 2); err != nil {
+		return cfg, err
+	}
 
 	if err := cfg.validate(); err != nil {
 		return cfg, err
@@ -334,7 +371,7 @@ func loadEncryptionKey(cfg Config) ([]byte, bool, error) {
 	return key, true, nil
 }
 
-func (cfg Config) validate() error {
+func (cfg *Config) validate() error {
 	if cfg.MonitorMinInterval < 60*time.Second || cfg.MonitorMaxInterval > 24*time.Hour {
 		return fmt.Errorf("invalid monitor intervals: must be between 60s and 24h")
 	}
@@ -367,6 +404,76 @@ func (cfg Config) validate() error {
 	}
 	if cfg.WorkerConcurrency <= 0 {
 		return fmt.Errorf("invalid O1_WORKER_CONCURRENCY: must be positive")
+	}
+
+	provider, err := cfg.ResolveEmailProvider()
+	if err != nil {
+		return err
+	}
+	cfg.EmailProvider = provider
+	if cfg.ResendRPS <= 0 || math.IsNaN(cfg.ResendRPS) || math.IsInf(cfg.ResendRPS, 0) {
+		return fmt.Errorf("invalid O1_RESEND_RPS: must be a finite positive number")
+	}
+	if cfg.ResendBurst < 1 {
+		return fmt.Errorf("invalid O1_RESEND_BURST: must be at least 1, got %d", cfg.ResendBurst)
+	}
+	return nil
+}
+
+// ResolveEmailProvider returns the effective email provider for cfg, applying
+// the defaults (mailpit outside production, resend in production) and checking
+// that the provider has the credentials and addresses it needs. It does not
+// modify cfg; callers that need the resolved value should assign it back to
+// EmailProvider. Error messages never include credentials or addresses.
+func (cfg Config) ResolveEmailProvider() (string, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.EmailProvider))
+	switch provider {
+	case "":
+		if cfg.Env == "production" {
+			provider = EmailProviderResend
+		} else {
+			provider = EmailProviderMailpit
+		}
+	case EmailProviderMailpit, EmailProviderResend:
+	default:
+		return "", fmt.Errorf("invalid O1_EMAIL_PROVIDER %q: must be one of mailpit, resend", cfg.EmailProvider)
+	}
+
+	switch provider {
+	case EmailProviderMailpit:
+		if cfg.Env == "production" {
+			return "", fmt.Errorf("invalid O1_EMAIL_PROVIDER: mailpit is not allowed in production; use resend")
+		}
+		if strings.TrimSpace(cfg.SMTPAddr) == "" {
+			return "", fmt.Errorf("missing required environment variable O1_SMTP_ADDR for the mailpit email provider")
+		}
+	case EmailProviderResend:
+		if strings.TrimSpace(cfg.ResendAPIKey) == "" {
+			return "", fmt.Errorf("missing required environment variable O1_RESEND_API_KEY for the resend email provider")
+		}
+	}
+
+	if err := validateMailbox("O1_EMAIL_FROM", cfg.EmailFrom, true); err != nil {
+		return "", err
+	}
+	if err := validateMailbox("O1_EMAIL_REPLY_TO", cfg.EmailReplyTo, false); err != nil {
+		return "", err
+	}
+	return provider, nil
+}
+
+// validateMailbox checks that value parses as a single RFC 5322 mailbox. The
+// underlying parser error is not surfaced because it can echo the address.
+func validateMailbox(name, value string, required bool) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		if required {
+			return fmt.Errorf("missing required environment variable %s", name)
+		}
+		return nil
+	}
+	if _, err := mail.ParseAddress(value); err != nil {
+		return fmt.Errorf("invalid %s: must be a valid email mailbox", name)
 	}
 	return nil
 }

@@ -460,8 +460,9 @@ func (s *Service) RequestPasswordReset(ctx context.Context, emailAddr string) er
 
 	resetURL := fmt.Sprintf("%s/reset-password?token=%s", s.cfg.AppBaseURL, raw)
 	msg := email.Message{
-		To:      user.Email,
-		Subject: "Reset your password",
+		To:             user.Email,
+		Subject:        "Reset your password",
+		IdempotencyKey: tokenID.String(),
 		Text: fmt.Sprintf("Reset your password by opening the following link:\n%s\n\n"+
 			"The link expires in 1 hour and can be used once.\n", resetURL),
 		HTML: fmt.Sprintf(`<p>Reset your password by opening <a href=%q>this link</a>.</p>`+
