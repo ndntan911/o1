@@ -7,10 +7,12 @@ import {
 import AxeBuilder from '@axe-core/playwright';
 import { generate } from 'otplib';
 import {
+	composeExec,
 	composePsql,
 	MailpitTimeoutError,
 	seedIncident,
 	seedProbeResults,
+	seedQueuedJob,
 	securityEvents,
 	waitForVerificationLink,
 	workspaceIdForSlug,
@@ -884,6 +886,85 @@ test('register, verify, create a monitor, and administer the workspace', async (
 	await expect
 		.poll(() => page.evaluate(() => localStorage.getItem('o1-theme')))
 		.toBe('system');
+});
+
+// Metrics and health routing are checked from inside the Compose network: the
+// API image is distroless, so the web container (Caddy on Alpine, with wget)
+// is the client. The API request first guarantees that the HTTP counter has a
+// sample on the freshly started registry.
+test('serves private metrics and routes public health checks to the API', async ({
+	request,
+}) => {
+	const apiURL = process.env.E2E_API_URL ?? 'http://localhost:8080';
+
+	// Exercise the instrumented API through Caddy so o1_http_requests_total is
+	// present even when this test runs on its own.
+	const unauth = await request.get('/api/v1/me');
+	expect(unauth.status()).toBe(401);
+
+	const apiMetrics = composeExec('web', [
+		'wget',
+		'-qO-',
+		'http://api:8083/metrics',
+	]);
+	expect(apiMetrics).toContain('o1_http_requests_total');
+	expect(apiMetrics).toContain('o1_build_info');
+	expect(apiMetrics).toMatch(
+		/o1_http_requests_total\{[^}]*method="GET"[^}]*route="GET \/api\/v1\/me"[^}]*\}/,
+	);
+	// Route labels are templates, never raw paths with identifiers or queries.
+	expect(apiMetrics).not.toMatch(
+		/route="[^"]*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/,
+	);
+
+	const schedulerMetrics = composeExec('web', [
+		'wget',
+		'-qO-',
+		'http://scheduler:8081/metrics',
+	]);
+	expect(schedulerMetrics).toContain('o1_build_info');
+
+	// Queue gauges are only emitted for states that currently exist. Seed a
+	// future-scheduled non-terminal job and wait for the worker's 15s refresh
+	// so the assertion does not depend on a transient probe job.
+	seedQueuedJob();
+	await expect
+		.poll(
+			() => composeExec('web', ['wget', '-qO-', 'http://worker:8082/metrics']),
+			{ timeout: 30_000, intervals: [1000] },
+		)
+		.toContain('o1_queue_jobs');
+	const workerMetrics = composeExec('web', [
+		'wget',
+		'-qO-',
+		'http://worker:8082/metrics',
+	]);
+	expect(workerMetrics).toContain('o1_build_info');
+	expect(workerMetrics).toContain('o1_queue_jobs');
+
+	// The public site and the public API listener never expose exposition.
+	const publicMetrics = await request.get('/metrics');
+	expect(publicMetrics.status()).toBe(404);
+	const publicMetricsBody = await publicMetrics.text();
+	expect(publicMetricsBody).not.toContain('o1_');
+	expect(publicMetricsBody).not.toContain('# HELP');
+
+	const apiListenerMetrics = await request.get(`${apiURL}/metrics`);
+	expect(apiListenerMetrics.status()).toBe(404);
+
+	// Caddy proxies health checks to the API, so this returns JSON, not the SPA.
+	const health = await request.get('/healthz');
+	expect(health.status()).toBe(200);
+	expect(health.headers()['content-type']).toContain('application/json');
+	const healthBody = await health.text();
+	expect(healthBody).not.toContain('<!doctype html>');
+	expect(healthBody).not.toContain('id="root"');
+	expect(JSON.parse(healthBody)).toEqual({ status: 'ok' });
+
+	const ready = await request.get('/readyz');
+	expect(ready.status()).toBe(200);
+	expect(ready.headers()['content-type']).toContain('application/json');
+	expect(JSON.parse(await ready.text())).toEqual({ status: 'ok' });
 });
 
 // Pre-paint behavior is tested with the app's module scripts blocked, so only

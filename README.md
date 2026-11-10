@@ -295,30 +295,51 @@ so those records are not duplicated here.
 
 ## Observability
 
-Metrics, traces, and error reporting are optional and disabled by default.
+Metrics, traces, and error reporting are optional. With every observability
+variable empty the stack starts normally: no exporter or Sentry client is
+created, no data leaves the host, and no endpoint is required.
 
-- The API exposes Prometheus metrics on an internal listener
-  (`O1_API_HEALTH_ADDR`, default `:8083`) that Compose does not publish. The
-  scheduler and worker expose metrics on their health listeners (`:8081` and
-  `:8082`), which Compose publishes on loopback only.
-- Caddy proxies `/healthz` and `/readyz` to the API and responds `404` for
-  `/metrics`. Metrics are never public, and their labels never contain raw
-  paths, IDs, URLs, query strings, or emails.
-- Tracing uses OTLP/HTTP when `O1_OTEL_EXPORTER_OTLP_ENDPOINT` is set. Sentry
-  error capture is enabled by `O1_SENTRY_DSN` on the backend and by the
-  `VITE_SENTRY_DSN` web build arg.
-- `deploy/observability/` contains the Grafana Alloy config, Prometheus alert
-  rules, Grafana dashboard JSON, and the runbook. Start Alloy with the optional
-  Compose profile:
+### Metrics endpoints
 
-  ```sh
-  docker compose --profile observability up -d alloy
-  ```
+- The API serves Prometheus metrics on an internal listener
+  (`O1_API_HEALTH_ADDR`, default `:8083`) that Compose does not publish.
+- The scheduler and worker serve metrics on their health listeners (`:8081`
+  and `:8082`), which Compose publishes on `127.0.0.1` only.
+- All three expose `/healthz`, `/readyz`, `/metrics`, the default Go/process
+  collectors, and `o1_build_info{service,version}`. The HTTP, probe, alert, and
+  scheduler metrics live in the process that records them. The worker also
+  refreshes the `o1_queue_jobs`, `o1_queue_oldest_job_age_seconds`, and
+  `o1_incidents_open` gauges in the background; the API and scheduler do not
+  run those collectors.
+- Caddy proxies `/healthz` and `/readyz` to `api:8080` and responds `404` for
+  `/metrics`. Metrics are never public, including on the public API listener.
 
-  Alloy joins the Compose network, scrapes the internal listeners, and
-  remote-writes to Grafana Cloud. A normal `docker compose up` does not start
-  it, and Alloy exits with a clear error if its remote-write credentials are
-  empty.
+Inspect an internal listener from the Compose network. The API image is
+distroless, so use the `web` container (Caddy on Alpine):
+
+```sh
+docker compose exec -T web wget -qO- http://api:8083/metrics
+docker compose exec -T web wget -qO- http://scheduler:8081/metrics
+docker compose exec -T web wget -qO- http://worker:8082/metrics
+```
+
+Metric labels are bounded enums and templates: method, route pattern (for
+example `GET /api/v1/workspaces/{workspaceID}/monitors/{monitorID}`), status
+code, queue/state, channel kind, and result. Raw paths, UUIDs, workspace or
+monitor IDs, URLs, query strings, and email addresses never become labels, so
+cardinality stays predictable and tenant data stays out of Prometheus.
+
+### Tracing and error reporting
+
+- Tracing uses OTLP/HTTP when `O1_OTEL_EXPORTER_OTLP_ENDPOINT` is set. An empty
+  endpoint disables tracing without making export attempts. Logs add
+  `trace_id` and `span_id` when a span is active.
+- Sentry error capture is enabled by `O1_SENTRY_DSN` on the backend and by the
+  `VITE_SENTRY_DSN` web build arg. Request bodies, headers, cookies, query
+  strings, and user emails are stripped before sending. Sentry performance is
+  disabled because OTel owns traces.
+- Frontend DSN and release are baked into the static bundle at build time, not
+  read at runtime.
 
 Backend environment variables:
 
@@ -338,15 +359,51 @@ Frontend build args:
 - `VITE_SENTRY_DSN` — frontend Sentry DSN; empty disables Sentry.
 - `VITE_RELEASE` — frontend release; default `dev`.
 
+### Deploy bundle
+
+`deploy/observability/` contains the Grafana Alloy config, Prometheus alert
+rules, Grafana dashboard JSON, and the full runbook. Start Alloy with the
+optional Compose profile:
+
+```sh
+docker compose --profile observability up -d alloy
+```
+
+Alloy joins the Compose network, scrapes `api:8083`, `scheduler:8081`, and
+`worker:8082` every 15 seconds, and remote-writes to Grafana Cloud. A normal
+`docker compose up` does not start it, and Alloy exits with a clear error if
+`GRAFANA_REMOTE_WRITE_URL`, `GRAFANA_REMOTE_WRITE_USER`, or
+`GRAFANA_REMOTE_WRITE_TOKEN` is empty.
+
 Grafana Alloy (`observability` profile):
 
 - `GRAFANA_REMOTE_WRITE_URL` — Grafana Cloud Prometheus remote-write endpoint.
 - `GRAFANA_REMOTE_WRITE_USER` — numeric Grafana Cloud user/instance ID.
 - `GRAFANA_REMOTE_WRITE_TOKEN` — access-policy token with `metrics:write`.
 
-See [deploy/observability/README.md](deploy/observability/README.md) for Grafana
-Cloud setup, dashboard and rule import, Sentry projects, and the external
-healthchecks.io dead-man's switch that pings `https://<host>/healthz`.
+Import the dashboard JSON in Grafana (**Dashboards → New → Import**, UID
+`o1-observability`) and load the alert rules with `mimirtool rules load`.
+Panels cover request rate/errors/latency, queue depth and age, probes, alert
+deliveries, incidents, database pool, scheduler ticks, and process resources.
+The rules include instance-down, missing-metrics, error-rate, latency, queue
+backlog/age, discarded jobs, probe failure, alert failure, pool saturation,
+and scheduler-stalled alerts.
+
+Alerting inside Grafana cannot report that the whole host or scrape path is
+gone. Point an external dead-man's switch (a free healthchecks.io check) at
+`https://<host>/healthz` every minute with a two-minute grace period. Caddy
+routes `/healthz` to the API, so the switch fails when the API is unavailable
+instead of receiving the SPA shell; `/readyz` adds database readiness for load
+balancers. Never point it at `/metrics`, which is private and returns `404`.
+
+See [deploy/observability/README.md](deploy/observability/README.md) for
+Grafana Cloud setup, exact dashboard/rule import commands, Sentry project
+setup, retention/budget guidance, and troubleshooting.
+
+The Playwright smoke suite also covers this contract from inside Compose: the
+internal metrics listeners contain the catalog metrics, public `/metrics`
+returns `404`, and `/healthz` and `/readyz` return API JSON rather than the
+SPA.
 
 ## Configuration
 

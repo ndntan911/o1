@@ -86,6 +86,32 @@ export function composePsql(
 }
 
 /**
+ * Runs a command inside a Compose service and returns its stdout. E2E checks
+ * use this to reach internal listeners that are not published to the host,
+ * such as the metrics endpoints on the Compose network.
+ */
+export function composeExec(service: string, command: string[]): string {
+	return execFileSync(
+		'docker',
+		['compose', '-f', '../compose.yaml', 'exec', '-T', service, ...command],
+		{ stdio: 'pipe', encoding: 'utf8' },
+	);
+}
+
+/**
+ * Inserts a non-terminal River job scheduled in the future so the worker's
+ * queue gauges have a sample without racing a real probe job. The job never
+ * becomes runnable, so the worker does not attempt to execute it.
+ */
+export function seedQueuedJob(queue = 'probe'): void {
+	composePsql(
+		`INSERT INTO river_job (kind, args, queue, state, scheduled_at)
+		 VALUES ('e2e_metrics', '{}'::jsonb, :'queue', 'available', now() + interval '1 day');`,
+		{ variables: { queue } },
+	);
+}
+
+/**
  * Looks up the internal workspace id from its public slug. Bearer API routes
  * address workspaces by id, while the dashboard URLs only carry the slug.
  */
