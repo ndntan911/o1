@@ -47,6 +47,9 @@ services:
   web:
     build:
       context: ./web
+      args:
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_RELEASE: ${VITE_RELEASE:-dev}
     depends_on:
       - api
     ports:

@@ -4,10 +4,13 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { ThemeProvider } from 'next-themes';
 import './styles.css';
+import { AppErrorBoundary } from './components/feedback/AppErrorFallback';
 import { queryClient } from './lib/query/client';
+import { initSentry } from './lib/sentry';
 import { registerUnauthenticatedHandler } from './lib/unauthenticated-handler';
 import { router } from './router';
 
+initSentry();
 registerUnauthenticatedHandler(router, queryClient);
 
 createRoot(document.getElementById('root')!).render(
@@ -20,7 +23,9 @@ createRoot(document.getElementById('root')!).render(
 			disableTransitionOnChange
 		>
 			<QueryClientProvider client={queryClient}>
-				<RouterProvider router={router} />
+				<AppErrorBoundary>
+					<RouterProvider router={router} />
+				</AppErrorBoundary>
 			</QueryClientProvider>
 		</ThemeProvider>
 	</StrictMode>,

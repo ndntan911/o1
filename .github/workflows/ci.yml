@@ -80,7 +80,11 @@ jobs:
       - run: npm run typecheck
       - run: npm test -- --run
       - run: npm run build
-      - run: docker build -t o1-web:ci .
+      - run: >-
+          docker build -t o1-web:ci
+          --build-arg VITE_SENTRY_DSN="${VITE_SENTRY_DSN:-}"
+          --build-arg VITE_RELEASE="${VITE_RELEASE:-}"
+          .
 
   e2e:
     runs-on: ubuntu-latest
