@@ -41,6 +41,16 @@ services:
       # Compose only passes .env values into containers when they are
       # referenced here. Required for the admin bootstrap at startup.
       O1_BOOTSTRAP_ADMIN_EMAIL: ${O1_BOOTSTRAP_ADMIN_EMAIL:-}
+      # Observability is optional: empty OTLP/Sentry values disable tracing and
+      # error reporting. The API's metrics/health listener on :8083 is internal
+      # and is deliberately not published to the host.
+      O1_API_HEALTH_ADDR: ${O1_API_HEALTH_ADDR:-:8083}
+      O1_OTEL_EXPORTER_OTLP_ENDPOINT: ${O1_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      O1_OTEL_EXPORTER_OTLP_HEADERS: ${O1_OTEL_EXPORTER_OTLP_HEADERS:-}
+      O1_OTEL_SAMPLE_RATIO: ${O1_OTEL_SAMPLE_RATIO:-}
+      O1_SENTRY_DSN: ${O1_SENTRY_DSN:-}
+      O1_SENTRY_ENVIRONMENT: ${O1_SENTRY_ENVIRONMENT:-}
+      O1_RELEASE: ${O1_RELEASE:-dev}
     ports:
       - "8080:8080"
 
@@ -65,8 +75,9 @@ services:
     environment:
       <<: *backend-env
       O1_SCHEDULER_HEALTH_ADDR: ":8081"
+    # Health/metrics listener on loopback only.
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
 
   worker:
     build:
@@ -78,8 +89,41 @@ services:
     environment:
       <<: *backend-env
       O1_WORKER_HEALTH_ADDR: ":8082"
+    # Health/metrics listener on loopback only.
     ports:
-      - "8082:8082"
+      - "127.0.0.1:8082:8082"
+
+  # Optional scrape/remote-write agent for Grafana Cloud. It is not started by
+  # `docker compose up`; use `docker compose --profile observability up -d`.
+  # The guard exits with a readable error instead of silently remote-writing
+  # with empty credentials. The config lives in deploy/observability/.
+  alloy:
+    image: grafana/alloy:v1.21.3
+    profiles: ["observability"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for name in GRAFANA_REMOTE_WRITE_URL GRAFANA_REMOTE_WRITE_USER GRAFANA_REMOTE_WRITE_TOKEN; do
+          if [ -z "$$(printenv "$$name")" ]; then
+            echo "alloy: required environment variable $$name is not set; export GRAFANA_REMOTE_WRITE_URL, GRAFANA_REMOTE_WRITE_USER, and GRAFANA_REMOTE_WRITE_TOKEN before starting the observability profile" >&2
+            exit 1
+          fi
+        done
+        exec /bin/alloy run /etc/alloy/config.alloy \
+          --server.http.listen-addr=0.0.0.0:12345 \
+          --storage.path=/var/lib/alloy/data
+    environment:
+      O1_ENV: ${O1_ENV:-development}
+      GRAFANA_REMOTE_WRITE_URL: ${GRAFANA_REMOTE_WRITE_URL:-}
+      GRAFANA_REMOTE_WRITE_USER: ${GRAFANA_REMOTE_WRITE_USER:-}
+      GRAFANA_REMOTE_WRITE_TOKEN: ${GRAFANA_REMOTE_WRITE_TOKEN:-}
+    volumes:
+      - ./deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro
+    depends_on:
+      - api
+      - scheduler
+      - worker
+    restart: unless-stopped
 
 volumes:
   postgres-data:

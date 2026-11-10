@@ -293,6 +293,61 @@ failed insert is logged at warning level and never fails the action that was
 being recorded. Incidents keep their own timeline and probe state separately,
 so those records are not duplicated here.
 
+## Observability
+
+Metrics, traces, and error reporting are optional and disabled by default.
+
+- The API exposes Prometheus metrics on an internal listener
+  (`O1_API_HEALTH_ADDR`, default `:8083`) that Compose does not publish. The
+  scheduler and worker expose metrics on their health listeners (`:8081` and
+  `:8082`), which Compose publishes on loopback only.
+- Caddy proxies `/healthz` and `/readyz` to the API and responds `404` for
+  `/metrics`. Metrics are never public, and their labels never contain raw
+  paths, IDs, URLs, query strings, or emails.
+- Tracing uses OTLP/HTTP when `O1_OTEL_EXPORTER_OTLP_ENDPOINT` is set. Sentry
+  error capture is enabled by `O1_SENTRY_DSN` on the backend and by the
+  `VITE_SENTRY_DSN` web build arg.
+- `deploy/observability/` contains the Grafana Alloy config, Prometheus alert
+  rules, Grafana dashboard JSON, and the runbook. Start Alloy with the optional
+  Compose profile:
+
+  ```sh
+  docker compose --profile observability up -d alloy
+  ```
+
+  Alloy joins the Compose network, scrapes the internal listeners, and
+  remote-writes to Grafana Cloud. A normal `docker compose up` does not start
+  it, and Alloy exits with a clear error if its remote-write credentials are
+  empty.
+
+Backend environment variables:
+
+- `O1_API_HEALTH_ADDR` — internal API health/metrics listener, default `:8083`.
+- `O1_OTEL_EXPORTER_OTLP_ENDPOINT` — OTLP/HTTP traces endpoint; empty disables
+  tracing.
+- `O1_OTEL_EXPORTER_OTLP_HEADERS` — comma-separated `key=value` auth headers,
+  never logged.
+- `O1_OTEL_SAMPLE_RATIO` — trace sampler ratio, default `0.05`.
+- `O1_SENTRY_DSN` — backend Sentry DSN; empty disables Sentry.
+- `O1_SENTRY_ENVIRONMENT` — defaults to `O1_ENV`.
+- `O1_RELEASE` — service version for traces, Sentry, and build info; default
+  `dev`.
+
+Frontend build args:
+
+- `VITE_SENTRY_DSN` — frontend Sentry DSN; empty disables Sentry.
+- `VITE_RELEASE` — frontend release; default `dev`.
+
+Grafana Alloy (`observability` profile):
+
+- `GRAFANA_REMOTE_WRITE_URL` — Grafana Cloud Prometheus remote-write endpoint.
+- `GRAFANA_REMOTE_WRITE_USER` — numeric Grafana Cloud user/instance ID.
+- `GRAFANA_REMOTE_WRITE_TOKEN` — access-policy token with `metrics:write`.
+
+See [deploy/observability/README.md](deploy/observability/README.md) for Grafana
+Cloud setup, dashboard and rule import, Sentry projects, and the external
+healthchecks.io dead-man's switch that pings `https://<host>/healthz`.
+
 ## Configuration
 
 Configuration is read from environment variables prefixed with `O1_`.
@@ -313,6 +368,8 @@ Common optional settings:
 - `O1_HTTP_ADDR` — API listen address, default `:8080`.
 - `O1_SCHEDULER_HEALTH_ADDR` — default `:8081`.
 - `O1_WORKER_HEALTH_ADDR` — default `:8082`.
+- `O1_API_HEALTH_ADDR` — internal API health/metrics listener, default `:8083`;
+  not published by Compose.
 - `O1_APP_BASE_URL` — dashboard origin used in verification and reset links,
   default `http://localhost:5173`.
 - `O1_ALLOWED_ORIGINS` — comma-separated Origin allowlist for unsafe requests.

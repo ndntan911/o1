@@ -1,0 +1,171 @@
+# Prometheus/Mimir ruler rules for the o1 self-monitoring bundle.
+#
+# Load them into Grafana Cloud with:
+#   mimirtool rules load deploy/observability/prometheus-rules.yml \
+#     --address=https://prometheus-prod-XX.grafana.net \
+#     --id=<tenant-id> --user=<user-id> --key=<access-policy-token>
+#
+# Validate locally with:
+#   promtool check rules deploy/observability/prometheus-rules.yml
+# or, when promtool is not installed:
+#   docker run --rm --entrypoint promtool \
+#     -v "$PWD/deploy/observability:/rules:ro" \
+#     prom/prometheus:latest check rules /rules/prometheus-rules.yml
+
+groups:
+  - name: o1-availability
+    interval: 1m
+    rules:
+      - alert: O1InstanceDown
+        expr: up{job=~"o1-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: o1
+        annotations:
+          summary: 'o1 target {{ $labels.job }} is down'
+          description: 'Prometheus has failed to scrape {{ $labels.instance }} (job {{ $labels.job }}) for 2 minutes.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1MetricsMissing
+        expr: absent(up{job=~"o1-.*"})
+        for: 10m
+        labels:
+          severity: critical
+          service: o1
+        annotations:
+          summary: 'o1 metrics are missing from Grafana Cloud'
+          description: 'No up{job=~"o1-.*"} series exists at all. The Alloy scrape agent or the remote-write path is probably down.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1SchedulerStalled
+        expr: increase(o1_scheduler_ticks_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: o1
+        annotations:
+          summary: 'o1 scheduler has not completed a tick in 5 minutes'
+          description: 'The scheduler tick counter did not increase for 5 minutes. Check the scheduler process, database connectivity, and logs.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+  - name: o1-api
+    interval: 1m
+    rules:
+      - alert: O1HighErrorRate
+        expr: |
+          (
+            sum(rate(o1_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(o1_http_requests_total[5m])), 0.001)
+          ) > 0.02
+        for: 5m
+        labels:
+          severity: critical
+          service: o1
+        annotations:
+          summary: 'o1 API 5xx ratio is above 2%'
+          description: 'More than 2% of API responses have been 5xx for 5 minutes. Check the API logs and Sentry for the failing route.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1HighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(o1_http_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: o1
+        annotations:
+          summary: 'o1 API p95 latency is above 1 second'
+          description: 'The API p95 latency has exceeded 1s for 10 minutes. Check database pool saturation, slow probes, and recent deploys.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1DBPoolSaturation
+        expr: |
+          max by (job) (o1_db_pool_connections{state="acquired"})
+          /
+          max by (job) (o1_db_pool_connections{state="max"})
+          > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          service: o1
+        annotations:
+          summary: 'o1 {{ $labels.job }} database pool is saturated'
+          description: 'The database pool has been more than 90% acquired for 10 minutes. Check long-running queries and the pool size.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+  - name: o1-jobs
+    interval: 1m
+    rules:
+      - alert: O1QueueBacklog
+        expr: sum by (queue) (o1_queue_jobs{state="available"}) > 100
+        for: 10m
+        labels:
+          severity: warning
+          service: o1
+        annotations:
+          summary: 'o1 queue {{ $labels.queue }} has a backlog'
+          description: 'More than 100 available jobs have been waiting for 10 minutes. Check worker health and probe throughput.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1QueueOldestJob
+        expr: max by (queue) (o1_queue_oldest_job_age_seconds) > 300
+        for: 10m
+        labels:
+          severity: warning
+          service: o1
+        annotations:
+          summary: 'o1 queue {{ $labels.queue }} has an old runnable job'
+          description: 'The oldest runnable job is more than 5 minutes old. Discarded and scheduled rows are excluded from this gauge.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1JobsDiscarded
+        expr: sum by (queue) (o1_queue_jobs{state="discarded"}) > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: o1
+        annotations:
+          summary: 'o1 queue {{ $labels.queue }} has discarded jobs'
+          description: 'River discarded one or more jobs after exhausting retries. Inspect the job errors and Sentry before clearing them.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1ProbeFailureSpike
+        expr: |
+          (
+            sum(rate(o1_probe_results_total{result="down"}[5m]))
+            /
+            clamp_min(sum(rate(o1_probe_results_total[5m])), 0.001)
+          ) > 0.2
+          and
+          sum(rate(o1_probe_results_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: o1
+        annotations:
+          summary: 'o1 probe failures are above 20%'
+          description: 'More than 20% of probes have failed for 10 minutes with meaningful volume. Check the affected monitors, worker logs, and network egress.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'
+
+      - alert: O1AlertDeliveryFailures
+        expr: |
+          (
+            sum(rate(o1_alert_deliveries_total{status="failed"}[5m]))
+            /
+            clamp_min(sum(rate(o1_alert_deliveries_total[5m])), 0.001)
+          ) > 0.1
+          and
+          sum(rate(o1_alert_deliveries_total[5m])) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+          service: o1
+        annotations:
+          summary: 'o1 alert deliveries are failing above 10%'
+          description: 'More than 10% of alert deliveries have failed for 10 minutes. Check channel configuration, SMTP, and webhook endpoints.'
+          runbook_url: 'deploy/observability/README.md#alert-rules'

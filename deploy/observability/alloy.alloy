@@ -1,0 +1,89 @@
+// Grafana Alloy configuration for the o1 self-monitoring bundle.
+//
+// Alloy joins the Compose network, so it can reach the internal listeners that
+// are not published to the host:
+//
+//   api:8083        API metrics/health listener (unpublished)
+//   scheduler:8081  scheduler health listener (host loopback only)
+//   worker:8082     worker health listener (host loopback only)
+//
+// Credentials come from the environment and are never committed. The Compose
+// service refuses to start when GRAFANA_REMOTE_WRITE_URL,
+// GRAFANA_REMOTE_WRITE_USER, or GRAFANA_REMOTE_WRITE_TOKEN is empty. See
+// deploy/observability/README.md for the Grafana Cloud setup.
+//
+// Validate this file with:
+//   docker run --rm -v "$PWD/deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro" \
+//     grafana/alloy:v1.21.3 validate /etc/alloy/config.alloy
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_REMOTE_WRITE_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_REMOTE_WRITE_USER")
+      password = sys.env("GRAFANA_REMOTE_WRITE_TOKEN")
+    }
+  }
+
+  // One label describes the deployment to every dashboard and alert. It is
+  // bounded (development/test/production) and safe for cardinality.
+  external_labels = {
+    env = sys.env("O1_ENV"),
+  }
+}
+
+prometheus.scrape "o1_api" {
+  targets         = [{ "__address__" = "api:8083" }]
+  job_name        = "o1-api"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.scrape "o1_scheduler" {
+  targets         = [{ "__address__" = "scheduler:8081" }]
+  job_name        = "o1-scheduler"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.scrape "o1_worker" {
+  targets         = [{ "__address__" = "worker:8082" }]
+  job_name        = "o1-worker"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+// Optional: if direct OTLP export is undesirable, route traces through Alloy
+// instead. Set O1_OTEL_EXPORTER_OTLP_ENDPOINT to http://alloy:4318 and add the
+// Alloy OTLP receiver/exporter pair below. The header value is supplied from
+// the environment and never committed.
+//
+// otelcol.receiver.otlp "default" {
+//   grpc {
+//     endpoint = "0.0.0.0:4317"
+//   }
+//   http {
+//     endpoint = "0.0.0.0:4318"
+//   }
+//   output {
+//     traces = [otelcol.exporter.otlphttp.grafana_cloud.input]
+//   }
+// }
+//
+// otelcol.exporter.otlphttp "grafana_cloud" {
+//   client {
+//     endpoint = sys.env("GRAFANA_OTLP_ENDPOINT")
+//     headers = {
+//       authorization = "Basic " + sys.env("GRAFANA_OTLP_BASIC_AUTH"),
+//     }
+//   }
+// }

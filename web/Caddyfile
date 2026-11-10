@@ -2,6 +2,21 @@
 	root * /srv
 	encode gzip zstd
 
+	# Public health checks are served by the API, not the SPA, so load balancers
+	# and the external dead-man's switch see real process/database readiness.
+	handle /healthz {
+		reverse_proxy api:8080
+	}
+	handle /readyz {
+		reverse_proxy api:8080
+	}
+
+	# Metrics are private. They live on internal listeners that Caddy cannot
+	# reach and are never proxied here.
+	handle /metrics {
+		respond 404
+	}
+
 	@api path /api/*
 	handle @api {
 		reverse_proxy api:8080
