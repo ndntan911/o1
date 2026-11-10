@@ -123,9 +123,23 @@ Do not start the stack with the placeholder `POSTGRES_PASSWORD` and change it
 afterwards. PostgreSQL sets the role password when it first initializes the
 `postgres-data` volume; later edits to the variable do not update the role, and
 the API cannot authenticate. Generate the real password before the first start.
-If the stack has already started with the placeholder, restore that value or
-recreate the volume (`docker compose ... down -v`, which deletes all data) and
-start again.
+
+If the stack has already started with the placeholder, you can recover without
+deleting data: update the role password inside PostgreSQL, then update `.env` to
+match and recreate the application containers.
+
+```sh
+# Replace <new-hex-password> with the same value you put in .env.
+docker compose --env-file deploy/production/.env \
+  -f deploy/production/compose.yaml exec postgres \
+  psql -U o1 -d o1 -c "ALTER ROLE o1 WITH PASSWORD '<new-hex-password>';"
+$EDITOR deploy/production/.env   # set POSTGRES_PASSWORD to the same value
+docker compose --env-file deploy/production/.env \
+  -f deploy/production/compose.yaml up -d --force-recreate api scheduler worker
+```
+
+Only recreate the volume (`docker compose ... down -v`, which deletes all data)
+when the existing contents are expendable.
 
 ## 4. Configure the environment
 
@@ -310,7 +324,7 @@ Frontend `VITE_*` values are baked into the static bundle at build time. Changin
 | Caddy cannot obtain a certificate | DNS `A`/`AAAA` must point at this host; `80` and `443` must be reachable from the internet; no other process may own those ports. Inspect `logs -f web` for the ACME error. Fix DNS/firewall and let Caddy retry; repeated forced retries can hit ACME rate limits. |
 | Browser shows `502 Bad Gateway` | The API is not ready. Check `logs api`; verify PostgreSQL is healthy and `O1_DATABASE_URL` is correct. |
 | API exits at startup with a config error | `O1_SECRET_KEY`/`O1_ENCRYPTION_KEY` must be base64 of exactly 32 bytes; `O1_EMAIL_FROM` must be a valid mailbox; the Resend provider requires `O1_RESEND_API_KEY`; production rejects the `mailpit` provider. |
-| Database authentication fails | `POSTGRES_PASSWORD` must match across the first volume initialization and `O1_DATABASE_URL`. If it contains URL-special characters, percent-encode it or regenerate as hex. Changing it after the volume exists does not change the PostgreSQL role password. |
+| Database authentication fails | `POSTGRES_PASSWORD` must match across the first volume initialization and `O1_DATABASE_URL`. If it contains URL-special characters, percent-encode it or regenerate as hex. Changing it after the volume exists does not change the PostgreSQL role password; see [step 3](#3-generate-secrets) to recover without deleting data. |
 | Email not delivered | Check the Resend email log and quota, domain verification, API key, and that the from/reply-to addresses are on the verified domain. Check the incident delivery status and `logs worker`. |
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |

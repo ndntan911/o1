@@ -49,6 +49,7 @@ services:
       O1_EMAIL_FROM: "${O1_EMAIL_FROM:?set O1_EMAIL_FROM in .env}"
       O1_EMAIL_REPLY_TO: ${O1_EMAIL_REPLY_TO:-}
       O1_RESEND_RPS: ${O1_RESEND_RPS:-2}
+      O1_RESEND_BURST: ${O1_RESEND_BURST:-2}
       # Links in verification and password-reset mail, and the Origin allowlist,
       # are derived from the public domain.
       O1_APP_BASE_URL: "https://${O1_DOMAIN:?set O1_DOMAIN in .env}"
