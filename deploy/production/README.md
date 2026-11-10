@@ -26,7 +26,7 @@ is not picked up accidentally.
 Production and staging are normally deployed from GitHub Actions, not from a
 checkout on the host. A pushed `v*` tag is verified, built, scanned, and
 published to GHCR. A manually dispatched Deploy run then uploads a release
-bundle to `/opt/o1/incoming/<version>-<sha>` and runs
+bundle to `/opt/o1/incoming/<version>-<sha>-<run_id>-<run_attempt>` and runs
 `/opt/o1/bin/deploy.sh`, which activates it and polls `/readyz`. Rollback is
 `/opt/o1/bin/rollback.sh`.
 
@@ -38,9 +38,9 @@ they exercise the same compose file the deploy script uses.
 
 ## Plan boundaries
 
-- **This plan (Plan 10)** ships production email through Resend and this manual
-  go-live stack.
-- **CI/CD is Plan 11 and is implemented.** Deploys normally run from the
+- **Plan 10** shipped production email through Resend and this manual go-live
+  stack.
+- **Plan 11** added CI/CD and is implemented. Deploys normally run from the
   Deploy workflow with digest-pinned registry images; the manual commands here
   remain for first-run, offline, and recovery use. See [../CICD.md](../CICD.md).
 - **Backups and restore are Plan 12.** There is no backup job, retention policy,
@@ -384,9 +384,10 @@ Frontend `VITE_*` values are baked into the static bundle at build time. Changin
 ## 9. Rollback
 
 Each successful registry deploy stores an immutable bundle under
-`/opt/o1/releases/<version>-<sha>/` containing the release's
-`deploy/production/compose.yaml`, `deploy/observability/alloy.alloy`, and
-digest-pinned `images.env`. The `current` and `previous` symlinks select the
+`/opt/o1/releases/<version>-<sha>-<run_id>-<run_attempt>/`. The bundle holds the
+release's `deploy/production/compose.yaml`,
+`deploy/observability/alloy.alloy`, and digest-pinned `images.env`. The
+`current` and `previous` symlinks select the
 active and prior bundles; `/opt/o1/.env` sits outside the releases so secrets
 are unchanged by a rollback.
 
@@ -399,7 +400,7 @@ Roll back to the previous release:
 Roll back to a named release, or roll forward after a fix:
 
 ```sh
-/opt/o1/bin/rollback.sh v1.2.2-abc123def456
+/opt/o1/bin/rollback.sh v1.2.2-abc123def456-1234567890-1
 ```
 
 `rollback.sh` takes the same `flock` as `deploy.sh`, switches `current`, pulls

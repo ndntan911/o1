@@ -35,14 +35,30 @@ grep -Eq '^[[:space:]]+workflow_call:' "$ci_file" ||
   fail "$ci_file does not declare workflow_call trigger"
 check "$ci_file is reusable via workflow_call"
 
-for job in backend integration frontend e2e; do
+for job in backend integration frontend e2e pipeline; do
   grep -Eq "^  ${job}:" "$ci_file" || fail "$ci_file lost the '$job' job"
 done
-check "$ci_file keeps the backend, integration, frontend and e2e jobs"
+check "$ci_file keeps the backend, integration, frontend, e2e and pipeline jobs"
 
 grep -Eq 'govulncheck@v1\.9\.0 \./\.\.\.' "$ci_file" ||
   fail "$ci_file does not run govulncheck"
-check "$ci_file runs govulncheck"
+grep -Fq 'name: govulncheck (advisory)' "$ci_file" ||
+  fail "$ci_file does not mark govulncheck advisory"
+grep -A1 -F 'name: govulncheck (advisory)' "$ci_file" |
+  grep -Fq 'continue-on-error: true' ||
+  fail "$ci_file does not let advisory govulncheck continue on error"
+check "$ci_file runs govulncheck as an advisory gate"
+
+# The local lint and script suites are a required CI job, not just docs.
+grep -Fq 'rhysd/actionlint:1.7.12' "$ci_file" ||
+  fail "$ci_file does not run actionlint"
+grep -Fq 'koalaman/shellcheck:v0.11.0 deploy/scripts/*.sh' "$ci_file" ||
+  fail "$ci_file does not run shellcheck over the deploy scripts"
+for test in test-compose-config test-deploy test-bootstrap test-workflows; do
+  grep -Fq "bash deploy/scripts/${test}.sh" "$ci_file" ||
+    fail "$ci_file does not run ${test}.sh"
+done
+check "$ci_file runs actionlint, shellcheck and the script suites"
 
 # govulncheck belongs to the backend job, after go vet.
 awk '
@@ -71,15 +87,30 @@ check "$release_file keeps contents read-only"
 
 grep -Fq 'uses: ./.github/workflows/ci.yml' "$release_file" ||
   fail "$release_file does not call the reusable CI workflow"
+grep -Eq '^[[:space:]]+needs: verify$' "$release_file" ||
+  fail "$release_file does not gate publishing on the verify job"
 check "$release_file verifies with the reusable CI workflow"
 
 grep -Fq 'aquasecurity/setup-trivy@v0.3.1' "$release_file" ||
   fail "$release_file does not install Trivy via aquasecurity/setup-trivy"
 check "$release_file installs Trivy"
 
-grep -Fq 'trivy fs --scanners secret,misconfig --exit-code 1 .' "$release_file" ||
-  fail "$release_file does not scan the repository for secrets and misconfiguration"
+grep -Fq 'trivy fs --scanners secret,misconfig --severity HIGH,CRITICAL --exit-code 1 .' "$release_file" ||
+  fail "$release_file does not scan the repository for HIGH/CRITICAL secrets and misconfiguration"
 check "$release_file scans repository secrets and misconfiguration"
+
+grep -Fq 'refusing malformed version tag' "$release_file" ||
+  fail "$release_file does not reject malformed version tags"
+grep -Fq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' "$release_file" ||
+  fail "$release_file does not validate the version shape"
+check "$release_file validates the version tag before publishing"
+
+[[ -f .trivyignore ]] || fail ".trivyignore is missing"
+grep -Fq 'DS-0002' .trivyignore ||
+  fail ".trivyignore does not record the DS-0002 exception"
+grep -Fq 'Re-review:' .trivyignore ||
+  fail ".trivyignore exception has no review date"
+check ".trivyignore records the DS-0002 exception with a review date"
 
 first_push="$(grep -n -- '--push' "$release_file" | head -n 1 | cut -d: -f1 || true)"
 [[ -n $first_push ]] || fail "$release_file never pushes an image"
@@ -131,6 +162,10 @@ check "release pushes with SBOM and provenance"
 
 grep -Eq '^[[:space:]]+workflow_dispatch:' "$deploy_file" ||
   fail "$deploy_file does not trigger on workflow_dispatch"
+if grep -Eq '^[[:space:]]+(push|pull_request|schedule|workflow_call):' "$deploy_file"; then
+  fail "$deploy_file is not dispatch-only"
+fi
+check "$deploy_file is dispatch-only"
 
 for input in environment version dry_run; do
   grep -Eq "^[[:space:]]+${input}:" "$deploy_file" ||
@@ -170,6 +205,8 @@ check "$deploy_file holds only contents: read and packages: read"
 
 grep -Fq 'ref: ${{ inputs.version }}' "$deploy_file" ||
   fail "$deploy_file does not check out the requested version"
+grep -Fq 'fetch-depth: 0' "$deploy_file" ||
+  fail "$deploy_file does not fetch full history for reachability checks"
 
 checkout_line="$(grep -n 'uses: actions/checkout@v4' "$deploy_file" | head -n 1 | cut -d: -f1)"
 validate_line="$(grep -n 'deploy/scripts/validate-release.sh' "$deploy_file" | head -n 1 | cut -d: -f1)"
@@ -179,16 +216,35 @@ validate_line="$(grep -n 'deploy/scripts/validate-release.sh' "$deploy_file" | h
   fail "$deploy_file validates before checking out the release tag"
 check "$deploy_file checks out the release tag before validating"
 
-grep -Fq './deploy/scripts/validate-release.sh "${{ inputs.environment }}" "${{ inputs.version }}" "${{ github.ref }}"' "$deploy_file" ||
+grep -Fq 'ENVIRONMENT: ${{ inputs.environment }}' "$deploy_file" ||
+  fail "$deploy_file does not pass the environment through env"
+grep -Fq 'WORKFLOW_REF: ${{ github.ref }}' "$deploy_file" ||
+  fail "$deploy_file does not pass the dispatch ref through env"
+grep -Fq './deploy/scripts/validate-release.sh "$ENVIRONMENT" "$VERSION" "$WORKFLOW_REF"' "$deploy_file" ||
   fail "$deploy_file does not validate environment, version and dispatch ref"
 check "$deploy_file validates the release against the dispatch ref"
+
+# Production must prove the tag commit is on main before touching the host.
+grep -Fq 'git fetch --no-tags origin main:refs/remotes/origin/main' "$deploy_file" ||
+  fail "$deploy_file does not fetch origin/main for reachability"
+grep -Fq 'git merge-base --is-ancestor HEAD origin/main' "$deploy_file" ||
+  fail "$deploy_file does not require the tag to be an ancestor of main"
+grep -Fq "if: inputs.environment == 'production'" "$deploy_file" ||
+  fail "$deploy_file does not restrict the reachability check to production"
+check "$deploy_file requires production tags to be reachable from main"
 
 grep -Fq 'git rev-parse --short=12 HEAD' "$deploy_file" ||
   fail "$deploy_file does not resolve the release commit from the checkout"
 if grep -Fq 'GITHUB_SHA' "$deploy_file"; then
   fail "$deploy_file uses GITHUB_SHA instead of the checked-out commit"
 fi
-check "$deploy_file derives the release id from the checked-out tag"
+grep -Fq 'release_id="$VERSION-$(git rev-parse --short=12 HEAD)-$RUN_ID-$RUN_ATTEMPT"' "$deploy_file" ||
+  fail "$deploy_file does not make the release id unique per run attempt"
+grep -Fq 'RUN_ID: ${{ github.run_id }}' "$deploy_file" ||
+  fail "$deploy_file does not pass github.run_id"
+grep -Fq 'RUN_ATTEMPT: ${{ github.run_attempt }}' "$deploy_file" ||
+  fail "$deploy_file does not pass github.run_attempt"
+check "$deploy_file derives a per-run release id from the checked-out tag"
 
 grep -Fq 'uses: docker/login-action@v4.8.0' "$deploy_file" ||
   fail "$deploy_file does not log in to the registry"
@@ -235,21 +291,48 @@ grep -Fq 'StrictHostKeyChecking=yes' "$deploy_file" ||
   fail "$deploy_file does not require strict host key checking"
 grep -Fq "vars.SSH_PORT || '22'" "$deploy_file" ||
   fail "$deploy_file does not default SSH_PORT to 22"
-check "$deploy_file hardens SSH and defaults the port to 22"
+for opt in 'BatchMode=yes' 'ConnectTimeout=10' 'ServerAliveInterval=15' 'ServerAliveCountMax=4'; do
+  grep -Fq -- "-o $opt" "$deploy_file" ||
+    fail "$deploy_file does not set SSH liveness option $opt"
+done
+grep -Fq 'timeout-minutes: 30' "$deploy_file" ||
+  fail "$deploy_file does not bound the deploy job"
+check "$deploy_file hardens SSH, bounds the job and defaults the port to 22"
 
 grep -Fq 'mkdir -p /opt/o1/incoming/$RELEASE_ID' "$deploy_file" ||
   fail "$deploy_file does not create the incoming release directory"
-grep -Fq 'scp -P "$SSH_PORT" -r bundle/.' "$deploy_file" ||
+grep -Fq 'scp -P "$SSH_PORT" "${ssh_opts[@]}" -r bundle/.' "$deploy_file" ||
   fail "$deploy_file does not upload the bundle with scp"
-grep -Fq '/opt/o1/bin/deploy.sh /opt/o1/incoming/$RELEASE_ID' "$deploy_file" ||
-  fail "$deploy_file does not run the host deploy script"
+grep -Fq '/opt/o1/bin/deploy.sh /opt/o1/incoming/$RELEASE_ID $flag' "$deploy_file" ||
+  fail "$deploy_file does not run the host deploy script with the dry-run flag"
 check "$deploy_file uploads the bundle and runs the host deploy script"
 
 grep -Fq 'flag="--dry-run"' "$deploy_file" ||
   fail "$deploy_file cannot pass --dry-run to the host deploy script"
-grep -Fq 'inputs.dry_run' "$deploy_file" ||
-  fail "$deploy_file does not read the dry_run input"
+grep -Fq 'DRY_RUN: ${{ inputs.dry_run }}' "$deploy_file" ||
+  fail "$deploy_file does not read the dry_run input through env"
 check "$deploy_file passes --dry-run when requested"
+
+# Dispatch inputs, secrets and the caller ref must reach scripts through env,
+# never by direct interpolation into a run: block (shell injection).
+interpolated_run="$(
+  awk '
+    /^[[:space:]]*run:[[:space:]]*\|/ {
+      in_run = 1
+      run_indent = match($0, /[^ ]/) - 1
+      next
+    }
+    in_run {
+      line_indent = match($0, /[^ ]/) - 1
+      if ($0 !~ /^[[:space:]]*$/ && line_indent <= run_indent) in_run = 0
+    }
+    /^[[:space:]]*run:/ && /\$\{\{[[:space:]]*(inputs\.|secrets\.|github\.ref)/ { print NR ": " $0 }
+    in_run && /\$\{\{[[:space:]]*(inputs\.|secrets\.|github\.ref)/ { print NR ": " $0 }
+  ' "$deploy_file"
+)"
+[[ -z $interpolated_run ]] ||
+  fail "$deploy_file interpolates inputs/secrets/ref directly into a run: block: $interpolated_run"
+check "$deploy_file passes dispatch values through env, not run: interpolation"
 
 # --- dependabot.yml: monitored ecosystems --------------------------------
 

@@ -21,13 +21,25 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.version }}
+          fetch-depth: 0
       - name: Validate release
-        run: ./deploy/scripts/validate-release.sh "${{ inputs.environment }}" "${{ inputs.version }}" "${{ github.ref }}"
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          VERSION: ${{ inputs.version }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: ./deploy/scripts/validate-release.sh "$ENVIRONMENT" "$VERSION" "$WORKFLOW_REF"
+      - name: Verify tag is reachable from main
+        if: inputs.environment == 'production'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD origin/main
       - uses: docker/setup-buildx-action@v4.4.1
       - uses: docker/login-action@v4.8.0
         with:
@@ -35,13 +47,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Resolve digests and write bundle
+        env:
+          VERSION: ${{ inputs.version }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          owner=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          owner=$(printf '%s' "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
           registry="ghcr.io/$owner"
-          backend_digest=$(docker buildx imagetools inspect "$registry/o1-backend:${{ inputs.version }}" --format '{{.Manifest.Digest}}')
-          web_digest=$(docker buildx imagetools inspect "$registry/o1-web:${{ inputs.version }}" --format '{{.Manifest.Digest}}')
-          release_id="${{ inputs.version }}-$(git rev-parse --short=12 HEAD)"
+          backend_digest=$(docker buildx imagetools inspect "$registry/o1-backend:$VERSION" --format '{{.Manifest.Digest}}')
+          web_digest=$(docker buildx imagetools inspect "$registry/o1-web:$VERSION" --format '{{.Manifest.Digest}}')
+          release_id="$VERSION-$(git rev-parse --short=12 HEAD)-$RUN_ID-$RUN_ATTEMPT"
           mkdir -p "bundle/deploy/production" "bundle/deploy/observability"
           cp deploy/production/compose.yaml bundle/deploy/production/
           cp deploy/observability/alloy.alloy bundle/deploy/observability/
@@ -56,30 +73,38 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
       - name: Install known hosts
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
       - name: Upload bundle and deploy
         env:
+          DRY_RUN: ${{ inputs.dry_run }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ vars.SSH_PORT || '22' }}
         run: |
           set -euo pipefail
-          ssh -p "$SSH_PORT" -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+          ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          ssh -p "$SSH_PORT" "${ssh_opts[@]}" -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
             "mkdir -p /opt/o1/incoming/$RELEASE_ID"
-          scp -P "$SSH_PORT" -r bundle/. "$SSH_USER@$SSH_HOST:/opt/o1/incoming/$RELEASE_ID/"
+          scp -P "$SSH_PORT" "${ssh_opts[@]}" -r bundle/. "$SSH_USER@$SSH_HOST:/opt/o1/incoming/$RELEASE_ID/"
           flag=""
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then flag="--dry-run"; fi
-          ssh -p "$SSH_PORT" -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+          if [[ "$DRY_RUN" == "true" ]]; then flag="--dry-run"; fi
+          ssh -p "$SSH_PORT" "${ssh_opts[@]}" -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
             "/opt/o1/bin/deploy.sh /opt/o1/incoming/$RELEASE_ID $flag"
       - name: Summarize deployment
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_ID: ${{ env.RELEASE_ID }}
         run: |
           {
             echo "### Deploy"
-            echo "- environment: \`${{ inputs.environment }}\`"
-            echo "- version: \`${{ inputs.version }}\`"
+            echo "- environment: \`$ENVIRONMENT\`"
+            echo "- version: \`$VERSION\`"
             echo "- release: \`$RELEASE_ID\`"
             echo "- backend: \`$BACKEND_IMAGE\`"
             echo "- web: \`$WEB_IMAGE\`"

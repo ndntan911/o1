@@ -16,7 +16,7 @@ pull request ──► CI checks ──► merge to main
                                                        ▼
                                    Release workflow (release.yml)
                                      verify: reusable ci.yml (backend,
-                                       integration, frontend, e2e)
+                                       integration, frontend, e2e, pipeline)
                                      publish: build both images, scan with
                                        Trivy, push only if scans pass
                                                        │
@@ -28,8 +28,10 @@ pull request ──► CI checks ──► merge to main
                                    Deploy workflow (deploy.yml), dispatched
                                    by hand with environment + version
                                      environment gate: production requires
-                                       reviewers and the main ref
+                                       reviewers and a dispatch from main
                                      validate-release.sh
+                                     production: tag commit must be an
+                                       ancestor of origin/main
                                      resolve digests, assemble bundle
                                      scp bundle to /opt/o1/incoming/<id>
                                      ssh /opt/o1/bin/deploy.sh <bundle>
@@ -39,15 +41,24 @@ pull request ──► CI checks ──► merge to main
 ```
 
 - `.github/workflows/ci.yml` runs on every branch push and pull request. Its
-  four jobs are the required status checks: `backend`, `integration`,
-  `frontend`, `e2e`. `release.yml` reuses it through `workflow_call:`, so a tag
-  cannot publish code that would fail the PR gate.
-- `.github/workflows/release.yml` triggers on `v*` tags. It runs verification,
-  then builds each image locally, scans it with Trivy, and pushes only after
-  both scans pass. A failed scan leaves the registry untouched.
+  five jobs are the required status checks: `backend`, `integration`,
+  `frontend`, `e2e`, `pipeline`. The `pipeline` job runs actionlint,
+  shellcheck, and the Compose and deploy script suites locally in CI.
+  `govulncheck` runs in `backend` as an advisory step (`continue-on-error`)
+  until the Plan 14 security pass; Trivy image scans and every test suite
+  remain blocking. `release.yml` reuses the workflow through `workflow_call:`,
+  so a tag cannot publish code that would fail the PR gate.
+- `.github/workflows/release.yml` triggers on `v*` tags. It rejects a tag that
+  is not `vMAJOR.MINOR.PATCH[-PRE]`, runs verification, then builds each image
+  locally, scans it with Trivy, and pushes only after both scans pass. A failed
+  scan leaves the registry untouched.
 - `.github/workflows/deploy.yml` is `workflow_dispatch` only. It checks out the
   requested tag, resolves the published image digests, uploads a release
   bundle, and runs the host's deploy script over SSH. It never builds images.
+  For production it also fetches `main` and requires the tag commit to be an
+  ancestor of `origin/main`. The release id is
+  `<version>-<12-char-sha>-<run_id>-<run_attempt>`, so a retry never collides
+  with an earlier run.
 - Published tags per image: `vX.Y.Z` (release), `sha-<12-char-commit>`
   (immutable reference for pinning and debugging), and `X.Y` (derived from the
   base version, so `v1.2.3-rc.1` publishes `1.2`; convenience only, never
@@ -68,7 +79,8 @@ pull request ──► CI checks ──► merge to main
 2. In **Settings → Environments**, create `staging` and `production`.
    - `production`: enable **Required reviewers** and add at least one reviewer.
      Under **Deployment branches and tags**, allow only the `main` branch.
-     The workflow also rejects pre-release versions for production.
+     The workflow also rejects pre-release versions and requires the tag commit
+     to be an ancestor of `main` for production.
    - `staging`: no reviewers are required; allow `main` and the release tags
      you want to deploy.
 
@@ -117,7 +129,8 @@ rules). They are repository settings, not code in the workflows.
 For `main`:
 
 - Require a pull request before merging; direct pushes are disabled.
-- Require the status checks `backend`, `integration`, `frontend`, and `e2e`.
+- Require the status checks `backend`, `integration`, `frontend`, `e2e`, and
+  `pipeline`.
 - Require linear history (merge commits are rejected; use squash or rebase).
 - Block force pushes and branch deletion.
 - Require review conversation resolution if the team uses review threads.
@@ -132,7 +145,10 @@ For tags:
 The production GitHub Environment is the second gate: reviewers must approve
 the run, only the `main` workflow ref may dispatch it, and
 `deploy/scripts/validate-release.sh` rejects any version containing a
-pre-release suffix and any non-`main` ref at job start.
+pre-release suffix and any non-`main` ref at job start. The workflow then
+fetches `origin/main` and requires the checked-out tag commit to be an ancestor
+of it, so an unreviewed or unmerged commit cannot be deployed even behind a
+valid-looking tag.
 
 ## 4. GHCR packages
 
@@ -198,6 +214,11 @@ Each environment needs its own host: staging and production both bind `80` and
    ./deploy/scripts/bootstrap-host.sh
    ```
 
+   The checkout is needed only for bootstrap. Deploys never read it, so you may
+   remove `~/o1-src` afterwards. Rerun bootstrap from a fresh checkout (or copy
+   the updated scripts into `/opt/o1/bin`) after changing anything under
+   `deploy/scripts/`; the host runs the installed copies.
+
    The script infers the repository root from its own path. If you run a copy
    of the script from elsewhere, it infers the wrong source directory and
    fails; pass the checkout explicitly instead:
@@ -222,22 +243,23 @@ Each environment needs its own host: staging and production both bind `80` and
        healthcheck.sh
        validate-release.sh
      releases/
-       <version>-<sha>/           # one immutable release bundle
+       <id>/                      # one immutable release bundle
          deploy/production/compose.yaml
          deploy/observability/alloy.alloy
          images.env
-     current -> releases/<version>-<sha>
-     previous -> releases/<version>-<sha>
-     incoming/<version>-<sha>/    # upload target consumed by deploy.sh
+     current -> releases/<id>
+     previous -> releases/<id>
+     incoming/<id>/               # upload target consumed by deploy.sh
      state/deploy.lock
    ```
 
-   Bootstrap creates the `bin`, `releases`, `incoming`, and `state`
-   directories. `state/deploy.lock` appears when the first deploy or rollback
-   takes the lock, and `incoming/<version>-<sha>/` appears when the deploy
-   workflow uploads a bundle; bootstrap creates neither. Bootstrap does not
-   start the stack. It validates the Compose file with placeholder digest refs
-   and never persists them.
+   Here `<id>` is `<version>-<12-char-sha>-<run_id>-<run_attempt>`, for example
+   `v1.2.3-abc123def456-1234567890-1`. Bootstrap creates the `bin`, `releases`,
+   `incoming`, and `state` directories. `state/deploy.lock` appears when the
+   first deploy or rollback takes the lock, and `incoming/<id>/` appears when
+   the deploy workflow uploads a bundle; bootstrap creates neither. Bootstrap
+   does not start the stack. It validates the Compose file with placeholder
+   digest refs and never persists them.
 
 5. Edit `/opt/o1/.env`. It is operator-managed, lives outside the release
    directories, and is never written by CI. Bootstrap creates it from
@@ -276,7 +298,7 @@ Migrations are not reversible in this process (see §8), so review schema
 changes before tagging.
 
 1. **Merge to `main`.** The PR must pass `backend`, `integration`, `frontend`,
-   and `e2e` with linear history.
+   `e2e`, and `pipeline` with linear history.
 2. **Tag a release candidate** on `main` and push the tag:
 
    ```sh
@@ -288,13 +310,15 @@ changes before tagging.
 
    `release.yml` re-runs the full suite, builds `o1-backend` and `o1-web`, scans
    both, and pushes `v1.2.3-rc.1`, `sha-<sha>`, and `1.2` tags. The job summary
-   lists the published digests; check the scan results there.
+   lists the published digests and states that the scan gates passed; the raw
+   Trivy output is in the job log, not the summary.
 3. **Deploy staging.** Actions → **Deploy** → *Run workflow*, choose the
    `staging` environment and version `v1.2.3-rc.1`, leave `dry_run` off, and
    dispatch **from the `main` branch**. The workflow validates the version,
    resolves digests, and runs the host deploy script.
 4. **Verify staging and run the rollback drill.** Confirm
-   `readlink -f /opt/o1/current` names `v1.2.3-rc.1-<sha>` and that
+   `readlink -f /opt/o1/current` names
+   `v1.2.3-rc.1-<sha>-<run_id>-<run_attempt>` and that
    `cat /opt/o1/current/images.env` matches the digests in the job summary.
    Once staging has deployed at least two releases, run the drill:
 
@@ -304,9 +328,9 @@ changes before tagging.
 
    Confirm `current` now points at the older release, the old digests are
    running, and `https://<staging-domain>/readyz` is healthy. Roll forward with
-   `/opt/o1/bin/rollback.sh v1.2.3-rc.1-<sha>` if the new release should be
-   restored. This drill proves the previous release and its images are intact
-   before production needs them.
+   `/opt/o1/bin/rollback.sh v1.2.3-rc.1-<sha>-<run_id>-<run_attempt>` if the
+   new release should be restored. This drill proves the previous release and
+   its images are intact before production needs them.
 
    A dry run is also useful before the first real staging deploy: dispatch
    with `dry_run` enabled, or run
@@ -331,6 +355,24 @@ before any SSH connection. Staging accepts pre-release `vX.Y.Z-rc.N` tags as
 well as final versions. The deploy input is always a tag; the published
 `sha-<12>` tags are for pinning and debugging, not a separate deploy path.
 
+### Retries and pruning
+
+The release id includes the Actions run id and attempt, so every dispatch —
+including a retry of the same version — produces a new
+`releases/<version>-<sha>-<run_id>-<run_attempt>` directory. Retrying a failed
+run is simply another dispatch; it never reuses or overwrites an existing
+release directory.
+
+After confirming the active release is healthy, keep the `current` and
+`previous` bundles and prune older `releases/<id>` directories to bound disk
+use. Never remove a directory that a symlink still points at:
+
+```sh
+readlink -f /opt/o1/current /opt/o1/previous
+find /opt/o1/releases -mindepth 1 -maxdepth 1 -type d -print
+rm -rf /opt/o1/releases/<old-id>
+```
+
 ## 7. Manual recovery
 
 Manual access is for recovery, not for routine releases. `deploy.sh` and
@@ -347,7 +389,7 @@ With no argument the target is the `previous` symlink. To choose a release, or
 to roll forward after a fix, pass the release directory name:
 
 ```sh
-/opt/o1/bin/rollback.sh v1.2.2-abc123def456
+/opt/o1/bin/rollback.sh v1.2.2-abc123def456-1234567890-1
 ```
 
 `rollback.sh` switches `current`, sets `previous` to the release that was
@@ -472,7 +514,7 @@ Grafana Cloud setup. Point the external dead-man's switch at
 | `denied` / `unauthorized` while pulling from GHCR | Private package without credentials, a token missing `read:packages`, or an expired token. Set `GHCR_USER` and `GHCR_READ_TOKEN` in `/opt/o1/.env`, or make the packages public. On the host, `docker login ghcr.io` reproduces the error. `manifest unknown` means the version tag was never published or the owner name is wrong. |
 | Deploy fails at readiness | `/readyz` also checks PostgreSQL. Inspect `docker compose ... logs api` and `logs web`; a first deploy includes ACME issuance and migrations, so `DEPLOY_HEALTH_TIMEOUT` (default 300s) may be too short. `deploy.sh` restores the previous release automatically and exits non-zero. |
 | Migration failure | The API exits or `/readyz` fails while the schema is mid-change. Read the migration error in `logs api`. Fix forward with a new release; rolling back code does not reverse the schema (see §8). |
-| Trivy blocks a release | A `HIGH` or `CRITICAL` fixable vulnerability. Upgrade the base image or dependency, or add a `.trivyignore` entry with a comment naming the CVE, the reason it is accepted, and a review date. Do not blanket-ignore severities. |
+| Trivy blocks a release | A `HIGH` or `CRITICAL` fixable vulnerability in an image (unfixed findings are ignored), or a repository secret/misconfiguration. Upgrade the base image or dependency, remove the secret, or add a narrowly scoped `.trivyignore` entry with a comment naming the check, the reason it is accepted, and a review date. The only current exception is `DS-0002` (the web Caddy image runs as root to bind 80/443; re-review 2027-05-10). |
 | `deploy: missing /opt/o1/.env` | Bootstrap has not run, or the file is at the wrong path. `bootstrap-host.sh` seeds it from `env.example`; edit it before deploying. A missing `O1_DOMAIN`, `POSTGRES_PASSWORD`, or app key fails production Compose. |
 | `deploy: another deploy or rollback holds ...` | A previous run is still active. Exit code is `3`. The kernel releases the lock when that process exits; do not delete the lock file while a deploy is running. If no deploy exists, check with `fuser /opt/o1/state/deploy.lock` and remove the file only when nothing holds it. |
 | Alloy still scrapes the old config | The deploy does not restart profiled services. Re-run the `--profile observability up -d alloy` command in §9. |
@@ -498,11 +540,17 @@ Grafana Cloud setup. Point the external dead-man's switch at
 - **Digest pinning.** `deploy.sh` and `rollback.sh` reject anything that is not
   `<image>@sha256:<64 hex>`, so a moved tag cannot silently change a deploy.
   Tags are convenience; digests are the deployed artifact.
-- **Scans before push.** Trivy runs on the filesystem (secrets and
-  misconfiguration) and on both images (`HIGH,CRITICAL`, unfixed ignored)
-  before any push. `govulncheck` runs in `backend`. A `.trivyignore` exception
-  must carry a comment naming the CVE, the reason, and a review date; review
-  exceptions whenever the file changes.
+- **Scans before push.** Trivy runs on the filesystem (`secret,misconfig`,
+  `HIGH,CRITICAL`) and on both images (`HIGH,CRITICAL`, unfixed ignored)
+  before any push. `govulncheck` runs in `backend` as an advisory step until
+  the Plan 14 security pass: reachable findings include the Go standard library
+  and no-fix testcontainers/container modules, so it reports without blocking.
+  The test suites and Trivy image scans remain blocking. The single
+  `.trivyignore` exception is `DS-0002`: `web/Dockerfile` builds on the
+  official Caddy image, which runs as root to bind 80/443; TLS terminates
+  there and no application code runs as root in that container. Re-review
+  2027-05-10. Any new exception must carry a comment naming the check/CVE, the
+  reason, and a review date; review exceptions whenever the file changes.
 - **Repository controls.** Required checks, linear history, no force pushes,
   restricted `v*` tags, and a reviewed production Environment. Together they
   prevent untested or unreviewed code from reaching a host.
@@ -523,11 +571,20 @@ bash deploy/scripts/test-compose-config.sh
 bash deploy/scripts/test-deploy.sh
 bash deploy/scripts/test-bootstrap.sh
 bash deploy/scripts/test-workflows.sh
+docker run --rm -v "$PWD:/repo" -w /repo aquasec/trivy:0.76.2 fs --scanners secret,misconfig --severity HIGH,CRITICAL --exit-code 1 .
 cd backend && go test -short ./...
 cd ../web && npm test -- --run
 ```
 
-The script tests use fake `docker`, `curl`, and `flock` binaries on `PATH` to
+`govulncheck` is advisory, not part of the blocking gate:
+
+```sh
+cd backend && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+```
+
+It is expected to report reachable findings until the Plan 14 security pass;
+the CI step uses `continue-on-error: true`. The script tests use fake `docker`,
+`curl`, and `flock` binaries on `PATH` to
 prove activation, readiness polling, rollback on failed login/pull/up/health,
 first-deploy behavior, lock exclusion, and dry-run. The Compose tests prove the
 fixture digests propagate into the rendered config and the build override still
@@ -558,6 +615,8 @@ the real infrastructure.
 - [ ] Deploy production with environment `production`; confirm the run pauses
       for reviewer approval, and that a pre-release tag or a non-`main` ref is
       rejected before any SSH connection.
+- [ ] Confirm production rejects a tag whose commit is not an ancestor of
+      `origin/main` before any SSH connection.
 - [ ] Confirm production is healthy after the deploy and that
       `/opt/o1/previous` names the prior release.
 - [ ] Roll back production once with `/opt/o1/bin/rollback.sh`, confirm health,

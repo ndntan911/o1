@@ -153,6 +153,10 @@ expect_status 0 "validate: staging allows pre-release" \
   bash deploy/scripts/validate-release.sh staging v1.2.3-rc.1 refs/heads/main
 expect_status 2 "validate: unknown environment rejected" \
   bash deploy/scripts/validate-release.sh bogus v1.2.3 refs/heads/main
+expect_status 2 "rollback: rejects '.' as a release id" \
+  bash deploy/scripts/rollback.sh .
+expect_status 2 "rollback: rejects '..' as a release id" \
+  bash deploy/scripts/rollback.sh ..
 
 # --- 2. successful deploy --------------------------------------------------
 

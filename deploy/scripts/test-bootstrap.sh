@@ -144,13 +144,14 @@ pass "compose validation uses inline 64-zero digest placeholders"
 # --- 2. a second run preserves an edited .env ------------------------------
 
 printf 'O1_DOMAIN=edited.example.com\n' >>"$ROOT/.env"
+chmod 0644 "$ROOT/.env"
 run_bootstrap --root "$ROOT" --source "$SRC"
 [[ $STATUS -eq 0 ]] || fail "second run exited $STATUS, expected 0"
 grep -qx 'O1_DOMAIN=edited.example.com' "$ROOT/.env" \
   || fail "second run overwrote the edited .env"
 mode="$(mode_of "$ROOT/.env")"
 [[ $mode == 600 ]] || fail "second run left .env at mode $mode, expected 600"
-pass "second run keeps the edited .env and its mode"
+pass "second run keeps the edited .env and tightens its mode"
 
 # --- 3. missing or incomplete source creates nothing ----------------------
 

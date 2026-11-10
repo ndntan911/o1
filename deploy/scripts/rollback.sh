@@ -36,6 +36,10 @@ if [[ -n $release_id && ! $release_id =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "rollback: release id may only contain letters, digits, dot, underscore, and dash" >&2
   exit 2
 fi
+if [[ $release_id == . || $release_id == .. ]]; then
+  echo "rollback: release id must not be '.' or '..'" >&2
+  exit 2
+fi
 
 env_get() { # env_get FILE KEY
   local file=$1 key=$2 value

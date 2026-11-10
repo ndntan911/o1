@@ -115,6 +115,8 @@ else
   env_created=1
   echo "bootstrap: created $root/.env from env.example"
 fi
+# An operator-created .env may have looser permissions; tighten it on every run.
+chmod 600 "$root/.env"
 
 # Validate the Compose file without persisting image refs on the host. The
 # placeholder digests keep the config check independent of a release.
@@ -147,5 +149,5 @@ fi
 echo "bootstrap: host is ready; the stack was not started"
 echo "next steps:"
 echo "  1. edit $root/.env (domain, database password, keys, mail settings, and optional GHCR credentials)"
-echo "  2. dispatch the release workflow for the target environment, or copy a release bundle into $root/incoming and run $root/bin/deploy.sh $root/incoming/<release>"
+echo "  2. dispatch the Deploy workflow for the target environment, or copy a release bundle into $root/incoming and run $root/bin/deploy.sh $root/incoming/<release>"
 echo "  3. for a local build instead, run from a checkout: docker compose --env-file deploy/production/env.example -f deploy/production/compose.yaml -f deploy/production/compose.build.yaml up -d --build"

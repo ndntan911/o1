@@ -477,11 +477,15 @@ dispatched deliberately, not run from a laptop.
   and `ghcr.io/<owner>/o1-web` for `linux/amd64`, scans both with Trivy, and
   pushes only if the scans pass. Each image gets the release tag,
   `sha-<12-char-commit>`, and `X.Y`; deploys pin the `@sha256` digest.
+- CI also runs actionlint, shellcheck, and the Compose/deploy script suites in
+  a `pipeline` job. `govulncheck` is advisory until the Plan 14 security pass;
+  Trivy scans and the test suites remain blocking.
 - Deploys run from **Actions → Deploy** with an `environment` (`staging` or
   `production`) and a `version`. The job resolves the digests, uploads a release
-  bundle to `/opt/o1/incoming/<version>-<sha>`, and runs
-  `/opt/o1/bin/deploy.sh` over SSH. Production requires reviewer approval and
-  accepts only final `vX.Y.Z` releases from `main`.
+  bundle to `/opt/o1/incoming/<version>-<sha>-<run_id>-<run_attempt>`, and runs
+  `/opt/o1/bin/deploy.sh` over SSH. Production requires reviewer approval,
+  accepts only final `vX.Y.Z` releases from `main`, and requires the tag commit
+  to be an ancestor of `main`.
 - `/opt/o1/bin/rollback.sh` restores the previous release bundle. Image and
   config rollback does not undo migrations.
 

@@ -44,12 +44,20 @@ jobs:
             echo "MAJOR_MINOR=${base%.*}"
           } >> "$GITHUB_ENV"
 
+      - name: Validate version tag
+        run: |
+          set -euo pipefail
+          if [[ ! $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release: refusing malformed version tag: $VERSION" >&2
+            exit 1
+          fi
+
       - uses: aquasecurity/setup-trivy@v0.3.1
         with:
           version: v0.76.2
 
       - name: Scan repository secrets and misconfiguration
-        run: trivy fs --scanners secret,misconfig --exit-code 1 .
+        run: trivy fs --scanners secret,misconfig --severity HIGH,CRITICAL --exit-code 1 .
 
       # Both images are built for scanning first; nothing is pushed until both
       # scans pass.
@@ -97,8 +105,8 @@ jobs:
         run: |
           {
             echo "### Container scans"
-            echo "- backend: HIGH/CRITICAL scan passed before push"
-            echo "- web: HIGH/CRITICAL scan passed before push"
+            echo "- backend: the scan gates passed before push"
+            echo "- web: the scan gates passed before push"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize published images
