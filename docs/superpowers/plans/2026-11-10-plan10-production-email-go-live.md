@@ -320,7 +320,7 @@ Change the first Caddyfile line to:
 {$O1_SITE_ADDRESS::80} {
 ```
 
-Keep `/healthz`, `/readyz`, `/metrics` 404, `/api/*`, and SPA fallback unchanged. Add `EXPOSE 443` to `web/Dockerfile` (80 remains).
+Keep `/healthz`, `/readyz`, `/metrics` 404, `/api/*`, and SPA fallback unchanged. For every API reverse_proxy, set `header_up X-Forwarded-For {remote_host}` so Caddy overwrites any client-supplied forwarding header; the app trusts XFF only from the private Caddy peer. Add `EXPOSE 443` to `web/Dockerfile` (80 remains).
 
 - [ ] **Step 2: Add the production Compose**
 
