@@ -49,7 +49,7 @@ func newSchedulerEnv(t *testing.T) *schedulerEnv {
 	return &schedulerEnv{
 		t:       t,
 		pool:    pool,
-		sched:   New(pool, q, client, cfg, logger, metrics),
+		sched:   New(pool, q, client, cfg, logger, metrics, nil),
 		ownerID: ownerID,
 		metrics: metrics,
 	}

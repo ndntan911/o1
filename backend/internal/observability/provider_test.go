@@ -21,6 +21,12 @@ func TestObservabilityProvider_EmptyConfigIsNoop(t *testing.T) {
 	if p.Metrics == nil {
 		t.Fatal("Provider.Metrics is nil")
 	}
+	if p.Tracer == nil {
+		t.Fatal("Provider.Tracer is nil")
+	}
+	if p.Tracer.Enabled() {
+		t.Fatal("Provider.Tracer.Enabled() = true with an empty OTLP endpoint")
+	}
 	if body := gatherText(t, p.Metrics.Registry()); !strings.Contains(body, "o1_build_info") {
 		t.Fatalf("registry missing o1_build_info:\n%s", body)
 	}

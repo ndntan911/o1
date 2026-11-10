@@ -68,6 +68,7 @@ func run() error {
 		AuthService:      authSvc,
 		WorkspaceService: wsSvc,
 		Metrics:          obs.Metrics,
+		Tracer:           obs.Tracer,
 	})
 
 	rt.Logger.Log(ctx, slog.LevelInfo, "starting server",

@@ -97,7 +97,7 @@ func newFullStackEnv(t *testing.T, allowedPort int) *fullStackEnv {
 
 	return &fullStackEnv{
 		monitorAPIEnv: &monitorAPIEnv{t: t, pool: pool, cfg: cfg, router: router, server: server},
-		sched:         scheduler.New(pool, sqlc.New(pool), riverClient, cfg, logger, nil),
+		sched:         scheduler.New(pool, sqlc.New(pool), riverClient, cfg, logger, nil, nil),
 		worker:        probeWorker,
 	}
 }

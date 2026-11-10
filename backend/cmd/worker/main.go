@@ -15,6 +15,7 @@ import (
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 	"golang.org/x/time/rate"
 
 	"o1/internal/alerts"
@@ -90,6 +91,9 @@ func run() error {
 		Queues: map[string]river.QueueConfig{
 			"probe": {MaxWorkers: rt.Config.WorkerConcurrency},
 			"alert": {MaxWorkers: 4},
+		},
+		WorkerMiddleware: []rivertype.WorkerMiddleware{
+			observability.RiverMiddleware(obs.Metrics, obs.Tracer),
 		},
 	})
 	if err != nil {

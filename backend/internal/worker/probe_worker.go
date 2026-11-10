@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 
 	"o1/internal/db/sqlc"
@@ -149,6 +151,10 @@ func (w *ProbeWorker) Process(ctx context.Context, args jobs.ProbeArgs) error {
 			outcome = "up"
 		}
 		w.metrics.ObserveProbe(outcome, duration)
+		trace.SpanFromContext(ctx).SetAttributes(
+			attribute.String("probe.result", outcome),
+			attribute.Int64("probe.duration_ms", duration.Milliseconds()),
+		)
 	}
 	return nil
 }

@@ -54,7 +54,7 @@ func run() error {
 	}
 
 	obs.Metrics.Register(observability.NewPoolCollector(rt.Pool))
-	sched := scheduler.New(rt.Pool, sqlc.New(rt.Pool), riverClient, rt.Config, rt.Logger, obs.Metrics)
+	sched := scheduler.New(rt.Pool, sqlc.New(rt.Pool), riverClient, rt.Config, rt.Logger, obs.Metrics, obs.Tracer)
 
 	health := app.StartHealthServer(rt.Config.SchedulerHealthAddr, rt.Logger, rt.Pool.Ping, obs.Metrics.Handler())
 	healthErr := make(chan error, 1)

@@ -48,6 +48,7 @@ type Dependencies struct {
 	StatusPageService *statuspage.Service
 	APIKeyService     *apikeys.Service
 	Metrics           *observability.Metrics
+	Tracer            *observability.Tracer
 }
 
 // authRatePerSecond and authRateBurst implement 10 requests per minute for
@@ -300,11 +301,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/admin/security-events", requireSession(requireAdmin(http.HandlerFunc(admin.SecurityEventsHandler(adminSvc)))))
 
 	var handler http.Handler = mux
+	resolveRoute := func(r *http.Request) string {
+		_, pattern := mux.Handler(r)
+		return pattern
+	}
 	if deps.Metrics != nil {
-		resolveRoute := func(r *http.Request) string {
-			_, pattern := mux.Handler(r)
-			return pattern
-		}
 		handler = deps.Metrics.HTTPMiddleware(handler, resolveRoute)
 	}
 	handler = withBodyLimit(handler)
@@ -313,6 +314,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	handler = requestLogging(logger)(handler)
 	handler = recoverPanics(logger)(handler)
 	handler = withRequestID(handler)
+	// Tracing is outermost so request logs, security headers, and panic
+	// recovery all run inside the request span and can read its context.
+	handler = deps.Tracer.HTTPHandler(handler, resolveRoute)
 	return handler
 }
 

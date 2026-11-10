@@ -14,6 +14,7 @@ import (
 // integration disabled.
 type Provider struct {
 	Metrics *Metrics
+	Tracer  *Tracer
 
 	logger    *slog.Logger
 	closeOnce sync.Once
@@ -27,22 +28,35 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, serviceNam
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	_ = ctx
+
+	tracer, err := NewTracer(ctx, cfg, serviceName)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Provider{
 		Metrics: NewMetrics(serviceName, cfg.Release),
+		Tracer:  tracer,
 		logger:  logger,
 	}, nil
 }
 
 // Close flushes and shuts down every integration. It is idempotent and safe
-// on a nil provider.
+// on a nil provider. Trace flush failures are logged, never returned: shutdown
+// must not fail a process that is already stopping.
 func (p *Provider) Close(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
-	_ = ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	p.closeOnce.Do(func() {
+		if p.Tracer != nil {
+			if err := p.Tracer.Shutdown(ctx); err != nil && p.logger != nil {
+				p.logger.Log(ctx, slog.LevelError, "tracing shutdown failed", "error", err)
+			}
+		}
 		p.closeErr = nil
 	})
 	return p.closeErr

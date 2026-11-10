@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"o1/internal/config"
 	"o1/internal/db"
@@ -33,6 +35,7 @@ type Scheduler struct {
 	cfg     config.Config
 	logger  *slog.Logger
 	metrics *observability.Metrics
+	tracer  *observability.Tracer
 
 	// Injectable for deterministic tests.
 	now    func() time.Time
@@ -42,8 +45,8 @@ type Scheduler struct {
 	tick  time.Duration
 }
 
-// New builds a Scheduler. metrics may be nil.
-func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx], cfg config.Config, logger *slog.Logger, metrics *observability.Metrics) *Scheduler {
+// New builds a Scheduler. metrics and tracer may be nil.
+func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx], cfg config.Config, logger *slog.Logger, metrics *observability.Metrics, tracer *observability.Tracer) *Scheduler {
 	tick := cfg.SchedulerTick
 	if tick <= 0 {
 		tick = 10 * time.Second
@@ -62,6 +65,7 @@ func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx],
 		cfg:     cfg,
 		logger:  logger,
 		metrics: metrics,
+		tracer:  tracer,
 		now:     time.Now,
 		jitter:  randomJitter,
 		batch:   int32(batch), //nolint:gosec // positive config value validated by config.Load
@@ -72,8 +76,16 @@ func New(pool *pgxpool.Pool, q *sqlc.Queries, riverClient *river.Client[pgx.Tx],
 // Tick enqueues one probe per due, active monitor and advances each monitor's
 // next check atomically. It returns the number of due rows processed.
 func (s *Scheduler) Tick(ctx context.Context) (n int, err error) {
+	ctx, span := s.tracer.Start(ctx, "scheduler.tick")
+	defer span.End()
+
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int("scheduler.enqueued", n))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
 		s.metrics.ObserveSchedulerTick(n, time.Since(start))
 	}()
 

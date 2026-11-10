@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"o1/internal/alerts"
 	"o1/internal/config"
@@ -93,7 +95,7 @@ func (w *AlertWorker) Work(ctx context.Context, job *river.Job[jobs.AlertArgs]) 
 		if err := w.markDelivery(ctx, delivery.ID, "skipped", "channel deleted"); err != nil {
 			return err
 		}
-		w.observeDelivery(delivery.ChannelKind, "skipped", start)
+		w.observeDelivery(ctx, delivery.ChannelKind, "skipped", start)
 		w.logger.Log(ctx, slog.LevelInfo, "alert_delivery_skipped",
 			"delivery_id", delivery.ID,
 			"incident_id", delivery.IncidentID,
@@ -110,7 +112,7 @@ func (w *AlertWorker) Work(ctx context.Context, job *river.Job[jobs.AlertArgs]) 
 			if err := w.markDelivery(ctx, delivery.ID, "skipped", reason); err != nil {
 				return err
 			}
-			w.observeDelivery(delivery.ChannelKind, "skipped", start)
+			w.observeDelivery(ctx, delivery.ChannelKind, "skipped", start)
 			w.logger.Log(ctx, slog.LevelInfo, "alert_delivery_skipped",
 				"delivery_id", delivery.ID,
 				"incident_id", delivery.IncidentID,
@@ -150,7 +152,7 @@ func (w *AlertWorker) sendEmail(ctx context.Context, job *river.Job[jobs.AlertAr
 	if err := w.q.MarkAlertDeliverySent(ctx, delivery.ID); err != nil {
 		return fmt.Errorf("mark alert delivery sent: %w", err)
 	}
-	w.observeDelivery(delivery.ChannelKind, "sent", start)
+	w.observeDelivery(ctx, delivery.ChannelKind, "sent", start)
 	return nil
 }
 
@@ -189,7 +191,7 @@ func (w *AlertWorker) sendNotifier(ctx context.Context, job *river.Job[jobs.Aler
 	if err := w.q.MarkAlertDeliverySent(ctx, delivery.ID); err != nil {
 		return fmt.Errorf("mark alert delivery sent: %w", err)
 	}
-	w.observeDelivery(delivery.ChannelKind, "sent", start)
+	w.observeDelivery(ctx, delivery.ChannelKind, "sent", start)
 	return nil
 }
 
@@ -200,7 +202,7 @@ func (w *AlertWorker) handleSendError(ctx context.Context, job *river.Job[jobs.A
 		if markErr := w.markDelivery(ctx, delivery.ID, "failed", lastError); markErr != nil {
 			return markErr
 		}
-		w.observeDelivery(delivery.ChannelKind, "failed", start)
+		w.observeDelivery(ctx, delivery.ChannelKind, "failed", start)
 		w.logger.Log(ctx, slog.LevelError, "alert_delivery_failed",
 			"delivery_id", delivery.ID,
 			"incident_id", delivery.IncidentID,
@@ -221,7 +223,7 @@ func (w *AlertWorker) failWithoutRetry(ctx context.Context, delivery sqlc.GetAle
 	if err := w.markDelivery(ctx, delivery.ID, "failed", reason); err != nil {
 		return err
 	}
-	w.observeDelivery(delivery.ChannelKind, "failed", start)
+	w.observeDelivery(ctx, delivery.ChannelKind, "failed", start)
 	w.logger.Log(ctx, slog.LevelError, "alert_delivery_failed",
 		"delivery_id", delivery.ID,
 		"incident_id", delivery.IncidentID,
@@ -234,8 +236,13 @@ func (w *AlertWorker) failWithoutRetry(ctx context.Context, delivery sqlc.GetAle
 
 // observeDelivery records a terminal delivery outcome. Unknown channel kinds
 // are folded into "other" so the label remains bounded.
-func (w *AlertWorker) observeDelivery(channelKind, status string, start time.Time) {
-	w.metrics.ObserveAlert(boundedChannelKind(channelKind), status, time.Since(start))
+func (w *AlertWorker) observeDelivery(ctx context.Context, channelKind, status string, start time.Time) {
+	kind := boundedChannelKind(channelKind)
+	w.metrics.ObserveAlert(kind, status, time.Since(start))
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String("alert.channel_kind", kind),
+		attribute.String("alert.status", status),
+	)
 }
 
 func boundedChannelKind(kind string) string {
