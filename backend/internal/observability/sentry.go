@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -146,12 +147,16 @@ func CapturePanic(ctx context.Context, rec any) {
 
 // CapturePanicWithTags reports a recovered panic with bounded tags such as the
 // HTTP method, route pattern, and request ID. Callers must never pass raw
-// paths, query strings, headers, bodies, or job args.
+// paths, query strings, headers, bodies, or job args. The stack captured at the
+// recovery site is attached as panic context, mirroring River's panic trace.
 func CapturePanicWithTags(ctx context.Context, rec any, tags map[string]string) {
 	if rec == nil {
 		return
 	}
-	capture(ctx, panicError(rec), tags, nil, sentry.LevelFatal)
+	contexts := map[string]sentry.Context{
+		"panic": {"trace": string(debug.Stack())},
+	}
+	capture(ctx, panicError(rec), tags, contexts, sentry.LevelFatal)
 }
 
 // capture sends one event through the test hook when installed, otherwise

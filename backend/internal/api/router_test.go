@@ -151,6 +151,42 @@ func TestRouter_AuthRateLimiterCoversTOTPRoutes(t *testing.T) {
 	}
 }
 
+func TestRouterMetrics_RecordsRecoveredPanicAndCSRF(t *testing.T) {
+	m := observability.NewMetrics("o1-api", "test")
+	h := api.NewRouter(api.Dependencies{
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:  config.Config{AllowedOrigins: []string{"https://app.example.com"}},
+		Metrics: m,
+	})
+
+	// A session cookie reaches the auth service with a nil pool, which panics
+	// before writing a response. The metrics middleware must record the 500
+	// that recoverPanics writes.
+	panicReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	panicReq.AddCookie(&http.Cookie{Name: "o1_session", Value: "stale"})
+	if rec := serve(t, h, panicReq); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panicking request status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	csrfReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", nil)
+	csrfReq.Header.Set("Origin", "https://evil.example")
+	if rec := serve(t, h, csrfReq); rec.Code != http.StatusForbidden {
+		t.Fatalf("CSRF request status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	metricsRec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+	for _, want := range []string{
+		`o1_http_requests_total{method="GET",route="GET /api/v1/me",status="500"} 1`,
+		`o1_http_requests_total{method="POST",route="POST /api/v1/auth/register",status="403"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestRouterMetrics_PublicMetricsNotServed(t *testing.T) {
 	h := newTestRouter(t)
 	rec := serve(t, h, httptest.NewRequest(http.MethodGet, "/metrics", nil))

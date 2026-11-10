@@ -99,16 +99,25 @@ export function composeExec(service: string, command: string[]): string {
 }
 
 /**
- * Inserts a non-terminal River job scheduled in the future so the worker's
- * queue gauges have a sample without racing a real probe job. The job never
- * becomes runnable, so the worker does not attempt to execute it.
+ * Inserts a future-scheduled River job so the worker's queue gauges have a
+ * sample without racing a real probe job. The state is `scheduled` with a
+ * far-future scheduled_at, so the job is excluded from the oldest-runnable-age
+ * gauge and never becomes runnable.
  */
 export function seedQueuedJob(queue = 'probe'): void {
 	composePsql(
 		`INSERT INTO river_job (kind, args, queue, state, scheduled_at)
-		 VALUES ('e2e_metrics', '{}'::jsonb, :'queue', 'available', now() + interval '1 day');`,
+		 VALUES ('e2e_metrics', '{}'::jsonb, :'queue', 'scheduled', now() + interval '10 years');`,
 		{ variables: { queue } },
 	);
+}
+
+/**
+ * Removes the fixture rows inserted by seedQueuedJob. Tests call this from a
+ * finally block so a failed assertion cannot leave a fake job behind.
+ */
+export function deleteQueuedJobFixtures(): void {
+	composePsql(`DELETE FROM river_job WHERE kind = 'e2e_metrics';`);
 }
 
 /**

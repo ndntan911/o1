@@ -28,18 +28,21 @@ groups:
           runbook_url: 'deploy/observability/README.md#alert-rules'
 
       - alert: O1MetricsMissing
-        expr: absent(up{job=~"o1-.*"})
+        expr: |
+          absent(up{job="o1-api"})
+          or absent(up{job="o1-scheduler"})
+          or absent(up{job="o1-worker"})
         for: 10m
         labels:
           severity: critical
           service: o1
         annotations:
           summary: 'o1 metrics are missing from Grafana Cloud'
-          description: 'No up{job=~"o1-.*"} series exists at all. The Alloy scrape agent or the remote-write path is probably down.'
+          description: 'One or more o1 jobs have no up series. The Alloy scrape agent, a scrape target, or the remote-write path is probably down.'
           runbook_url: 'deploy/observability/README.md#alert-rules'
 
       - alert: O1SchedulerStalled
-        expr: increase(o1_scheduler_ticks_total[5m]) == 0
+        expr: increase(o1_scheduler_ticks_total{job="o1-scheduler"}[5m]) == 0
         for: 5m
         labels:
           severity: critical
@@ -55,9 +58,9 @@ groups:
       - alert: O1HighErrorRate
         expr: |
           (
-            sum(rate(o1_http_requests_total{status=~"5.."}[5m]))
+            sum(rate(o1_http_requests_total{job="o1-api",status=~"5.."}[5m]))
             /
-            clamp_min(sum(rate(o1_http_requests_total[5m])), 0.001)
+            clamp_min(sum(rate(o1_http_requests_total{job="o1-api"}[5m])), 0.001)
           ) > 0.02
         for: 5m
         labels:
@@ -72,7 +75,7 @@ groups:
         expr: |
           histogram_quantile(
             0.95,
-            sum by (le) (rate(o1_http_request_duration_seconds_bucket[5m]))
+            sum by (le) (rate(o1_http_request_duration_seconds_bucket{job="o1-api"}[5m]))
           ) > 1
         for: 10m
         labels:
@@ -102,7 +105,7 @@ groups:
     interval: 1m
     rules:
       - alert: O1QueueBacklog
-        expr: sum by (queue) (o1_queue_jobs{state="available"}) > 100
+        expr: sum by (queue) (o1_queue_jobs{job="o1-worker",state="available"}) > 100
         for: 10m
         labels:
           severity: warning
@@ -113,7 +116,7 @@ groups:
           runbook_url: 'deploy/observability/README.md#alert-rules'
 
       - alert: O1QueueOldestJob
-        expr: max by (queue) (o1_queue_oldest_job_age_seconds) > 300
+        expr: max by (queue) (o1_queue_oldest_job_age_seconds{job="o1-worker"}) > 300
         for: 10m
         labels:
           severity: warning
@@ -124,7 +127,7 @@ groups:
           runbook_url: 'deploy/observability/README.md#alert-rules'
 
       - alert: O1JobsDiscarded
-        expr: sum by (queue) (o1_queue_jobs{state="discarded"}) > 0
+        expr: sum by (queue) (o1_queue_jobs{job="o1-worker",state="discarded"}) > 0
         for: 10m
         labels:
           severity: critical
@@ -137,12 +140,12 @@ groups:
       - alert: O1ProbeFailureSpike
         expr: |
           (
-            sum(rate(o1_probe_results_total{result="down"}[5m]))
+            sum(rate(o1_probe_results_total{job="o1-worker",result="down"}[5m]))
             /
-            clamp_min(sum(rate(o1_probe_results_total[5m])), 0.001)
+            clamp_min(sum(rate(o1_probe_results_total{job="o1-worker"}[5m])), 0.001)
           ) > 0.2
           and
-          sum(rate(o1_probe_results_total[5m])) > 0.05
+          sum(rate(o1_probe_results_total{job="o1-worker"}[5m])) > 0.05
         for: 10m
         labels:
           severity: warning
@@ -155,12 +158,12 @@ groups:
       - alert: O1AlertDeliveryFailures
         expr: |
           (
-            sum(rate(o1_alert_deliveries_total{status="failed"}[5m]))
+            sum(rate(o1_alert_deliveries_total{job="o1-worker",status="failed"}[5m]))
             /
-            clamp_min(sum(rate(o1_alert_deliveries_total[5m])), 0.001)
+            clamp_min(sum(rate(o1_alert_deliveries_total{job="o1-worker"}[5m])), 0.001)
           ) > 0.1
           and
-          sum(rate(o1_alert_deliveries_total[5m])) > 0.01
+          sum(rate(o1_alert_deliveries_total{job="o1-worker"}[5m])) > 0.01
         for: 10m
         labels:
           severity: warning

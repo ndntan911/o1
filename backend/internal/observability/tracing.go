@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -58,13 +59,29 @@ func NewTracer(ctx context.Context, cfg config.Config, serviceName string) (*Tra
 	return newTracerWithExporter(cfg, serviceName, exporter)
 }
 
-// newOTLPExporter builds the OTLP/HTTP exporter. A full URL is accepted as-is;
-// a bare host:port is treated as a plaintext collector endpoint.
+// newOTLPExporter builds the OTLP/HTTP exporter. A full URL keeps its scheme,
+// host, and query string, and always targets the traces signal path; a bare
+// host:port is treated as a plaintext collector endpoint.
 func newOTLPExporter(ctx context.Context, cfg config.Config) (sdktrace.SpanExporter, error) {
 	endpoint := strings.TrimSpace(cfg.OTELExporterEndpoint)
 	opts := make([]otlptracehttp.Option, 0, 3)
 	if strings.Contains(endpoint, "://") {
-		opts = append(opts, otlptracehttp.WithEndpointURL(endpoint))
+		endpointURL, err := traceEndpointURL(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, otlptracehttp.WithEndpointURL(endpointURL.String()))
+		// WithEndpointURL keeps the scheme, host, and path but drops the query
+		// string. Re-apply it on the request when the operator supplied one.
+		if endpointURL.RawQuery != "" {
+			opts = append(opts, otlptracehttp.WithHTTPClient(&http.Client{
+				Transport: queryTransport{
+					base:     http.DefaultTransport,
+					rawQuery: endpointURL.RawQuery,
+				},
+				Timeout: 10 * time.Second,
+			}))
+		}
 	} else {
 		opts = append(opts, otlptracehttp.WithEndpoint(endpoint), otlptracehttp.WithInsecure())
 	}
@@ -72,6 +89,41 @@ func newOTLPExporter(ctx context.Context, cfg config.Config) (sdktrace.SpanExpor
 		opts = append(opts, otlptracehttp.WithHeaders(cfg.OTELExporterHeaders))
 	}
 	return otlptracehttp.New(ctx, opts...)
+}
+
+// traceEndpointURL normalizes a full OTLP endpoint so the exporter always
+// posts to /v1/traces. WithEndpointURL normally uses the URL path as-is and
+// treats an empty path as the root, so an endpoint such as
+// https://collector.example.com would otherwise export to "/" instead of the
+// signal path. A base path is preserved: /otlp becomes /otlp/v1/traces.
+func traceEndpointURL(endpoint string) (*url.URL, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse OTLP endpoint: %w", err)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("parse OTLP endpoint %q: missing host", endpoint)
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if !strings.HasSuffix(path, "/v1/traces") {
+		path += "/v1/traces"
+	}
+	parsed.Path = path
+	return parsed, nil
+}
+
+// queryTransport re-applies the query string from a full OTLP endpoint URL.
+// The OTLP/HTTP exporter builds requests from scheme, host, and path only, so
+// a query such as ?tenant=acme would otherwise be silently dropped.
+type queryTransport struct {
+	base     http.RoundTripper
+	rawQuery string
+}
+
+func (t queryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL.RawQuery = t.rawQuery
+	return t.base.RoundTrip(clone)
 }
 
 // newTracerWithExporter builds a tracer around an arbitrary exporter. It is the

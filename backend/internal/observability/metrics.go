@@ -187,7 +187,7 @@ func (m *Metrics) HTTPMiddleware(next http.Handler, resolveRoute func(*http.Requ
 			}
 		}
 
-		method := r.Method
+		method := normalizeHTTPMethod(r.Method)
 		m.httpInFlightRequests.Inc()
 		defer m.httpInFlightRequests.Dec()
 		start := time.Now()
@@ -201,6 +201,19 @@ func (m *Metrics) HTTPMiddleware(next http.Handler, resolveRoute func(*http.Requ
 		m.httpRequestsTotal.WithLabelValues(method, route, strconv.Itoa(status)).Inc()
 		m.httpRequestDuration.WithLabelValues(method, route).Observe(time.Since(start).Seconds())
 	})
+}
+
+// normalizeHTTPMethod limits the method label to a bounded enum. Clients can
+// send arbitrary extension methods, so anything outside the standard set
+// becomes "other" instead of creating unbounded label values.
+func normalizeHTTPMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return method
+	default:
+		return "other"
+	}
 }
 
 // ObserveProbe records one probe result and its duration.

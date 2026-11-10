@@ -169,7 +169,7 @@ details page as the remote-write endpoint. `mimirtool` needs a token with
 | Alert | Fires when | First checks |
 |-------|------------|--------------|
 | `O1InstanceDown` | `up == 0` for 2m | Process health, container restarts, scrape target address. |
-| `O1MetricsMissing` | `absent(up{job=~"o1-.*"})` for 10m | Alloy container health, credentials, remote-write errors, network egress. |
+| `O1MetricsMissing` | any of `o1-api`, `o1-scheduler`, `o1-worker` has no `up` for 10m | Alloy container health, that scrape target, credentials, remote-write errors. |
 | `O1HighErrorRate` | 5xx ratio > 2% for 5m | API logs, Sentry, recent deploys, a failing route. |
 | `O1HighLatency` | p95 > 1s for 10m | DB pool saturation, slow queries, probe volume, recent deploys. |
 | `O1QueueBacklog` | available jobs > 100 for 10m | Worker health, probe throughput, `O1_WORKER_CONCURRENCY`. |
@@ -178,11 +178,12 @@ details page as the remote-write endpoint. `mimirtool` needs a token with
 | `O1ProbeFailureSpike` | down ratio > 20% for 10m with volume | Affected monitors, worker egress, DNS, target outages. |
 | `O1AlertDeliveryFailures` | failed ratio > 10% for 10m with volume | SMTP, webhook/Slack/Telegram endpoints, channel config. |
 | `O1DBPoolSaturation` | acquired/max > 0.9 for 10m | Long-running queries, pool size, database capacity. |
-| `O1SchedulerStalled` | no tick increase for 5m | Scheduler process, DB connectivity, tick errors. |
+| `O1SchedulerStalled` | no `o1-scheduler` tick increase for 5m | Scheduler process, DB connectivity, tick errors. |
 
-`O1MetricsMissing` is the safety net for a lost scrape agent: if Alloy stops
-scraping, `up` disappears rather than going to zero, so an ordinary
-instance-down rule cannot fire.
+`O1MetricsMissing` is the safety net for a lost scrape agent or target: if
+Alloy stops scraping, `up` disappears rather than going to zero, so an ordinary
+instance-down rule cannot fire. It fires when any one of the three jobs is
+absent, not only when all of them are.
 
 ## Sentry setup
 
@@ -206,7 +207,9 @@ instance-down rule cannot fire.
 Sentry captures API panics, River job errors and panics, and scheduler tick
 panics once per event. Performance tracing is disabled in Sentry because OTel
 owns traces. Before-send redaction strips request bodies, headers, cookies,
-query strings, and user email.
+query strings, and user email; breadcrumb `url`, `from`, and `to` values lose
+their query strings and fragments as well. The browser SDK also disables URL
+query-parameter collection.
 
 ### Frontend
 
@@ -235,9 +238,13 @@ export O1_OTEL_SAMPLE_RATIO="0.05"
 ```
 
 `O1_OTEL_EXPORTER_OTLP_HEADERS` is a comma-separated `key=value` list and is
-never logged. An empty endpoint disables tracing with no exporter calls. If you
-prefer to route traces through Alloy instead, use the commented OTLP
-receiver/exporter example at the bottom of `alloy.alloy`.
+never logged. A full URL endpoint keeps its scheme, host, base path, and query
+string, and the traces signal path `/v1/traces` is appended when missing (for
+example `https://otlp-gateway-prod-XX.grafana.net/otlp` exports to
+`/otlp/v1/traces`). A bare `host:port` endpoint is sent over plaintext HTTP. An
+empty endpoint disables tracing with no exporter calls. If you prefer to route
+traces through Alloy instead, use the commented OTLP receiver/exporter example
+at the bottom of `alloy.alloy`.
 
 ## Dead-man's switch
 

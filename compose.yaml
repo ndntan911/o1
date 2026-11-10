@@ -123,7 +123,7 @@ services:
       - api
       - scheduler
       - worker
-    restart: unless-stopped
+    restart: "no"
 
 volumes:
   postgres-data:

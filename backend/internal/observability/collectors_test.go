@@ -77,6 +77,39 @@ func TestQueueCollector_CountsAndOldestRunnable(t *testing.T) {
 	}
 }
 
+func TestQueueCollector_OldestIgnoresFutureScheduled(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO river_job (kind, args, queue, state, created_at, scheduled_at)
+		VALUES ('test', '{}', 'probe', 'available', now() - interval '1 hour', now() + interval '10 years')`,
+	); err != nil {
+		t.Fatalf("insert future job: %v", err)
+	}
+	insertRiverJob(t, pool, "probe", "available", time.Now().Add(-time.Minute), false)
+
+	m := observability.NewMetrics("o1-worker", "test")
+	c := observability.NewQueueCollector(pool, m)
+	if err := c.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	body := gatherText(t, m.Registry())
+	line := regexp.MustCompile(`o1_queue_oldest_job_age_seconds\{queue="probe"\} ([0-9.e+-]+)`).
+		FindStringSubmatch(body)
+	if line == nil {
+		t.Fatalf("missing oldest age:\n%s", body)
+	}
+	age, err := strconv.ParseFloat(line[1], 64)
+	if err != nil {
+		t.Fatalf("parse oldest age: %v", err)
+	}
+	if age > 120 {
+		t.Fatalf("oldest age = %fs, want the recent runnable job only", age)
+	}
+}
+
 func TestQueueCollector_ClearsLabelsThatDisappear(t *testing.T) {
 	pool, cleanup := testutil.NewPostgres(t)
 	defer cleanup()

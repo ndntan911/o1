@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/react';
-import type { Event } from '@sentry/react';
+import type { Breadcrumb, Event } from '@sentry/react';
 
 /**
  * Removes URLs and paths from a URL, keeping the scheme, host, and route.
@@ -8,6 +8,24 @@ import type { Event } from '@sentry/react';
  */
 function stripUrlSecrets(url: string): string {
 	return url.split(/[?#]/, 1)[0];
+}
+
+/**
+ * Removes query strings and fragments from the URL fields Sentry attaches to
+ * breadcrumbs: navigation breadcrumbs use `from` and `to`, while HTTP
+ * breadcrumbs use `url`.
+ */
+export function scrubSentryBreadcrumb<T extends Breadcrumb>(breadcrumb: T): T {
+	if (!breadcrumb.data) return breadcrumb;
+
+	const data = { ...breadcrumb.data };
+	for (const key of ['url', 'from', 'to'] as const) {
+		const value = data[key];
+		if (typeof value === 'string') {
+			data[key] = stripUrlSecrets(value);
+		}
+	}
+	return { ...breadcrumb, data };
 }
 
 /**
@@ -33,6 +51,10 @@ export function scrubSentryEvent<T extends Event>(event: T): T {
 		scrubbed.request = request;
 	}
 
+	if (event.breadcrumbs) {
+		scrubbed.breadcrumbs = event.breadcrumbs.map(scrubSentryBreadcrumb);
+	}
+
 	if (event.user) {
 		const user = { ...event.user };
 		delete user.email;
@@ -46,7 +68,9 @@ export function scrubSentryEvent<T extends Event>(event: T): T {
  * Initializes the browser Sentry SDK when a DSN is configured.
  *
  * Tracing is disabled for the frontend; this integration only captures errors.
- * Returns whether Sentry was enabled for the current build.
+ * URL query parameters are disabled at collection time and breadcrumbs are
+ * scrubbed as a second line of defense. Returns whether Sentry was enabled for
+ * the current build.
  */
 export function initSentry(): boolean {
 	const dsn = import.meta.env.VITE_SENTRY_DSN;
@@ -59,7 +83,9 @@ export function initSentry(): boolean {
 		environment: import.meta.env.MODE,
 		release: import.meta.env.VITE_RELEASE || undefined,
 		tracesSampleRate: 0,
+		dataCollection: { urlQueryParams: false },
 		beforeSend: scrubSentryEvent,
+		beforeBreadcrumb: scrubSentryBreadcrumb,
 	});
 
 	return true;

@@ -80,6 +80,11 @@ npx playwright install chromium
 npx playwright test
 ```
 
+`E2E_BASE_URL` (default `http://localhost:5173`) points the browser at the web
+app. `E2E_API_URL` (default `http://localhost:8080`) is the public API listener
+used for direct-port assertions; set both when Compose publishes different
+host ports.
+
 To promote an administrator, register and verify the account, set
 `O1_BOOTSTRAP_ADMIN_EMAIL` to that address, then recreate the API service as
 described under [Administrator bootstrap](#administrator-bootstrap).
@@ -336,14 +341,17 @@ cardinality stays predictable and tenant data stays out of Prometheus.
   `trace_id` and `span_id` when a span is active.
 - Sentry error capture is enabled by `O1_SENTRY_DSN` on the backend and by the
   `VITE_SENTRY_DSN` web build arg. Request bodies, headers, cookies, query
-  strings, and user emails are stripped before sending. Sentry performance is
-  disabled because OTel owns traces.
+  strings, breadcrumb URLs, and user emails are stripped before sending. Sentry
+  performance is disabled because OTel owns traces.
 - Frontend DSN and release are baked into the static bundle at build time, not
   read at runtime.
 
 Backend environment variables:
 
 - `O1_API_HEALTH_ADDR` — internal API health/metrics listener, default `:8083`.
+- `O1_SCHEDULER_HEALTH_ADDR` — scheduler health/metrics listener, default
+  `:8081`.
+- `O1_WORKER_HEALTH_ADDR` — worker health/metrics listener, default `:8082`.
 - `O1_OTEL_EXPORTER_OTLP_ENDPOINT` — OTLP/HTTP traces endpoint; empty disables
   tracing.
 - `O1_OTEL_EXPORTER_OTLP_HEADERS` — comma-separated `key=value` auth headers,

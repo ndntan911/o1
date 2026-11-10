@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { Event } from '@sentry/react';
+import type { Breadcrumb, Event } from '@sentry/react';
 
 const sentryInit = vi.hoisted(() => vi.fn());
 
@@ -7,7 +7,7 @@ vi.mock('@sentry/react', () => ({
 	init: sentryInit,
 }));
 
-import { initSentry, scrubSentryEvent } from './sentry';
+import { initSentry, scrubSentryBreadcrumb, scrubSentryEvent } from './sentry';
 
 beforeEach(() => {
 	sentryInit.mockClear();
@@ -37,13 +37,46 @@ describe('initSentry', () => {
 			environment: string;
 			release: string;
 			tracesSampleRate: number;
+			dataCollection: { urlQueryParams: boolean };
 			beforeSend: unknown;
+			beforeBreadcrumb: unknown;
 		};
 		expect(options.dsn).toBe('https://public@example.com/1');
 		expect(options.environment).toBe(import.meta.env.MODE);
 		expect(options.release).toBe('v1.2.3');
 		expect(options.tracesSampleRate).toBe(0);
+		expect(options.dataCollection).toEqual({ urlQueryParams: false });
 		expect(typeof options.beforeSend).toBe('function');
+		expect(typeof options.beforeBreadcrumb).toBe('function');
+	});
+});
+
+describe('scrubSentryBreadcrumb', () => {
+	test('strips query strings and fragments from url, from, and to', () => {
+		const breadcrumb: Breadcrumb = {
+			category: 'navigation',
+			data: {
+				from: '/workspaces/1/monitors?token=secret#section',
+				to: '/workspaces/1/monitors/2?email=alice%40example.com',
+				url: 'https://app.example.com/api/monitors?token=secret',
+				method: 'GET',
+			},
+		};
+
+		const scrubbed = scrubSentryBreadcrumb(breadcrumb);
+
+		expect(scrubbed.data).toEqual({
+			from: '/workspaces/1/monitors',
+			to: '/workspaces/1/monitors/2',
+			url: 'https://app.example.com/api/monitors',
+			method: 'GET',
+		});
+	});
+
+	test('leaves breadcrumbs without data untouched', () => {
+		const breadcrumb: Breadcrumb = { message: 'ui.click' };
+
+		expect(scrubSentryBreadcrumb(breadcrumb)).toEqual(breadcrumb);
 	});
 });
 
@@ -80,5 +113,23 @@ describe('scrubSentryEvent', () => {
 		const event: Event = { message: 'boom' };
 
 		expect(scrubSentryEvent(event)).toEqual(event);
+	});
+
+	test('scrubs URLs in event breadcrumbs', () => {
+		const event: Event = {
+			breadcrumbs: [
+				{
+					category: 'navigation',
+					data: { from: '/a?token=1', to: '/b#secret' },
+				},
+			],
+		};
+
+		const scrubbed = scrubSentryEvent(event);
+
+		expect(scrubbed.breadcrumbs?.[0].data).toEqual({
+			from: '/a',
+			to: '/b',
+		});
 	});
 });

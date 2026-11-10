@@ -199,7 +199,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(o1_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(o1_http_requests_total[5m])), 0.001)",
+          "expr": "(sum(rate(o1_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(o1_http_requests_total[5m])), 0.001)) or vector(0)",
           "legendFormat": "5xx ratio",
           "range": true,
           "refId": "A"
@@ -829,7 +829,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max(o1_incidents_open)",
+          "expr": "max(o1_incidents_open{job=\"o1-worker\"})",
           "instant": true,
           "legendFormat": "open incidents",
           "range": false,
@@ -1084,7 +1084,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (job) (rate(o1_scheduler_ticks_total[5m]))",
+          "expr": "sum by (job) (rate(o1_scheduler_ticks_total{job=\"o1-scheduler\"}[5m]))",
           "legendFormat": "{{job}}",
           "range": true,
           "refId": "A"

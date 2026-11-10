@@ -9,6 +9,7 @@ import { generate } from 'otplib';
 import {
 	composeExec,
 	composePsql,
+	deleteQueuedJobFixtures,
 	MailpitTimeoutError,
 	seedIncident,
 	seedProbeResults,
@@ -895,6 +896,8 @@ test('register, verify, create a monitor, and administer the workspace', async (
 test('serves private metrics and routes public health checks to the API', async ({
 	request,
 }) => {
+	// Public API listener. Set E2E_API_URL when Compose publishes a different
+	// host port; E2E_BASE_URL points at the web app instead.
 	const apiURL = process.env.E2E_API_URL ?? 'http://localhost:8080';
 
 	// Exercise the instrumented API through Caddy so o1_http_requests_total is
@@ -925,22 +928,37 @@ test('serves private metrics and routes public health checks to the API', async 
 	expect(schedulerMetrics).toContain('o1_build_info');
 
 	// Queue gauges are only emitted for states that currently exist. Seed a
-	// future-scheduled non-terminal job and wait for the worker's 15s refresh
-	// so the assertion does not depend on a transient probe job.
-	seedQueuedJob();
-	await expect
-		.poll(
-			() => composeExec('web', ['wget', '-qO-', 'http://worker:8082/metrics']),
-			{ timeout: 30_000, intervals: [1000] },
-		)
-		.toContain('o1_queue_jobs');
-	const workerMetrics = composeExec('web', [
-		'wget',
-		'-qO-',
-		'http://worker:8082/metrics',
-	]);
-	expect(workerMetrics).toContain('o1_build_info');
-	expect(workerMetrics).toContain('o1_queue_jobs');
+	// far-future scheduled non-terminal job and wait for the worker's 15s
+	// refresh so the assertion does not depend on a transient probe job. The
+	// fixture is removed in finally so it can never become a real backlog.
+	try {
+		seedQueuedJob();
+		await expect
+			.poll(
+				() => {
+					try {
+						return composeExec('web', [
+							'wget',
+							'-qO-',
+							'http://worker:8082/metrics',
+						]);
+					} catch {
+						return '';
+					}
+				},
+				{ timeout: 30_000, intervals: [1000] },
+			)
+			.toContain('o1_queue_jobs');
+		const workerMetrics = composeExec('web', [
+			'wget',
+			'-qO-',
+			'http://worker:8082/metrics',
+		]);
+		expect(workerMetrics).toContain('o1_build_info');
+		expect(workerMetrics).toContain('o1_queue_jobs');
+	} finally {
+		deleteQueuedJobFixtures();
+	}
 
 	// The public site and the public API listener never expose exposition.
 	const publicMetrics = await request.get('/metrics');

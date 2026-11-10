@@ -322,14 +322,17 @@ func NewRouter(deps Dependencies) http.Handler {
 		_, pattern := mux.Handler(r)
 		return pattern
 	}
-	if deps.Metrics != nil {
-		handler = deps.Metrics.HTTPMiddleware(handler, resolveRoute)
-	}
 	handler = withBodyLimit(handler)
 	handler = httpx.CSRF(deps.Config.AllowedOrigins)(handler)
 	handler = withSecurityHeaders(handler)
 	handler = requestLogging(logger)(handler)
 	handler = recoverPanics(logger, resolveRoute)(handler)
+	// Metrics sits outside panic recovery, CSRF, and the body limit so their
+	// synthetic responses (500, 403, 413) are counted. The route label still
+	// comes from the mux pattern resolver, never the raw path.
+	if deps.Metrics != nil {
+		handler = deps.Metrics.HTTPMiddleware(handler, resolveRoute)
+	}
 	handler = withRequestID(handler)
 	// Tracing is outermost so request logs, security headers, and panic
 	// recovery all run inside the request span and can read its context.

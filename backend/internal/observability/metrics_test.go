@@ -53,6 +53,24 @@ func TestMetrics_HTTPMiddlewareBoundedLabels(t *testing.T) {
 	}
 }
 
+func TestMetrics_HTTPMiddlewareNormalizesMethod(t *testing.T) {
+	m := observability.NewMetrics("o1-api", "test")
+	h := m.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), func(*http.Request) string { return "BREW /api/v1/me" })
+
+	req := httptest.NewRequest("BREW", "/api/v1/me", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	body := gatherText(t, m.Registry())
+	if !strings.Contains(body, `o1_http_requests_total{method="other",route="BREW /api/v1/me",status="204"} 1`) {
+		t.Fatalf("metrics body missing normalized method:\n%s", body)
+	}
+	if strings.Contains(body, `method="BREW"`) {
+		t.Fatal("client-controlled method leaked into metrics")
+	}
+}
+
 func TestMetrics_HealthAndMetricsExcluded(t *testing.T) {
 	m := observability.NewMetrics("o1-api", "test")
 	called := false

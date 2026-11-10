@@ -293,4 +293,8 @@ func TestSentryCapturePanicWithTagsReachesEvent(t *testing.T) {
 	if event.Level != sentry.LevelFatal {
 		t.Errorf("event level = %v, want fatal", event.Level)
 	}
+	trace, ok := event.Contexts["panic"]["trace"]
+	if !ok || strings.TrimSpace(trace.(string)) == "" {
+		t.Errorf("event panic context trace = %v (present %v), want a stack trace", trace, ok)
+	}
 }

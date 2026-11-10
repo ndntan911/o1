@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -199,4 +200,93 @@ func attrValue(span tracetest.SpanStub, key string) (attribute.Value, bool) {
 		}
 	}
 	return attribute.Value{}, false
+}
+
+// TestOTLPExporterAppendsSignalPath verifies a full endpoint URL always posts
+// spans to the traces signal path, preserving a base path, query string, and
+// configured headers.
+func TestOTLPExporterAppendsSignalPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		endpoint  func(string) string
+		wantPath  string
+		wantQuery string
+	}{
+		{
+			name:     "root URL",
+			endpoint: func(base string) string { return base },
+			wantPath: "/v1/traces",
+		},
+		{
+			name:     "base path",
+			endpoint: func(base string) string { return base + "/otlp" },
+			wantPath: "/otlp/v1/traces",
+		},
+		{
+			name:     "already signal path",
+			endpoint: func(base string) string { return base + "/otlp/v1/traces" },
+			wantPath: "/otlp/v1/traces",
+		},
+		{
+			name:      "query preserved",
+			endpoint:  func(base string) string { return base + "/otlp?tenant=acme" },
+			wantPath:  "/otlp/v1/traces",
+			wantQuery: "tenant=acme",
+		},
+		{
+			name:     "trailing slash",
+			endpoint: func(base string) string { return base + "/otlp/" },
+			wantPath: "/otlp/v1/traces",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			type requestInfo struct {
+				path  string
+				query string
+				auth  string
+			}
+			requests := make(chan requestInfo, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- requestInfo{
+					path:  r.URL.Path,
+					query: r.URL.RawQuery,
+					auth:  r.Header.Get("Authorization"),
+				}
+				w.Header().Set("Content-Type", "application/x-protobuf")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			tr, err := NewTracer(context.Background(), config.Config{
+				OTELExporterEndpoint: tc.endpoint(server.URL),
+				OTELExporterHeaders:  map[string]string{"Authorization": "Bearer test-token"},
+				OTELSampleRatio:      1,
+			}, "o1-test")
+			if err != nil {
+				t.Fatalf("NewTracer: %v", err)
+			}
+			_, span := tr.Start(context.Background(), "test")
+			span.End()
+			if err := tr.Shutdown(context.Background()); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+
+			select {
+			case got := <-requests:
+				if got.path != tc.wantPath {
+					t.Fatalf("export path = %q, want %q", got.path, tc.wantPath)
+				}
+				if got.query != tc.wantQuery {
+					t.Fatalf("export query = %q, want %q", got.query, tc.wantQuery)
+				}
+				if got.auth != "Bearer test-token" {
+					t.Fatalf("Authorization header = %q, want Bearer test-token", got.auth)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("exporter did not send a request")
+			}
+		})
+	}
 }

@@ -125,6 +125,7 @@ func (c *QueueCollector) load(ctx context.Context) (map[queueState]int, map[stri
 		SELECT queue, min(created_at)
 		FROM river_job
 		WHERE state IN ('available', 'running', 'retryable', 'pending')
+		  AND scheduled_at <= now()
 		GROUP BY queue`)
 	if err != nil {
 		return nil, nil, err
