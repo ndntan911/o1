@@ -4,17 +4,18 @@ This directory holds the standalone production stack for o1:
 
 | File | Purpose |
 |------|---------|
-| `compose.yaml` | PostgreSQL, API, scheduler, worker, web (Caddy), and an optional Alloy profile. |
+| `compose.yaml` | API, scheduler, worker, web (Caddy), and an optional Alloy profile. PostgreSQL is a managed service reached through `O1_DATABASE_URL`, not a container. |
 | `compose.build.yaml` | Local-build override: builds the app images from this checkout instead of pulling registry images. |
 | `env.example` | Every required and optional production variable, with placeholders. |
 | `images.env.example` | Fixture showing the digest-pinned image refs a deploy writes to the host. |
 | `README.md` | This runbook. |
 
 The stack is intentionally separate from the development `compose.yaml` at the
-repository root. It has no Mailpit, no published PostgreSQL/API/metrics ports,
-no development keys, and no raised auth rate limits. Only the web container
-publishes ports `80` and `443`; Caddy serves the SPA, proxies the API on the same
-origin, and obtains the TLS certificate.
+repository root. It has no Mailpit, no database container, no published
+database/API/metrics ports, no development keys, and no raised auth rate
+limits. Only the web container publishes ports `80` and `443`; Caddy serves the
+SPA, proxies the API on the same origin, and obtains the TLS certificate. The
+database is a managed PostgreSQL service supplied as `O1_DATABASE_URL`.
 
 All commands below run from the repository root unless they use an absolute
 path. Each Compose command names the production compose file and environment
@@ -43,14 +44,13 @@ they exercise the same compose file the deploy script uses.
 - **Plan 11** added CI/CD and is implemented. Deploys normally run from the
   Deploy workflow with digest-pinned registry images; the manual commands here
   remain for first-run, offline, and recovery use. See [../CICD.md](../CICD.md).
-- **Backups are not implemented; Plan 12 is skipped.** There is no backup job,
-  WAL archiving, or restore procedure in this stack, and this release adds
-  retention: once enabled, the scheduler can delete raw probe partitions older
-  than 90+ days and prune hourly rollups and audit events past their windows.
-  Rollups are aggregates, not a backup. Until an external backup exists, take
-  and store a `pg_dump` yourself if the data matters, and note that the Caddy
-  volumes hold the TLS certificates, not application data. See
-  [Retention](#retention).
+- **Backups come from the managed database provider.** The stack runs no
+  database of its own and writes no backups; configure the provider's automated
+  backups and enable point-in-time recovery before relying on retention.
+  Retention can still delete raw probe partitions older than 90+ days and prune
+  hourly rollups and audit events past their windows, and rollups are
+  aggregates, not a backup of those raw rows. The Caddy volumes hold TLS
+  certificates, not application data. See [Retention](#retention).
 - `/metrics` is private. Caddy answers `404` and the metrics listeners are never
   published.
 - The Resend free tier has daily and monthly send caps. Verification mail,
@@ -62,10 +62,13 @@ they exercise the same compose file the deploy script uses.
 ## Prerequisites
 
 - A Linux host with Docker Engine 24+ and the Compose v2 plugin, plus `git`,
-  `curl`, and `openssl`.
+  `curl`, `psql`, and `openssl`.
+- A managed PostgreSQL 16-compatible database with a role that owns the `o1`
+  database, reachable over TLS. See [Managed PostgreSQL](#3-managed-postgresql).
 - A domain or subdomain you control, for example `o1.example.com`.
 - Inbound TCP `80` and `443` reachable from the internet, and SSH for
-  administration. Do not expose `5432`, `8080`, `8081`, `8082`, or `8083`.
+  administration. Do not expose `5432` (the database is not on this host),
+  `8080`, `8081`, `8082`, or `8083`.
 - A Resend account with a verified sending domain and an API key.
 
 ## 1. DNS and network
@@ -122,19 +125,107 @@ Create an API key under **API Keys** with permission to send, and put it in
 `O1_RESEND_API_KEY`. Set `O1_EMAIL_REPLY_TO` if replies should go somewhere
 other than the from address. Both addresses are validated at startup.
 
-## 3. Generate secrets
+## 3. Managed PostgreSQL
 
-Generate each value separately and store it in a password manager:
+The production stack runs no database of its own. Provision a managed
+PostgreSQL service before the first deploy.
+
+### Requirements
+
+- PostgreSQL 16-compatible, with a database named `o1` and a role that **owns**
+  that database. Migrations install the `citext` extension, create the River
+  queue schema, and create and drop `probe_results` partitions; a bare
+  non-owner role fails at startup.
+- TLS enforced. Use `sslmode=verify-full` when the provider has a publicly
+  trusted CA. For a provider with a private CA, use `sslmode=require` and supply
+  the provider's CA material (`sslrootcert` or the documented mount).
+- A **direct (session) endpoint**, not a transaction pooler. Startup migrations
+  take PostgreSQL advisory locks and River needs session semantics; Neon's
+  `-pooler` host and Supabase's `6543` port are transaction pools and will not
+  work.
+- A region close to the deploy host. Every probe writes a row over this link.
+- Enough connections: `api`, `scheduler`, and `worker` each hold up to
+  `O1_DB_MAX_CONNS` (default `10`), so the tier must allow at least 30
+  connections plus migration headroom.
+
+OCI Database with PostgreSQL in the VPS region, Neon's direct endpoint,
+Supabase's direct connection, RDS, and Aiven all satisfy this.
+
+### Connection string
+
+```dotenv
+O1_DATABASE_URL=postgres://o1:PASSWORD@db.example.com:5432/o1?sslmode=verify-full
+```
+
+Percent-encode `@`, `:`, `/`, `?`, and `#` in the password. The API refuses to
+start when `O1_DATABASE_URL` is empty, and Compose refuses to render the stack
+without it.
+
+Backups and point-in-time recovery are the provider's responsibility. Confirm
+the backup retention window, and that PITR is enabled on the plan you buy,
+before setting `O1_RETENTION_DRY_RUN=false`; rollups are aggregates, not a
+backup of raw probe rows.
+
+### One-time cutover from the bundled database
+
+This applies only to a host that already ran a release with the local
+PostgreSQL container. Steps 1–4 run against the compose file that is **still
+running**, before you update the checkout or deploy the new release, because the
+new file no longer defines the `postgres` service. On a registry-deployed host
+that is the active release's copy:
 
 ```sh
-openssl rand -hex 32     # POSTGRES_PASSWORD
+COMPOSE_FILE=/opt/o1/current/deploy/production/compose.yaml
+ENV_FILE=/opt/o1/.env
+```
+
+On a checkout-based host, run these steps before `git pull` and keep using
+`deploy/production/compose.yaml`.
+
+1. Stop the writers and leave PostgreSQL running:
+
+   ```sh
+   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+     stop api scheduler worker
+   ```
+
+2. Dump the old database:
+
+   ```sh
+   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+     exec -T postgres pg_dump -U o1 -d o1 -Fc > o1-pre-managed.dump
+   ```
+
+3. Restore into the managed database:
+
+   ```sh
+   pg_restore --no-owner --no-privileges -d "$O1_DATABASE_URL" o1-pre-managed.dump
+   ```
+
+4. Spot-check row counts on both sides (`monitors`, `users`, `probe_results`)
+   and confirm the newest `probe_results.checked_at` is current.
+
+5. Set `O1_DATABASE_URL` in `deploy/production/.env`, or `/opt/o1/.env` on a
+   registry-deployed host, then deploy a release built after this change.
+
+6. Confirm `/readyz` is healthy and that no `postgres` container is running.
+
+7. Keep the dump and the old `postgres-data` volume until the managed database
+   has served production through a full retention cycle. Then remove the volume
+   manually and prune pre-cutover releases; see
+   [../CICD.md](../CICD.md#7-manual-recovery).
+
+## 4. Generate secrets
+
+The database password belongs to the managed service: issue and rotate it from
+the provider console, never from the host. The application has two secrets of
+its own; generate each separately and store both in a password manager:
+
+```sh
 openssl rand -base64 32  # O1_SECRET_KEY
 openssl rand -base64 32  # O1_ENCRYPTION_KEY
 ```
 
-- Use the hex output for `POSTGRES_PASSWORD`. It is embedded in
-  `O1_DATABASE_URL`, and base64 characters such as `@`, `:`, `/`, `?`, and `#`
-  would need percent-encoding.
 - `O1_SECRET_KEY` and `O1_ENCRYPTION_KEY` each decode to exactly 32 bytes.
 - Never reuse a development key. The API refuses to start in production without
   `O1_ENCRYPTION_KEY`.
@@ -142,29 +233,7 @@ openssl rand -base64 32  # O1_ENCRYPTION_KEY
   request bodies at rest. Changing it later makes existing encrypted data
   unreadable; this plan has no key-rotation or re-encryption procedure.
 
-Do not start the stack with the placeholder `POSTGRES_PASSWORD` and change it
-afterwards. PostgreSQL sets the role password when it first initializes the
-`postgres-data` volume; later edits to the variable do not update the role, and
-the API cannot authenticate. Generate the real password before the first start.
-
-If the stack has already started with the placeholder, you can recover without
-deleting data: update the role password inside PostgreSQL, then update `.env` to
-match and recreate the application containers.
-
-```sh
-# Replace <new-hex-password> with the same value you put in .env.
-docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml exec postgres \
-  psql -U o1 -d o1 -c "ALTER ROLE o1 WITH PASSWORD '<new-hex-password>';"
-$EDITOR deploy/production/.env   # set POSTGRES_PASSWORD to the same value
-docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml up -d --force-recreate api scheduler worker
-```
-
-Only recreate the volume (`docker compose ... down -v`, which deletes all data)
-when the existing contents are expendable.
-
-## 4. Configure the environment
+## 5. Configure the environment
 
 ```sh
 cp deploy/production/env.example deploy/production/.env
@@ -175,10 +244,13 @@ $EDITOR deploy/production/.env
 Fill in at minimum:
 
 - `O1_DOMAIN` — the exact public hostname Caddy should serve.
-- `POSTGRES_PASSWORD` — the hex value from step 3.
-- `O1_SECRET_KEY` and `O1_ENCRYPTION_KEY` — the base64 values from step 3.
+- `O1_DATABASE_URL` — the managed database DSN from step 3.
+- `O1_SECRET_KEY` and `O1_ENCRYPTION_KEY` — the base64 values from step 4.
 - `O1_EMAIL_FROM` — a mailbox on the verified Resend domain.
 - `O1_RESEND_API_KEY` — the Resend sending key.
+
+`O1_DB_MAX_CONNS` is optional. Leave it unset for the default of `10` unless
+the provider tier cannot handle 30 connections from the three processes.
 
 Leave `O1_BOOTSTRAP_ADMIN_EMAIL` unset until the first account exists and is
 verified; the promotion runs only at process startup. See
@@ -201,7 +273,7 @@ by `bootstrap-host.sh`. That file is operator-managed, lives outside every
 release directory, and is never written by CI, so secrets survive a rollback.
 See [../CICD.md](../CICD.md).
 
-## 5. First deploy
+## 6. First deploy
 
 On a provisioned host the first release is activated by the Deploy workflow,
 which writes `images.env` and runs `/opt/o1/bin/deploy.sh`; see
@@ -240,11 +312,12 @@ config validation; never put it on a host as-is.
 
 What happens on first start:
 
-- PostgreSQL starts and becomes healthy.
-- The API, scheduler, and worker run migrations at startup. With the build
-  override they are built from `backend/`; a registry deploy pulls them instead.
-  A PostgreSQL advisory lock serializes migrations, so concurrent starts are
-  safe.
+- The stack starts no database container; the API connects to the managed
+  database named by `O1_DATABASE_URL`.
+- The API, scheduler, and worker run migrations against that database at
+  startup. With the build override they are built from `backend/`; a registry
+  deploy pulls them instead. A PostgreSQL advisory lock serializes migrations,
+  so concurrent starts are safe.
 - The web image serves the SPA and Caddy; Caddy obtains a certificate for
   `O1_DOMAIN` and redirects HTTP to HTTPS. The build override builds it from
   `web/`; a registry deploy pulls it.
@@ -258,7 +331,7 @@ docker compose --env-file deploy/production/.env \
   -f deploy/production/compose.yaml logs --tail=100 api scheduler worker
 ```
 
-## 6. Verify the deployment
+## 7. Verify the deployment
 
 ### Health and routing
 
@@ -333,7 +406,7 @@ Transient provider errors (timeouts, `408`, `425`, `429`, `5xx`) are retried.
 Authentication failures and other permanent `4xx` responses are recorded as
 failed deliveries without endless retries.
 
-## 7. Logs and day-to-day operations
+## 8. Logs and day-to-day operations
 
 ```sh
 docker compose --env-file deploy/production/.env \
@@ -406,12 +479,11 @@ The pass summary reports `candidates`, `partitions_dropped`, `skipped_dry_run`,
 `skipped_watermark`, `skipped_mismatch`, `rollup_rows`, and `audit_rows`.
 `skipped_watermark` counts partitions retained because
 `rollup_state.watermark` had not reached the partition end, so coverage could
-not be proven. Inspect the database directly when needed:
+not be proven. Inspect the database directly when needed, either with `psql`
+and the managed DSN or from the provider console:
 
 ```sh
-docker compose --env-file deploy/production/.env \
-  -f deploy/production/compose.yaml exec postgres \
-  psql -U o1 -d o1 -c "SELECT watermark FROM rollup_state;"
+psql "$O1_DATABASE_URL" -c "SELECT watermark FROM rollup_state;"
 ```
 
 ```sql
@@ -456,7 +528,7 @@ and long-window aggregates, but they are not a backup of the raw data.
    immediately, not on the next daily run. Expect at most one partition drop per
    startup pass and per daily run, so a backlog clears one month at a time.
 
-## 8. Update and restart
+## 9. Update and restart
 
 Manual update from a checkout, with the local build override:
 
@@ -489,7 +561,7 @@ local image names consistent with the manual build.)
 Frontend `VITE_*` values are baked into the static bundle at build time. Changing
 `VITE_SENTRY_DSN` or `VITE_RELEASE` requires rebuilding the `web` image.
 
-## 9. Rollback
+## 10. Rollback
 
 Each successful registry deploy stores an immutable bundle under
 `/opt/o1/releases/<version>-<sha>-<run_id>-<run_attempt>/`. The bundle holds the
@@ -529,19 +601,29 @@ schema; see [../CICD.md](../CICD.md#8-migrations). A manual rebuild from a
 checkout bypasses the release symlinks entirely and is replaced by the next
 deploy or rollback.
 
-## 10. Troubleshooting
+Rollback does **not** move data either, and the managed database is outside the
+release bundle. An older release built before the managed cutover carries a
+compose file that still defines the bundled `postgres` service, so rolling back
+to it starts an **empty local database** and points the app at it: `/readyz`
+turns green while the real data is unreachable. After the first verified
+managed deploy, prune the pre-cutover release directories so `rollback.sh` can
+only select managed-aware bundles, and keep `o1-pre-managed.dump` until the
+managed database is accepted. See
+[Managed PostgreSQL](#3-managed-postgresql).
+
+## 11. Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
 | Caddy cannot obtain a certificate | DNS `A`/`AAAA` must point at this host; `80` and `443` must be reachable from the internet; no other process may own those ports. Inspect `logs -f web` for the ACME error. Fix DNS/firewall and let Caddy retry; repeated forced retries can hit ACME rate limits. |
-| Browser shows `502 Bad Gateway` | The API is not ready. Check `logs api`; verify PostgreSQL is healthy and `O1_DATABASE_URL` is correct. |
-| API exits at startup with a config error | `O1_SECRET_KEY`/`O1_ENCRYPTION_KEY` must be base64 of exactly 32 bytes; `O1_EMAIL_FROM` must be a valid mailbox; the Resend provider requires `O1_RESEND_API_KEY`; production rejects the `mailpit` provider. |
-| Database authentication fails | `POSTGRES_PASSWORD` must match across the first volume initialization and `O1_DATABASE_URL`. If it contains URL-special characters, percent-encode it or regenerate as hex. Changing it after the volume exists does not change the PostgreSQL role password; see [step 3](#3-generate-secrets) to recover without deleting data. |
+| Browser shows `502 Bad Gateway` | The API is not ready. Check `logs api`; verify the managed database is reachable and `O1_DATABASE_URL` is correct. |
+| API exits at startup with a config error | `O1_SECRET_KEY`/`O1_ENCRYPTION_KEY` must be base64 of exactly 32 bytes; `O1_EMAIL_FROM` must be a valid mailbox; the Resend provider requires `O1_RESEND_API_KEY`; production rejects the `mailpit` provider; `O1_DB_MAX_CONNS` must be between 1 and 100. |
+| Database connection fails | Check `sslmode` (`verify-full`, or `require` plus the provider CA), that the host is a direct/session endpoint rather than a transaction pooler, that the password is percent-encoded, that the VPS address passes the provider's IP allowlist or firewall, and that `3 x O1_DB_MAX_CONNS` fits the tier's connection limit. `/readyz` also checks the database. |
 | Email not delivered | Check the Resend email log and quota, domain verification, API key, and that the from/reply-to addresses are on the verified domain. Check the incident delivery status and `logs worker`. |
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |
 
-## 11. Optional metrics with Grafana Alloy
+## 12. Optional metrics with Grafana Alloy
 
 Alloy is behind the `observability` profile and is not started by a normal
 `up`. Set `GRAFANA_REMOTE_WRITE_URL`, `GRAFANA_REMOTE_WRITE_USER`, and
@@ -562,19 +644,21 @@ dead-man's switch at `https://o1.example.com/healthz`, never at `/metrics`.
 Alloy's own UI on port `12345` is not published; use its logs for scrape and
 remote-write errors.
 
-## 12. Security notes
+## 13. Security notes
 
-- Only `80` and `443` are published. PostgreSQL, the API, the scheduler, the
-  worker, and every health/metrics listener stay on the private Compose
-  network.
+- Only `80` and `443` are published. The API, the scheduler, the worker, and
+  every health/metrics listener stay on the private Compose network; the
+  managed database is reached outbound over TLS and has no local listener.
 - `/metrics` returns `404` through Caddy.
 - All secrets come from `deploy/production/.env` or the host environment.
   `env.example` contains placeholders only. Never commit `.env`.
 - The stack sets `O1_ENV=production`, which requires a real encryption key and
   rejects the development email provider.
 - Keep Caddy's `caddy_data` volume; it holds the certificates and ACME account
-  material. Application data lives in `postgres-data`.
-- There are no backups (Plan 12 is skipped). Once enabled, retention can delete
-  expired raw probes; it is a dry run until `O1_RETENTION_DRY_RUN=false`. See
-  [Retention](#retention). CI/CD deploys and the release/rollback process are
-  documented in [../CICD.md](../CICD.md).
+  material. Application data lives in the managed database, not on the host, so
+  no database volume exists to protect or delete.
+- Backups and point-in-time recovery come from the managed database provider;
+  confirm both before enabling retention deletion. Once enabled, retention can
+  delete expired raw probes; it is a dry run until `O1_RETENTION_DRY_RUN=false`.
+  See [Retention](#retention). CI/CD deploys and the release/rollback process
+  are documented in [../CICD.md](../CICD.md).
