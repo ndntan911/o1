@@ -203,7 +203,8 @@ Each environment needs its own host: staging and production both bind `80` and
    Put the deploy public key in `~o1deploy/.ssh/authorized_keys`.
 
 3. Open inbound TCP `80` and `443` (for Caddy and ACME) and SSH. Do not open
-   `5432`, `8080`, `8081`, `8082`, or `8083`; they are internal to Compose.
+   `5432`, `8080`, `8081`, `8082`, or `8083`; they are internal to Compose or,
+   for `5432`, absent because the database is managed off-host.
 
 4. Run the bootstrap script **from a checkout of the repository**, as the
    deploy user:
@@ -270,11 +271,16 @@ Each environment needs its own host: staging and production both bind `80` and
    chmod 600 /opt/o1/.env
    ```
 
-   Required: `O1_DOMAIN`, `POSTGRES_PASSWORD`, `O1_SECRET_KEY`,
+   Required: `O1_DOMAIN`, `O1_DATABASE_URL`, `O1_SECRET_KEY`,
    `O1_ENCRYPTION_KEY`, `O1_EMAIL_FROM`, `O1_RESEND_API_KEY`. Optional:
-   `O1_EMAIL_REPLY_TO`, `O1_RESEND_RPS`, `O1_RESEND_BURST`,
+   `O1_DB_MAX_CONNS`, `O1_EMAIL_REPLY_TO`, `O1_RESEND_RPS`, `O1_RESEND_BURST`,
    `O1_BOOTSTRAP_ADMIN_EMAIL`, the observability values, `GHCR_USER`/
    `GHCR_READ_TOKEN` for private packages, and `DEPLOY_HEALTH_TIMEOUT`.
+
+   `O1_DATABASE_URL` points at a managed PostgreSQL service outside the host;
+   no database runs in a release bundle. See
+   [production/README.md](production/README.md#3-managed-postgresql) for
+   provisioning, TLS requirements, and the direct-versus-pooler distinction.
 
    `deploy.sh` and `rollback.sh` read `O1_DOMAIN`, `GHCR_USER`,
    `GHCR_READ_TOKEN`, and optional `DEPLOY_HEALTH_TIMEOUT` from this file. They
@@ -397,6 +403,14 @@ active, pulls the pinned images, runs `up -d --remove-orphans`, and polls
 `https://$O1_DOMAIN/readyz` with the same timeout as `deploy.sh`. If the target
 is unhealthy it restores the release that was current and exits non-zero.
 
+The managed database is outside every release bundle. A release built before
+the managed cutover still contains the bundled `postgres` service, so rolling
+back to it starts an **empty local database** and points the application at it:
+`/readyz` passes while production data is unreachable. After the first verified
+managed deploy, prune the pre-cutover release directories, and keep the cutover
+`pg_dump` until the managed database is accepted. Only roll back to
+managed-aware releases.
+
 Inspect what is deployed at any time:
 
 ```sh
@@ -465,6 +479,10 @@ containers.
 - Migrations run at process startup from `api`, `scheduler`, and `worker`. A
   PostgreSQL advisory lock serializes them, so concurrent starts are safe.
   There is no separate migration job or container.
+- Migrations run against the managed database over the network. A failed
+  migration still fails `/readyz`; provider point-in-time recovery, not release
+  rollback, is the data recovery path. Confirm PITR is enabled before setting
+  `O1_RETENTION_DRY_RUN=false`.
 - Deploy pipelines do not invoke retention directly, but a deploy or rollback
   recreates the scheduler, and every scheduler restart runs one startup
   maintenance pass. With `O1_RETENTION_DRY_RUN=false`, that pass can drop up to
@@ -522,7 +540,8 @@ Grafana Cloud setup. Point the external dead-man's switch at
 | Deploy fails at readiness | `/readyz` also checks PostgreSQL. Inspect `docker compose ... logs api` and `logs web`; a first deploy includes ACME issuance and migrations, so `DEPLOY_HEALTH_TIMEOUT` (default 300s) may be too short. `deploy.sh` restores the previous release automatically and exits non-zero. |
 | Migration failure | The API exits or `/readyz` fails while the schema is mid-change. Read the migration error in `logs api`. Fix forward with a new release; rolling back code does not reverse the schema (see §8). |
 | Trivy blocks a release | A `HIGH` or `CRITICAL` fixable vulnerability in an image (unfixed findings are ignored), or a repository secret/misconfiguration. Upgrade the base image or dependency, remove the secret, or add a narrowly scoped `.trivyignore` entry with a comment naming the check, the reason it is accepted, and a review date. The only current exception is `DS-0002` (the web Caddy image runs as root to bind 80/443; re-review 2027-05-10). |
-| `deploy: missing /opt/o1/.env` | Bootstrap has not run, or the file is at the wrong path. `bootstrap-host.sh` seeds it from `env.example`; edit it before deploying. A missing `O1_DOMAIN`, `POSTGRES_PASSWORD`, or app key fails production Compose. |
+| `deploy: missing /opt/o1/.env` | Bootstrap has not run, or the file is at the wrong path. `bootstrap-host.sh` seeds it from `env.example`; edit it before deploying. A missing `O1_DOMAIN`, `O1_DATABASE_URL`, or app key fails production Compose. |
+| Deploy fails because the database is unreachable | Check the managed DSN, `sslmode` and CA material, that the endpoint is direct (not a transaction pooler), the provider firewall/allowlist for the host address, and that `3 x O1_DB_MAX_CONNS` fits the tier's connection limit. `/readyz` checks the database, so a bad DSN fails the deploy and triggers the automatic restore. |
 | `deploy: another deploy or rollback holds ...` | A previous run is still active. Exit code is `3`. The kernel releases the lock when that process exits; do not delete the lock file while a deploy is running. If no deploy exists, check with `fuser /opt/o1/state/deploy.lock` and remove the file only when nothing holds it. |
 | Alloy still scrapes the old config | The deploy does not restart profiled services. Re-run the `--profile observability up -d alloy` command in §9. |
 | API or web version unchanged after a successful deploy | Check `readlink -f /opt/o1/current` and `cat /opt/o1/current/images.env`. A manual build override leaves local `:local` images running; the next deploy replaces them. |
