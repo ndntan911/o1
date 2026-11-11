@@ -39,7 +39,8 @@ type Metrics struct {
 	rollupWatermark       prometheus.Gauge
 	retentionRuns         *prometheus.CounterVec
 	retentionRows         *prometheus.CounterVec
-	retentionPartitions   prometheus.Counter
+	retentionCandidates   *prometheus.CounterVec
+	retentionPartitions   *prometheus.CounterVec
 	retentionSkipped      *prometheus.CounterVec
 	maintenanceDuration   *prometheus.HistogramVec
 }
@@ -148,10 +149,14 @@ func NewMetrics(service, version string) *Metrics {
 			Name: "o1_retention_rows_deleted_total",
 			Help: "Rows deleted by retention, by kind.",
 		}, []string{"kind"}),
-		retentionPartitions: prometheus.NewCounter(prometheus.CounterOpts{
+		retentionCandidates: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_retention_candidates_total",
+			Help: "Retention candidates found, by kind. Dry-run reports candidates here.",
+		}, []string{"kind"}),
+		retentionPartitions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "o1_retention_partitions_dropped_total",
-			Help: "Raw probe partitions dropped by retention.",
-		}),
+			Help: "Raw probe partitions dropped by retention, by gate path.",
+		}, []string{"path"}),
 		retentionSkipped: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "o1_retention_skipped_total",
 			Help: "Retention skips by bounded reason.",
@@ -184,6 +189,7 @@ func NewMetrics(service, version string) *Metrics {
 		m.rollupWatermark,
 		m.retentionRuns,
 		m.retentionRows,
+		m.retentionCandidates,
 		m.retentionPartitions,
 		m.retentionSkipped,
 		m.maintenanceDuration,
@@ -379,21 +385,30 @@ func (m *Metrics) AddRetentionRows(kind string, n int64) {
 	m.retentionRows.WithLabelValues(kind).Add(float64(n))
 }
 
-// AddPartitionsDropped adds dropped raw probe partitions.
-func (m *Metrics) AddPartitionsDropped(n int) {
+// AddRetentionCandidates adds candidate rows found by retention for a kind
+// ("rollup" or "audit"). Dry-run reports candidates here, not as deleted rows.
+func (m *Metrics) AddRetentionCandidates(kind string, n int64) {
 	if m == nil || n == 0 {
 		return
 	}
-	m.retentionPartitions.Add(float64(n))
+	m.retentionCandidates.WithLabelValues(kind).Add(float64(n))
 }
 
-// ObserveRetentionSkip records a skipped retention candidate with a bounded
-// reason.
-func (m *Metrics) ObserveRetentionSkip(reason string) {
-	if m == nil {
+// AddPartitionsDropped adds dropped raw probe partitions for a gate path
+// ("verified" or "beyond_rollup").
+func (m *Metrics) AddPartitionsDropped(path string, n int) {
+	if m == nil || n == 0 {
 		return
 	}
-	m.retentionSkipped.WithLabelValues(reason).Inc()
+	m.retentionPartitions.WithLabelValues(path).Add(float64(n))
+}
+
+// AddRetentionSkips adds skipped retention candidates for a bounded reason.
+func (m *Metrics) AddRetentionSkips(reason string, n int) {
+	if m == nil || n == 0 {
+		return
+	}
+	m.retentionSkipped.WithLabelValues(reason).Add(float64(n))
 }
 
 // statusRecorder captures the response status while preserving the

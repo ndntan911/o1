@@ -185,11 +185,16 @@ func (r *Rolluper) Run(ctx context.Context) (res Result, err error) {
 	} else {
 		next = oldest.UTC().Truncate(time.Hour)
 	}
-	// Replay only when this pass started already caught up. A pass that just
-	// finished the catch-up already read every recent hour from raw, so the
-	// trailing re-read can wait for the next tick.
-	caughtUp := watermark != nil && !watermark.UTC().Truncate(time.Hour).Before(target)
 
+	// Track the watermark as this pass advances it. Replay is decided from the
+	// post-pass value: a pass that starts behind the target but catches up in
+	// the same run must still re-read the trailing hours, otherwise long
+	// intervals (for example a 1h ticker) never run replay at all.
+	var lastWatermark time.Time
+	watermarkSet := watermark != nil
+	if watermark != nil {
+		lastWatermark = watermark.UTC()
+	}
 	// Catch up contiguously. The cap stops the pass early; each hour commits
 	// its bucket and watermark together, so the next pass resumes exactly at
 	// the last committed hour.
@@ -199,10 +204,12 @@ func (r *Rolluper) Run(ctx context.Context) (res Result, err error) {
 			return res, fmt.Errorf("roll up hour %s: %w", hour.Format(time.RFC3339), err)
 		}
 		res.add(hour, rows)
+		lastWatermark = hour.UTC()
+		watermarkSet = true
 		r.logger.Log(ctx, slog.LevelDebug, "rolled up hour", "hour", hour, "rows", rows)
 	}
 
-	if !caughtUp {
+	if !watermarkSet || lastWatermark.UTC().Truncate(time.Hour).Before(target) {
 		return res, nil
 	}
 

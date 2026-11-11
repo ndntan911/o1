@@ -460,8 +460,8 @@ func (cfg *Config) validate() error {
 	if cfg.RetentionMaxPartitionDrops < 1 || cfg.RetentionMaxPartitionDrops > 12 {
 		return fmt.Errorf("invalid O1_RETENTION_MAX_PARTITION_DROPS: must be between 1 and 12, got %d", cfg.RetentionMaxPartitionDrops)
 	}
-	if cfg.RollupInterval < time.Minute || cfg.RollupInterval > 24*time.Hour {
-		return fmt.Errorf("invalid O1_ROLLUP_INTERVAL: must be between 1m and 24h, got %v", cfg.RollupInterval)
+	if cfg.RollupInterval < time.Minute || cfg.RollupInterval > time.Hour {
+		return fmt.Errorf("invalid O1_ROLLUP_INTERVAL: must be between 1m and 1h, got %v", cfg.RollupInterval)
 	}
 	if cfg.RollupMaxHoursPerRun < 1 || cfg.RollupMaxHoursPerRun > 720 {
 		return fmt.Errorf("invalid O1_ROLLUP_MAX_HOURS_PER_RUN: must be between 1 and 720, got %d", cfg.RollupMaxHoursPerRun)

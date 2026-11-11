@@ -207,8 +207,9 @@ workspaces keep the public page read-only.
 Probe data has three retention windows:
 
 - **Raw probe results** (`probe_results`) are kept for at least 90 days. Raw
-  rows live in UTC monthly range partitions, so the effective window is 90–120
-  days: a partition is dropped only after the whole month has expired.
+  rows live in UTC monthly range partitions, so once deletion is enabled the
+  effective window is 90–120 days: a partition is dropped only after the whole
+  month has expired. With the dry-run default, raw data grows without bound.
 - **Hourly rollups** (`monitor_hourly_stats`) are kept for 13 months by default
   (minimum 4). Buckets are UTC hours and hold up/down check counts plus
   avg/min/max and p95 latency. They back the public status page's completed
@@ -251,7 +252,7 @@ maintenance pass. With dry-run off, that startup pass can drop up to
 | `O1_AUDIT_RETENTION_MONTHS` | `12` | 1–60 | Audit event retention |
 | `O1_RETENTION_DRY_RUN` | `true` | `true` / `false` | Log candidates without deleting |
 | `O1_RETENTION_MAX_PARTITION_DROPS` | `1` | 1–12 | Raw partitions dropped per run |
-| `O1_ROLLUP_INTERVAL` | `15m` | 1m–24h | Rollup catch-up cadence |
+| `O1_ROLLUP_INTERVAL` | `15m` | 1m–1h | Rollup catch-up cadence |
 | `O1_ROLLUP_MAX_HOURS_PER_RUN` | `24` | 1–720 | Hours rolled up per pass |
 
 Inspect the rollup frontier and the remaining raw partitions:
@@ -616,7 +617,8 @@ Common optional settings:
 - `O1_SCHEDULER_TICK` / `O1_SCHEDULER_BATCH` — default `10s` / `500`.
 - `O1_WORKER_CONCURRENCY` — probe workers per process, default `50`.
 - `O1_RAW_RETENTION_DAYS` — raw probe retention in days, default `90`
-  (7–365). Monthly partitions extend the effective window to 90–120 days.
+  (7–365). Monthly partitions extend the effective window to 90–120 days once
+  deletion is enabled; with the dry-run default, raw data is not deleted.
 - `O1_ROLLUP_RETENTION_MONTHS` — hourly rollup retention in months, default
   `13` (4–60).
 - `O1_AUDIT_RETENTION_MONTHS` — audit event retention in months, default `12`
@@ -625,7 +627,7 @@ Common optional settings:
   and deletes nothing. Set to `false` to enable deletion.
 - `O1_RETENTION_MAX_PARTITION_DROPS` — maximum raw partitions dropped per
   retention run, default `1` (1–12).
-- `O1_ROLLUP_INTERVAL` — rollup catch-up interval, default `15m` (1m–24h).
+- `O1_ROLLUP_INTERVAL` — rollup catch-up interval, default `15m` (1m–1h).
 - `O1_ROLLUP_MAX_HOURS_PER_RUN` — maximum hours rolled up per pass, default
   `24` (1–720).
 - `O1_BOOTSTRAP_ADMIN_EMAIL` — promotes an existing verified account to

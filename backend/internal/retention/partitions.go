@@ -128,10 +128,11 @@ func (r *Retainer) runPartitions(ctx context.Context, res *Result) error {
 		// Beyond the rollup window there is no history left to protect, so the
 		// partition drops without consulting the watermark or rollups.
 		if !p.end.After(rollupCutoff) {
-			if err := r.dropProbePartition(ctx, p); err != nil {
+			if err := r.dropProbePartition(ctx, p, "beyond_rollup"); err != nil {
 				return err
 			}
 			res.PartitionsDropped++
+			res.DroppedBeyondRollup++
 			continue
 		}
 
@@ -179,9 +180,14 @@ func (r *Retainer) runPartitions(ctx context.Context, res *Result) error {
 				)
 				continue
 			}
+			r.logger.Info("repaired probe partition rollups",
+				"partition", p.name,
+				"raw_checks", raw,
+				"rollup_checks", rolled,
+			)
 		}
 
-		if err := r.dropProbePartition(ctx, p); err != nil {
+		if err := r.dropProbePartition(ctx, p, "verified"); err != nil {
 			return err
 		}
 		res.PartitionsDropped++
@@ -214,7 +220,7 @@ func (r *Retainer) repairPartition(ctx context.Context, start, end time.Time) er
 		}
 		hours++
 	}
-	r.logger.Info("repaired probe partition rollups",
+	r.logger.Info("attempted probe partition rollup repair",
 		"start", start,
 		"end", end,
 		"hours", hours,
@@ -222,13 +228,18 @@ func (r *Retainer) repairPartition(ctx context.Context, start, end time.Time) er
 	return nil
 }
 
-func (r *Retainer) dropProbePartition(ctx context.Context, p probePartition) error {
+func (r *Retainer) dropProbePartition(ctx context.Context, p probePartition, path string) error {
 	// The identifier is derived from a partition name matched against
 	// probePartitionRE, then quoted by pgx. DDL cannot bind table names.
 	stmt := "DROP TABLE " + pgx.Identifier{p.name}.Sanitize()
 	if _, err := r.pool.Exec(ctx, stmt); err != nil {
 		return fmt.Errorf("drop probe partition %s: %w", p.name, err)
 	}
-	r.logger.Info("dropped probe partition", "partition", p.name, "start", p.start, "end", p.end)
+	r.logger.Info("dropped probe partition",
+		"partition", p.name,
+		"start", p.start,
+		"end", p.end,
+		"path", path,
+	)
 	return nil
 }

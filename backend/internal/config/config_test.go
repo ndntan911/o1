@@ -604,21 +604,23 @@ func TestRetentionConfig_Defaults(t *testing.T) {
 }
 
 func TestRetentionConfig_RejectsInvalid(t *testing.T) {
-	cases := map[string]string{
-		"O1_RAW_RETENTION_DAYS":            "6",
-		"O1_ROLLUP_RETENTION_MONTHS":       "3",
-		"O1_AUDIT_RETENTION_MONTHS":        "0",
-		"O1_RETENTION_DRY_RUN":             "sometimes",
-		"O1_RETENTION_MAX_PARTITION_DROPS": "0",
-		"O1_ROLLUP_INTERVAL":               "500ms",
-		"O1_ROLLUP_MAX_HOURS_PER_RUN":      "0",
+	cases := []struct{ key, value string }{
+		{"O1_RAW_RETENTION_DAYS", "6"},
+		{"O1_ROLLUP_RETENTION_MONTHS", "3"},
+		{"O1_AUDIT_RETENTION_MONTHS", "0"},
+		{"O1_RETENTION_DRY_RUN", "sometimes"},
+		{"O1_RETENTION_MAX_PARTITION_DROPS", "0"},
+		{"O1_ROLLUP_INTERVAL", "500ms"},
+		// A long interval cannot satisfy the 2-hour late-row contract.
+		{"O1_ROLLUP_INTERVAL", "2h"},
+		{"O1_ROLLUP_MAX_HOURS_PER_RUN", "0"},
 	}
-	for key, value := range cases {
-		t.Run(key, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			setEmailEnv(t, "development")
-			t.Setenv(key, value)
+			t.Setenv(tc.key, tc.value)
 			if _, err := config.Load(); err == nil {
-				t.Fatalf("Load accepted %s=%s", key, value)
+				t.Fatalf("Load accepted %s=%s", tc.key, tc.value)
 			}
 		})
 	}

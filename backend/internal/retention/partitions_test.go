@@ -178,6 +178,9 @@ func TestRun_DropsVerifiedExpiredPartition(t *testing.T) {
 		t.Fatalf("Result skips = dry %d watermark %d mismatch %d, want all 0",
 			res.SkippedDryRun, res.SkippedWatermark, res.SkippedMismatch)
 	}
+	if res.DroppedBeyondRollup != 0 {
+		t.Fatalf("DroppedBeyondRollup = %d, want 0 for a verified partition", res.DroppedBeyondRollup)
+	}
 	if len(repairer.calls) != 0 {
 		t.Fatalf("repair calls = %d, want 0 for a verified partition", len(repairer.calls))
 	}
@@ -301,8 +304,8 @@ func TestRun_DropsBeyondRollupWindowWithoutGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if res.Candidates != 1 || res.PartitionsDropped != 1 {
-		t.Fatalf("Result = %+v, want 1 candidate and 1 drop", res)
+	if res.Candidates != 1 || res.PartitionsDropped != 1 || res.DroppedBeyondRollup != 1 {
+		t.Fatalf("Result = %+v, want 1 candidate, 1 drop, and 1 beyond-rollup drop", res)
 	}
 	if res.SkippedWatermark != 0 || res.SkippedMismatch != 0 {
 		t.Fatalf("Result = %+v, want no gate skips beyond the rollup window", res)

@@ -171,6 +171,7 @@ func (s *Scheduler) runMaintenancePass(ctx context.Context, doRollup, doRetentio
 		return
 	}
 	if !locked {
+		s.metrics.AddRetentionSkips("locked", 1)
 		s.logger.Log(ctx, slog.LevelDebug, "maintenance skipped: advisory lock held")
 		return
 	}
@@ -222,26 +223,29 @@ func (s *Scheduler) runMaintenancePass(ctx context.Context, doRollup, doRetentio
 			)
 			return
 		}
-		s.metrics.AddRetentionRows("rollup", result.RollupRows)
-		s.metrics.AddRetentionRows("audit", result.AuditRows)
-		s.metrics.AddPartitionsDropped(result.PartitionsDropped)
-		if result.SkippedDryRun > 0 {
-			s.metrics.ObserveRetentionSkip("dry_run")
+		if s.cfg.RetentionDryRun {
+			s.metrics.AddRetentionCandidates("rollup", result.RollupRows)
+			s.metrics.AddRetentionCandidates("audit", result.AuditRows)
+		} else {
+			s.metrics.AddRetentionRows("rollup", result.RollupRows)
+			s.metrics.AddRetentionRows("audit", result.AuditRows)
 		}
-		if result.SkippedWatermark > 0 {
-			s.metrics.ObserveRetentionSkip("watermark_behind")
-		}
-		if result.SkippedMismatch > 0 {
-			s.metrics.ObserveRetentionSkip("count_mismatch")
-		}
+		verifiedDrops := result.PartitionsDropped - result.DroppedBeyondRollup
+		s.metrics.AddPartitionsDropped("verified", verifiedDrops)
+		s.metrics.AddPartitionsDropped("beyond_rollup", result.DroppedBeyondRollup)
+		s.metrics.AddRetentionSkips("dry_run", result.SkippedDryRun)
+		s.metrics.AddRetentionSkips("watermark_behind", result.SkippedWatermark)
+		s.metrics.AddRetentionSkips("count_mismatch", result.SkippedMismatch)
 		s.logger.Log(ctx, slog.LevelInfo, "retention maintenance",
 			"candidates", result.Candidates,
 			"partitions_dropped", result.PartitionsDropped,
+			"dropped_beyond_rollup", result.DroppedBeyondRollup,
 			"skipped_dry_run", result.SkippedDryRun,
 			"skipped_watermark", result.SkippedWatermark,
 			"skipped_mismatch", result.SkippedMismatch,
 			"rollup_rows", result.RollupRows,
 			"audit_rows", result.AuditRows,
+			"dry_run", s.cfg.RetentionDryRun,
 			"duration", elapsed.String(),
 		)
 	}

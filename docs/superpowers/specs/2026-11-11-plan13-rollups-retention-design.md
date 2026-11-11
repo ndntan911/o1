@@ -229,8 +229,10 @@ watermark, not by `max(bucket_start)`:
 - This means the first pass backfills from the oldest raw hour. The status page
   uses rollups below the watermark and raw at and above it, so the 90-day page
   is complete throughout the catch-up. An empty database has no work.
-- Once the watermark reaches the target, re-roll the previous 2 hours on each
-  pass to pick up late-arriving results. Upserts make this idempotent.
+- Replay is decided from the post-pass watermark: when it is at or past the
+  target — including when a pass started behind and caught up in the same pass —
+  re-roll the previous 2 hours to pick up late-arriving results. Upserts make
+  this idempotent, and replay never moves the watermark.
 - Use a PostgreSQL advisory lock for each pass. A second scheduler instance
   skips, and a long backfill does not hold the lock between chunks.
 - The 15-minute lag plus 2-hour re-roll window is the late-row contract. Rows
@@ -332,7 +334,7 @@ New environment variables, validated in `config.Load`:
 | `O1_AUDIT_RETENTION_MONTHS` | `12` | 1–60 |
 | `O1_RETENTION_DRY_RUN` | `true` | boolean |
 | `O1_RETENTION_MAX_PARTITION_DROPS` | `1` | 1–12 |
-| `O1_ROLLUP_INTERVAL` | `15m` | 1m–24h |
+| `O1_ROLLUP_INTERVAL` | `15m` | 1m–1h |
 | `O1_ROLLUP_MAX_HOURS_PER_RUN` | `24` | 1–720 |
 
 Invalid values fail startup, matching existing config behavior. The maintenance
@@ -348,7 +350,8 @@ Add to the Plan 9 metrics catalog:
 - `o1_rollup_frontier_timestamp_seconds` — the watermark (last contiguous hour).
 - `o1_retention_runs_total{result}`.
 - `o1_retention_rows_deleted_total{kind}` — `rollup`, `audit`.
-- `o1_retention_partitions_dropped_total`.
+- `o1_retention_candidates_total{kind}` — candidate rows found, including in dry-run.
+- `o1_retention_partitions_dropped_total{path}` — `verified`, `beyond_rollup`.
 - `o1_retention_skipped_total{reason}` — `dry_run`, `count_mismatch`, `locked`.
 - `o1_maintenance_duration_seconds{job}` — `rollup`, `retention`.
 

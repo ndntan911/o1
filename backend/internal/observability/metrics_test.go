@@ -97,8 +97,9 @@ func TestMetrics_NilIsSafe(t *testing.T) {
 	m.SetRollupWatermark(time.Now())
 	m.ObserveRetention(time.Millisecond, nil)
 	m.AddRetentionRows("rollup", 1)
-	m.AddPartitionsDropped(1)
-	m.ObserveRetentionSkip("dry_run")
+	m.AddRetentionCandidates("rollup", 1)
+	m.AddPartitionsDropped("verified", 1)
+	m.AddRetentionSkips("dry_run", 1)
 }
 
 func TestMetrics_Maintenance(t *testing.T) {
@@ -110,8 +111,12 @@ func TestMetrics_Maintenance(t *testing.T) {
 	m.ObserveRetention(time.Second, nil)
 	m.AddRetentionRows("rollup", 4)
 	m.AddRetentionRows("audit", 2)
-	m.AddPartitionsDropped(1)
-	m.ObserveRetentionSkip("dry_run")
+	m.AddRetentionCandidates("rollup", 5)
+	m.AddRetentionCandidates("audit", 3)
+	m.AddPartitionsDropped("verified", 1)
+	m.AddPartitionsDropped("beyond_rollup", 2)
+	m.AddRetentionSkips("dry_run", 2)
+	m.AddRetentionSkips("locked", 1)
 
 	body := gatherText(t, m.Registry())
 	for _, want := range []string{
@@ -122,8 +127,12 @@ func TestMetrics_Maintenance(t *testing.T) {
 		`o1_retention_runs_total{result="success"} 1`,
 		`o1_retention_rows_deleted_total{kind="rollup"} 4`,
 		`o1_retention_rows_deleted_total{kind="audit"} 2`,
-		"o1_retention_partitions_dropped_total 1",
-		`o1_retention_skipped_total{reason="dry_run"} 1`,
+		`o1_retention_candidates_total{kind="rollup"} 5`,
+		`o1_retention_candidates_total{kind="audit"} 3`,
+		`o1_retention_partitions_dropped_total{path="verified"} 1`,
+		`o1_retention_partitions_dropped_total{path="beyond_rollup"} 2`,
+		`o1_retention_skipped_total{reason="dry_run"} 2`,
+		`o1_retention_skipped_total{reason="locked"} 1`,
 		`o1_maintenance_duration_seconds_count{job="rollup"} 1`,
 	} {
 		if !strings.Contains(body, want) {

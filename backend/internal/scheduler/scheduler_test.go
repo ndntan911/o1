@@ -481,6 +481,50 @@ func TestMaintenance_RunsRollupThenRetention(t *testing.T) {
 	}
 }
 
+func TestMaintenance_DryRunReportsCandidatesNotDeletedRows(t *testing.T) {
+	env := newSchedulerEnv(t)
+	env.sched.cfg.RetentionDryRun = true
+	env.sched.SetMaintenance(nil, &fakeRetentionRunner{result: retention.Result{
+		RollupRows:          3,
+		AuditRows:           2,
+		PartitionsDropped:   1,
+		DroppedBeyondRollup: 1,
+	}})
+
+	env.sched.runMaintenance(context.Background(), false, true)
+
+	body := gatherSchedulerMetrics(t, env.metrics)
+	if strings.Contains(body, "o1_retention_rows_deleted_total") {
+		t.Fatalf("dry-run reported deleted rows:\n%s", body)
+	}
+	for _, want := range []string{
+		`o1_retention_candidates_total{kind="rollup"} 3`,
+		`o1_retention_candidates_total{kind="audit"} 2`,
+		`o1_retention_partitions_dropped_total{path="beyond_rollup"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dry-run metrics missing %s:\n%s", want, body)
+		}
+	}
+
+	// Once deletion is enabled the same counts move to the deleted counter and
+	// the candidate counter does not double count them.
+	env.sched.cfg.RetentionDryRun = false
+	env.sched.runMaintenance(context.Background(), false, true)
+
+	body = gatherSchedulerMetrics(t, env.metrics)
+	for _, want := range []string{
+		`o1_retention_rows_deleted_total{kind="rollup"} 3`,
+		`o1_retention_rows_deleted_total{kind="audit"} 2`,
+		`o1_retention_candidates_total{kind="rollup"} 3`,
+		`o1_retention_candidates_total{kind="audit"} 2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("enabled-retention metrics missing %s:\n%s", want, body)
+		}
+	}
+}
+
 func TestMaintenance_FailureDoesNotStopProbeTick(t *testing.T) {
 	env := newSchedulerEnv(t)
 	env.addMonitor(t, "due", 60, false, false, time.Now().Add(-time.Minute))
@@ -535,6 +579,9 @@ func TestMaintenance_SkipsWhenLockHeld(t *testing.T) {
 	}
 	if got := retentionFake.callCount(); got != 0 {
 		t.Errorf("retention calls = %d, want 0 while the lock is held", got)
+	}
+	if body := gatherSchedulerMetrics(t, env.metrics); !strings.Contains(body, `o1_retention_skipped_total{reason="locked"} 1`) {
+		t.Errorf("locked skip metric missing:\n%s", body)
 	}
 }
 

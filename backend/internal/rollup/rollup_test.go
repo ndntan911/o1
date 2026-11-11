@@ -333,6 +333,48 @@ func TestRun_ReRollsRecentHoursOnlyAtTheFrontier(t *testing.T) {
 	assertWatermark(t, e, testBase.Add(2*time.Hour))
 }
 
+func TestRun_CatchesUpAndReplaysInTheSamePass(t *testing.T) {
+	e := newRollupEnv(t, 24)
+	// now = 14:00, so target is 12:00. The watermark starts at 11:00: the
+	// catch-up processes only 12:00, then the post-pass watermark reaches the
+	// target and replay must fold a late row into 11:00 in the same pass.
+	e.at(testBase.Add(4 * time.Hour))
+	e.seedProbe(testBase.Add(time.Hour+5*time.Minute), "up", 100)
+	if _, err := e.rolluper.RollupHour(context.Background(), testBase.Add(time.Hour)); err != nil {
+		t.Fatalf("seed rollup for target-1h: %v", err)
+	}
+	e.setWatermark(testBase.Add(time.Hour))
+	e.seedProbe(testBase.Add(time.Hour+35*time.Minute), "down", 200) // late row in target-1h
+	e.seedProbe(testBase.Add(2*time.Hour+5*time.Minute), "up", 300)
+
+	res, err := e.rolluper.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// One catch-up hour (12:00) plus the two replay hours (11:00, 12:00).
+	if res.Hours != 3 {
+		t.Fatalf("Result.Hours = %d, want 3 (catch-up plus replay)", res.Hours)
+	}
+
+	rows := e.hourlyRows()
+	if len(rows) != 2 {
+		t.Fatalf("hourly rows = %d, want 2: %+v", len(rows), rows)
+	}
+	var late *hourlyRow
+	for i := range rows {
+		if rows[i].BucketStart.Equal(testBase.Add(time.Hour)) {
+			late = &rows[i]
+		}
+	}
+	if late == nil {
+		t.Fatalf("rows = %+v, want the target-1h bucket", rows)
+	}
+	if late.Checks != 2 || late.UpCount != 1 || late.DownCount != 1 {
+		t.Fatalf("target-1h bucket = %+v, want checks=2 up=1 down=1 after replay", *late)
+	}
+	assertWatermark(t, e, testBase.Add(2*time.Hour))
+}
+
 func TestRun_DeletedMonitorsCascade(t *testing.T) {
 	e := newRollupEnv(t, 24)
 	e.at(testBase.Add(2 * time.Hour))
@@ -400,8 +442,10 @@ func TestRun_ReportsMetricsAndKeepsTheGaugeCurrent(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	if m.observeCalls != 1 || m.observedErr != nil || m.observedHours != 1 || m.observedRows != 1 {
-		t.Fatalf("ObserveRollup = calls %d hours %d rows %d err %v, want 1/1/1/nil",
+	// The pass catches up the target hour and then replays it (and the hour
+	// before, which predates the oldest raw row), so two writes are counted.
+	if m.observeCalls != 1 || m.observedErr != nil || m.observedHours != 2 || m.observedRows != 2 {
+		t.Fatalf("ObserveRollup = calls %d hours %d rows %d err %v, want 1/2/2/nil",
 			m.observeCalls, m.observedHours, m.observedRows, m.observedErr)
 	}
 	if len(m.watermarkCalls) != 1 || !m.watermarkCalls[0].Equal(testBase) {

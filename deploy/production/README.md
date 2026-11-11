@@ -375,7 +375,8 @@ data. Deletion requires an explicit `O1_RETENTION_DRY_RUN=false`.
 The windows are:
 
 - Raw probe partitions: at least 90 days (`O1_RAW_RETENTION_DAYS`, range 7–365).
-  Partitions are UTC months, so the effective window is 90–120 days.
+  Partitions are UTC months, so once deletion is enabled the effective window is
+  90–120 days. With the dry-run default, raw data grows without bound.
 - Hourly rollups: 13 months (`O1_ROLLUP_RETENTION_MONTHS`, range 4–60).
 - Audit events: 12 months (`O1_AUDIT_RETENTION_MONTHS`, range 1–60).
 
@@ -431,8 +432,9 @@ and long-window aggregates, but they are not a backup of the raw data.
 1. Deploy with the defaults. `O1_RETENTION_DRY_RUN` is `true`, so the release
    rolls up existing raw data and deletes nothing.
 2. Watch `rollup_state.watermark` advance from the oldest raw hour until it
-   reaches the most recent completed hour. The watermark settles one hour
-   behind while the 15-minute late-arrival lag is open. A pass processes at most
+   reaches the most recent completed hour. The watermark settles roughly 1–2
+   hours behind while the 15-minute late-arrival lag and the hour truncation are
+   applied. A pass processes at most
    `O1_ROLLUP_MAX_HOURS_PER_RUN` hours (default `24`), so a long backfill takes
    several intervals.
 3. Confirm the public status page still shows the same 90 daily bars and uptime
@@ -470,8 +472,10 @@ the published digests, writes `images.env`, and runs
 `/opt/o1/bin/deploy.sh`; there is no local build. See
 [../CICD.md](../CICD.md).
 
-Migrations run automatically at startup. To apply only environment changes,
-recreate the affected services:
+Migrations run automatically at startup. This release builds a new index on
+`probe_results`; schedule the first deploy off-peak and expect probe writes to
+pause while it builds. To apply only environment changes, recreate the affected
+services:
 
 ```sh
 docker compose --env-file deploy/production/.env \

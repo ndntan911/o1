@@ -33,15 +33,18 @@ type HourRolluper interface {
 }
 
 // Result describes one retention Run. Candidates counts expired raw
-// partitions before the drop cap is applied.
+// partitions before the drop cap is applied. DroppedBeyondRollup is the subset
+// of PartitionsDropped that skipped the rollup gate because the partition was
+// already beyond the rollup retention window.
 type Result struct {
-	Candidates        int
-	PartitionsDropped int
-	SkippedDryRun     int
-	SkippedWatermark  int
-	SkippedMismatch   int
-	RollupRows        int64
-	AuditRows         int64
+	Candidates          int
+	PartitionsDropped   int
+	DroppedBeyondRollup int
+	SkippedDryRun       int
+	SkippedWatermark    int
+	SkippedMismatch     int
+	RollupRows          int64
+	AuditRows           int64
 }
 
 // Retainer prunes expired data. It is safe to call Run repeatedly; each pass

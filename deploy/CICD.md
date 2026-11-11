@@ -470,6 +470,8 @@ containers.
   maintenance pass. With `O1_RETENTION_DRY_RUN=false`, that pass can drop up to
   `O1_RETENTION_MAX_PARTITION_DROPS` raw partitions immediately; the scheduler
   also runs retention daily. `O1_RETENTION_DRY_RUN` controls deletion.
+- This release builds a new index on `probe_results`. Schedule the first deploy
+  off-peak and expect probe writes to pause while it builds.
 - Migrations are **forward-only**. There are no down migrations.
 - Image and config rollback does **not** undo schema. Restoring an earlier
   release restores its compose file and digest-pinned images only. If the new
