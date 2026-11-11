@@ -45,11 +45,12 @@ they exercise the same compose file the deploy script uses.
   remain for first-run, offline, and recovery use. See [../CICD.md](../CICD.md).
 - **Backups are not implemented; Plan 12 is skipped.** There is no backup job,
   WAL archiving, or restore procedure in this stack, and this release adds
-  retention: the scheduler deletes raw probe partitions older than 90+ days and
-  prunes hourly rollups and audit events past their windows. Rollups are
-  aggregates, not a backup. Until an external backup exists, take and store a
-  `pg_dump` yourself if the data matters, and note that the Caddy volumes hold
-  the TLS certificates, not application data. See [Retention](#retention).
+  retention: once enabled, the scheduler can delete raw probe partitions older
+  than 90+ days and prune hourly rollups and audit events past their windows.
+  Rollups are aggregates, not a backup. Until an external backup exists, take
+  and store a `pg_dump` yourself if the data matters, and note that the Caddy
+  volumes hold the TLS certificates, not application data. See
+  [Retention](#retention).
 - `/metrics` is private. Caddy answers `404` and the metrics listeners are never
   published.
 - The Resend free tier has daily and monthly send caps. Verification mail,
@@ -359,7 +360,13 @@ Useful checks:
 The scheduler owns maintenance. It runs one maintenance pass at startup, then
 rolls up completed UTC hours every `O1_ROLLUP_INTERVAL` (default `15m`) and runs
 retention once per day. Each pass takes a PostgreSQL advisory lock, so only one
-scheduler process does the work. Deploys and rollbacks do not run retention.
+scheduler process does the work.
+
+Deploy pipelines do not invoke retention directly. Any scheduler restart —
+including a deploy, a rollback, or an explicit `--force-recreate scheduler` —
+runs one startup maintenance pass. With `O1_RETENTION_DRY_RUN=false`, that
+startup pass can drop up to `O1_RETENTION_MAX_PARTITION_DROPS` raw partitions
+immediately, before the next daily run.
 
 Retention is a dry run by default. With `O1_RETENTION_DRY_RUN=true`, the
 scheduler computes candidates and logs the counts it would delete but changes no
@@ -375,8 +382,10 @@ The windows are:
 At most `O1_RETENTION_MAX_PARTITION_DROPS` raw partitions (default `1`, range
 1–12) are dropped per run. A partition drops only when it is wholly expired and
 either beyond the rollup window or fully covered by rollups whose check counts
-match the raw rows. A mismatch is re-rolled once; a partition that still
-mismatches stays in place for a later run and for operator review.
+match the raw rows. Coverage requires `rollup_state.watermark` to be at or past
+the partition end before the counts are compared; otherwise the partition is
+skipped for this run. A mismatch is re-rolled once per run; a partition that
+still mismatches stays in place for a later run and for operator review.
 
 Preview a pass from the scheduler logs:
 
@@ -386,9 +395,17 @@ docker compose --env-file deploy/production/.env \
 ```
 
 Dry-run lines carry `partition`, `raw_checks`, `rollup_checks`, and
-`gate_required`. The pass summary reports `candidates`, `partitions_dropped`,
-`skipped_dry_run`, `skipped_watermark`, `skipped_mismatch`, `rollup_rows`, and
-`audit_rows`. Inspect the database directly when needed:
+`gate_required`. The dry run logs every candidate partition, including ones the
+per-run cap would defer. `gate_required` is true when the partition is still
+inside the rollup window and must pass the watermark and count checks; it is
+false when the partition is beyond the rollup window and drops without a
+coverage check.
+
+The pass summary reports `candidates`, `partitions_dropped`, `skipped_dry_run`,
+`skipped_watermark`, `skipped_mismatch`, `rollup_rows`, and `audit_rows`.
+`skipped_watermark` counts partitions retained because
+`rollup_state.watermark` had not reached the partition end, so coverage could
+not be proven. Inspect the database directly when needed:
 
 ```sh
 docker compose --env-file deploy/production/.env \
@@ -414,23 +431,28 @@ and long-window aggregates, but they are not a backup of the raw data.
 1. Deploy with the defaults. `O1_RETENTION_DRY_RUN` is `true`, so the release
    rolls up existing raw data and deletes nothing.
 2. Watch `rollup_state.watermark` advance from the oldest raw hour until it
-   reaches the most recent completed hour. A pass processes at most
+   reaches the most recent completed hour. The watermark settles one hour
+   behind while the 15-minute late-arrival lag is open. A pass processes at most
    `O1_ROLLUP_MAX_HOURS_PER_RUN` hours (default `24`), so a long backfill takes
    several intervals.
 3. Confirm the public status page still shows the same 90 daily bars and uptime
    as before the release.
 4. Review the dry-run retention logs, especially `candidates`, `raw_checks`, and
    `rollup_checks` for the oldest partitions.
-5. Set `O1_RETENTION_DRY_RUN=false` in `deploy/production/.env` and recreate the
-   scheduler so the new environment applies:
+5. Set `O1_RETENTION_DRY_RUN=false` in the environment file — `/opt/o1/.env` on
+   a registry-deployed host, or `deploy/production/.env` for a checkout stack —
+   and recreate the scheduler so the new environment applies:
 
    ```sh
    docker compose --env-file deploy/production/.env \
      -f deploy/production/compose.yaml up -d --force-recreate scheduler
    ```
 
-   Expect at most one raw partition drop per daily run, so a backlog clears one
-   month at a time.
+   On a registry-deployed host, use `/opt/o1/.env`, `/opt/o1/current/images.env`,
+   and the active release's compose file instead. Recreating the scheduler
+   triggers a startup maintenance pass, so the first drop can happen
+   immediately, not on the next daily run. Expect at most one partition drop per
+   startup pass and per daily run, so a backlog clears one month at a time.
 
 ## 8. Update and restart
 
@@ -548,7 +570,7 @@ remote-write errors.
   rejects the development email provider.
 - Keep Caddy's `caddy_data` volume; it holds the certificates and ACME account
   material. Application data lives in `postgres-data`.
-- There are no backups (Plan 12 is skipped). Retention deletes expired raw
-  probes and is a dry run until `O1_RETENTION_DRY_RUN=false`; see
+- There are no backups (Plan 12 is skipped). Once enabled, retention can delete
+  expired raw probes; it is a dry run until `O1_RETENTION_DRY_RUN=false`. See
   [Retention](#retention). CI/CD deploys and the release/rollback process are
   documented in [../CICD.md](../CICD.md).
