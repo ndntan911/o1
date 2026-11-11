@@ -124,6 +124,20 @@ type MonitorAlertChannel struct {
 	UpdatedAt time.Time
 }
 
+type MonitorHourlyStat struct {
+	MonitorID    uuid.UUID
+	WorkspaceID  uuid.UUID
+	BucketStart  time.Time
+	UpCount      int64
+	DownCount    int64
+	Checks       int64
+	AvgLatencyMs float64
+	MinLatencyMs int32
+	MaxLatencyMs int32
+	P95LatencyMs float64
+	UpdatedAt    time.Time
+}
+
 type MonitorState struct {
 	MonitorID            uuid.UUID
 	Status               string
@@ -157,6 +171,12 @@ type ProbeResult struct {
 	LatencyMs    int32
 	Error        *string
 	CreatedAt    time.Time
+}
+
+type RollupState struct {
+	ID        bool
+	Watermark *time.Time
+	UpdatedAt time.Time
 }
 
 type SecurityEvent struct {

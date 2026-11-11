@@ -180,7 +180,7 @@ if cfg.RollupInterval, err = envDuration("O1_ROLLUP_INTERVAL", 15*time.Minute); 
 if cfg.RollupMaxHoursPerRun, err = envInt("O1_ROLLUP_MAX_HOURS_PER_RUN", 24); err != nil { return cfg, err }
 ```
 
-Validate in `validate()`: raw days 7–365; rollup months 4–60; audit months 1–60; max drops 1–12; rollup interval 1m–24h; max hours 1–720. Error messages name the env variable and the bound.
+Validate in `validate()`: raw days 7–365; rollup months 4–60; audit months 1–60; max drops 1–12; rollup interval 1m–1h; max hours 1–720. Error messages name the env variable and the bound.
 
 - [ ] **Step 4: Write the failing schema test**
 

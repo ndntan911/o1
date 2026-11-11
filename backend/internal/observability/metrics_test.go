@@ -93,6 +93,52 @@ func TestMetrics_NilIsSafe(t *testing.T) {
 	m.ObserveAlert("email", "sent", time.Millisecond)
 	m.ObserveSchedulerTick(3, time.Millisecond)
 	m.ObserveProbeSkipped("replay")
+	m.ObserveRollup(1, 2, time.Millisecond, nil)
+	m.SetRollupWatermark(time.Now())
+	m.ObserveRetention(time.Millisecond, nil)
+	m.AddRetentionRows("rollup", 1)
+	m.AddRetentionCandidates("rollup", 1)
+	m.AddPartitionsDropped("verified", 1)
+	m.AddRetentionSkips("dry_run", 1)
+}
+
+func TestMetrics_Maintenance(t *testing.T) {
+	m := observability.NewMetrics("o1-scheduler", "test")
+	watermark := time.Unix(1000, 0).UTC()
+
+	m.ObserveRollup(3, 12, time.Second, nil)
+	m.SetRollupWatermark(watermark)
+	m.ObserveRetention(time.Second, nil)
+	m.AddRetentionRows("rollup", 4)
+	m.AddRetentionRows("audit", 2)
+	m.AddRetentionCandidates("rollup", 5)
+	m.AddRetentionCandidates("audit", 3)
+	m.AddPartitionsDropped("verified", 1)
+	m.AddPartitionsDropped("beyond_rollup", 2)
+	m.AddRetentionSkips("dry_run", 2)
+	m.AddRetentionSkips("locked", 1)
+
+	body := gatherText(t, m.Registry())
+	for _, want := range []string{
+		`o1_rollup_runs_total{result="success"} 1`,
+		"o1_rollup_hours_total 3",
+		"o1_rollup_rows_total 12",
+		"o1_rollup_frontier_timestamp_seconds 1000",
+		`o1_retention_runs_total{result="success"} 1`,
+		`o1_retention_rows_deleted_total{kind="rollup"} 4`,
+		`o1_retention_rows_deleted_total{kind="audit"} 2`,
+		`o1_retention_candidates_total{kind="rollup"} 5`,
+		`o1_retention_candidates_total{kind="audit"} 3`,
+		`o1_retention_partitions_dropped_total{path="verified"} 1`,
+		`o1_retention_partitions_dropped_total{path="beyond_rollup"} 2`,
+		`o1_retention_skipped_total{reason="dry_run"} 2`,
+		`o1_retention_skipped_total{reason="locked"} 1`,
+		`o1_maintenance_duration_seconds_count{job="rollup"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("maintenance metrics missing %s:\n%s", want, body)
+		}
+	}
 }
 
 func TestMetrics_RegistryContainsCatalog(t *testing.T) {

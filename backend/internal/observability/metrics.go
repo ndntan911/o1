@@ -33,6 +33,16 @@ type Metrics struct {
 	incidentsOpen         prometheus.Gauge
 	queueJobs             *prometheus.GaugeVec
 	queueOldestJobAge     *prometheus.GaugeVec
+	rollupRuns            *prometheus.CounterVec
+	rollupHours           prometheus.Counter
+	rollupRows            prometheus.Counter
+	rollupWatermark       prometheus.Gauge
+	retentionRuns         *prometheus.CounterVec
+	retentionRows         *prometheus.CounterVec
+	retentionCandidates   *prometheus.CounterVec
+	retentionPartitions   *prometheus.CounterVec
+	retentionSkipped      *prometheus.CounterVec
+	maintenanceDuration   *prometheus.HistogramVec
 }
 
 // NewMetrics builds a fresh registry with Go/process collectors, build info,
@@ -115,6 +125,47 @@ func NewMetrics(service, version string) *Metrics {
 			Name: "o1_queue_oldest_job_age_seconds",
 			Help: "Age of the oldest runnable River job by queue.",
 		}, []string{"queue"}),
+		rollupRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_rollup_runs_total",
+			Help: "Rollup maintenance runs by result.",
+		}, []string{"result"}),
+		rollupHours: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "o1_rollup_hours_total",
+			Help: "Hourly buckets processed by rollup maintenance.",
+		}),
+		rollupRows: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "o1_rollup_rows_total",
+			Help: "Hourly summary rows written by rollup maintenance.",
+		}),
+		rollupWatermark: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "o1_rollup_frontier_timestamp_seconds",
+			Help: "Watermark of the last contiguous rolled-up UTC hour.",
+		}),
+		retentionRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_retention_runs_total",
+			Help: "Retention maintenance runs by result.",
+		}, []string{"result"}),
+		retentionRows: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_retention_rows_deleted_total",
+			Help: "Rows deleted by retention, by kind.",
+		}, []string{"kind"}),
+		retentionCandidates: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_retention_candidates_total",
+			Help: "Retention candidates found, by kind. Dry-run reports candidates here.",
+		}, []string{"kind"}),
+		retentionPartitions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_retention_partitions_dropped_total",
+			Help: "Raw probe partitions dropped by retention, by gate path.",
+		}, []string{"path"}),
+		retentionSkipped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_retention_skipped_total",
+			Help: "Retention skips by bounded reason.",
+		}, []string{"reason"}),
+		maintenanceDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "o1_maintenance_duration_seconds",
+			Help:    "Maintenance job duration by job.",
+			Buckets: []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300},
+		}, []string{"job"}),
 	}
 
 	reg.MustRegister(
@@ -132,6 +183,16 @@ func NewMetrics(service, version string) *Metrics {
 		m.incidentsOpen,
 		m.queueJobs,
 		m.queueOldestJobAge,
+		m.rollupRuns,
+		m.rollupHours,
+		m.rollupRows,
+		m.rollupWatermark,
+		m.retentionRuns,
+		m.retentionRows,
+		m.retentionCandidates,
+		m.retentionPartitions,
+		m.retentionSkipped,
+		m.maintenanceDuration,
 	)
 	m.handler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	return m
@@ -275,6 +336,79 @@ func (m *Metrics) SetQueueOldestJobAge(queue string, seconds float64) {
 		return
 	}
 	m.queueOldestJobAge.WithLabelValues(queue).Set(seconds)
+}
+
+// ObserveRollup records one rollup maintenance pass: its result, hours and
+// rows written, and its duration.
+func (m *Metrics) ObserveRollup(hours int, rows int64, d time.Duration, err error) {
+	if m == nil {
+		return
+	}
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	m.rollupRuns.WithLabelValues(result).Inc()
+	m.rollupHours.Add(float64(hours))
+	m.rollupRows.Add(float64(rows))
+	m.maintenanceDuration.WithLabelValues("rollup").Observe(d.Seconds())
+}
+
+// SetRollupWatermark publishes the last contiguous rolled-up hour as a Unix
+// timestamp.
+func (m *Metrics) SetRollupWatermark(t time.Time) {
+	if m == nil {
+		return
+	}
+	m.rollupWatermark.Set(float64(t.Unix()))
+}
+
+// ObserveRetention records one retention pass result and its duration.
+func (m *Metrics) ObserveRetention(d time.Duration, err error) {
+	if m == nil {
+		return
+	}
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	m.retentionRuns.WithLabelValues(result).Inc()
+	m.maintenanceDuration.WithLabelValues("retention").Observe(d.Seconds())
+}
+
+// AddRetentionRows adds rows deleted by retention for a kind ("rollup" or
+// "audit").
+func (m *Metrics) AddRetentionRows(kind string, n int64) {
+	if m == nil || n == 0 {
+		return
+	}
+	m.retentionRows.WithLabelValues(kind).Add(float64(n))
+}
+
+// AddRetentionCandidates adds candidate rows found by retention for a kind
+// ("rollup" or "audit"). Dry-run reports candidates here, not as deleted rows.
+func (m *Metrics) AddRetentionCandidates(kind string, n int64) {
+	if m == nil || n == 0 {
+		return
+	}
+	m.retentionCandidates.WithLabelValues(kind).Add(float64(n))
+}
+
+// AddPartitionsDropped adds dropped raw probe partitions for a gate path
+// ("verified" or "beyond_rollup").
+func (m *Metrics) AddPartitionsDropped(path string, n int) {
+	if m == nil || n == 0 {
+		return
+	}
+	m.retentionPartitions.WithLabelValues(path).Add(float64(n))
+}
+
+// AddRetentionSkips adds skipped retention candidates for a bounded reason.
+func (m *Metrics) AddRetentionSkips(reason string, n int) {
+	if m == nil || n == 0 {
+		return
+	}
+	m.retentionSkipped.WithLabelValues(reason).Add(float64(n))
 }
 
 // statusRecorder captures the response status while preserving the

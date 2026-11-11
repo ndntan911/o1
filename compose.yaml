@@ -56,6 +56,15 @@ services:
       # throttled. Production should leave these unset to keep the defaults.
       O1_AUTH_RATE_PER_MINUTE: ${O1_AUTH_RATE_PER_MINUTE:-120}
       O1_AUTH_RATE_BURST: ${O1_AUTH_RATE_BURST:-60}
+      # Data lifecycle. The scheduler owns rollups and retention; retention is
+      # a dry run until O1_RETENTION_DRY_RUN is set to false.
+      O1_RAW_RETENTION_DAYS: ${O1_RAW_RETENTION_DAYS:-90}
+      O1_ROLLUP_RETENTION_MONTHS: ${O1_ROLLUP_RETENTION_MONTHS:-13}
+      O1_AUDIT_RETENTION_MONTHS: ${O1_AUDIT_RETENTION_MONTHS:-12}
+      O1_RETENTION_DRY_RUN: ${O1_RETENTION_DRY_RUN:-true}
+      O1_RETENTION_MAX_PARTITION_DROPS: ${O1_RETENTION_MAX_PARTITION_DROPS:-1}
+      O1_ROLLUP_INTERVAL: ${O1_ROLLUP_INTERVAL:-15m}
+      O1_ROLLUP_MAX_HOURS_PER_RUN: ${O1_ROLLUP_MAX_HOURS_PER_RUN:-24}
     ports:
       - "8080:8080"
 
