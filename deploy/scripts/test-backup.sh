@@ -10,7 +10,18 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 lib="$repo_root/deploy/scripts/backup-lib.sh"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/o1-backup-test.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
+backup_test_container=
+hold_pid=
+cleanup_test_root() {
+  if [[ -n $hold_pid ]]; then
+    kill "$hold_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ -n $backup_test_container ]]; then
+    docker rm -f "$backup_test_container" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup_test_root EXIT
 
 FAKE_DIR="$tmp/fake"
 mkdir -p "$FAKE_DIR"
@@ -23,6 +34,7 @@ cat >"$FAKE_DIR/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >>"$FAKE_DIR/curl.args"
+printf '%s\n' "$*" >>"$FAKE_DIR/curl.all.args"
 
 previous=
 for arg in "$@"; do
@@ -37,7 +49,10 @@ for arg in "$@"; do
       ;;
     --data-binary)
       case $arg in
-        @*) cp "${arg#@}" "$FAKE_DIR/curl.body" ;;
+        @*)
+          cp "${arg#@}" "$FAKE_DIR/curl.body"
+          cat "${arg#@}" >>"$FAKE_DIR/curl.all.body"
+          ;;
       esac
       ;;
   esac
@@ -61,8 +76,26 @@ exec perl -MFcntl=:flock -e '
 FAKE_FLOCK
 fi
 
+# macOS also lacks GNU timeout; the tests do not need to exercise expiry.
+if ! command -v timeout >/dev/null 2>&1; then
+  cat >"$FAKE_DIR/timeout" <<'FAKE_TIMEOUT'
+#!/usr/bin/env bash
+# Minimal timeout(1) for hosts without coreutils: run without a deadline.
+set -u
+[[ $# -ge 2 ]] || exit 2
+shift
+exec "$@"
+FAKE_TIMEOUT
+fi
+
 chmod +x "$FAKE_DIR/curl"
 [[ -e $FAKE_DIR/flock ]] && chmod +x "$FAKE_DIR/flock"
+[[ -e $FAKE_DIR/timeout ]] && chmod +x "$FAKE_DIR/timeout"
+
+# Per-run files are reset between scenarios; the .all files accumulate every
+# curl call so the final secret-containment check sees all of them.
+: >"$FAKE_DIR/curl.all.args"
+: >"$FAKE_DIR/curl.all.body"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -322,6 +355,293 @@ O1ENV
   pass "bl_ping logs and returns 0 when the ping fails"
 }
 
-run_lib_tests
+# --- backup.sh tests -------------------------------------------------------
 
-echo "PASS: all backup library tests ($checks checks)"
+backup_script=
+TEST_RESTIC_PASSWORD=restic-secret-for-tests
+
+run_backup_script() {
+  local envfile=$1
+  shift
+  BACKUP_ENV="$envfile" bash "$backup_script" "$@"
+}
+
+repo_restic() {
+  local root=$1
+  shift
+  RESTIC_REPOSITORY="$root/repo" \
+    RESTIC_PASSWORD_FILE="$root/restic.pass" \
+    RESTIC_CACHE_DIR="$root/cache" \
+    restic "$@"
+}
+
+init_test_repo() {
+  local root=$1
+  mkdir -p "$root/cache"
+  printf '%s\n' "$TEST_RESTIC_PASSWORD" >"$root/restic.pass"
+  chmod 600 "$root/restic.pass"
+  repo_restic "$root" init >/dev/null 2>&1 || fail "restic init failed for $root"
+}
+
+write_backup_env() {
+  local file=$1 root=$2 pg_container=$3 daily=${4:-30} monthly=${5:-12}
+  cat >"$file" <<ENV
+RESTIC_REPOSITORY=$root/repo
+RESTIC_PASSWORD_FILE=$root/restic.pass
+RESTIC_CACHE_DIR=$root/cache
+AWS_ACCESS_KEY_ID=aws-key-for-tests
+AWS_SECRET_ACCESS_KEY=aws-secret-for-tests
+O1_COMPOSE_FILE=$tmp/compose.yaml
+O1_ENV_FILE=$tmp/backup-o1.env
+O1_BACKUP_PING_URL=https://ping.example/success
+O1_BACKUP_FAILURE_URL=https://ping.example/failure
+O1_BACKUP_ALERT_EMAIL=ops@example.com
+O1_BACKUP_TIMEOUT=2m
+O1_BACKUP_KEEP_DAILY=$daily
+O1_BACKUP_KEEP_MONTHLY=$monthly
+O1_BACKUP_PG_CONTAINER=$pg_container
+ENV
+}
+
+start_fixture_postgres() {
+  local name="o1-backup-test-pg-$$-$RANDOM"
+  docker run -d --rm --name "$name" \
+    -e POSTGRES_USER=o1 -e POSTGRES_PASSWORD=o1 -e POSTGRES_DB=o1 \
+    postgres:16-alpine >/dev/null || fail "could not start the fixture Postgres"
+  backup_test_container=$name
+  for _ in {1..60}; do
+    if docker exec "$name" psql -U o1 -d o1 -c 'select 1' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  fail "the fixture Postgres did not become ready"
+}
+
+create_fixture_schema() {
+  local container=$1
+  docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U o1 -d o1 \
+    >/dev/null 2>&1 <<'SQL' || fail "could not create the fixture schema"
+CREATE TABLE goose_db_version (id serial primary key, version_id bigint not null);
+INSERT INTO goose_db_version (version_id) VALUES (9);
+CREATE TABLE users (id uuid primary key);
+CREATE TABLE workspaces (id uuid primary key);
+CREATE TABLE monitors (id uuid primary key);
+CREATE TABLE probe_results (id uuid, checked_at timestamptz);
+CREATE TABLE monitor_hourly_stats (monitor_id uuid, bucket_start timestamptz);
+CREATE TABLE incidents (id uuid primary key);
+INSERT INTO users VALUES (gen_random_uuid());
+INSERT INTO workspaces VALUES (gen_random_uuid());
+INSERT INTO monitors VALUES (gen_random_uuid());
+SQL
+}
+
+days_ago() {
+  if date -u -v-1d '+%Y' >/dev/null 2>&1; then
+    date -u -v-"$1"d '+%Y-%m-%d %H:%M:%S'
+  else
+    date -u -d "$1 days ago" '+%Y-%m-%d %H:%M:%S'
+  fi
+}
+
+# hold_lock PATH READY: hold an exclusive lock from a background perl process.
+hold_lock() {
+  perl -MFcntl=:flock -e '
+    open(my $fh, ">", $ARGV[0]) or die "open: $!";
+    flock($fh, LOCK_EX) or die "flock: $!";
+    open(my $ready, ">", $ARGV[1]) or die "ready: $!";
+    close($ready);
+    sleep 60;
+  ' "$1" "$2" &
+  hold_pid=$!
+  for _ in {1..100}; do
+    [[ -e $2 ]] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+run_backup_tests() {
+  local backup="$repo_root/deploy/scripts/backup.sh"
+  local root status count snapid ts dur bytes id
+  local old_time new_time old_id new_id ids secret
+
+  [[ -f $backup ]] || fail "$backup is missing"
+  backup_script=$backup
+
+  # The library tests export alert settings; keep backup runs isolated.
+  unset O1_BACKUP_ALERT_EMAIL O1_BACKUP_FAILURE_URL O1_BACKUP_PING_URL \
+    O1_RESEND_API_KEY O1_EMAIL_FROM O1_ENV_FILE O1_BACKUP_PG_CONTAINER \
+    O1_BACKUP_TIMEOUT O1_BACKUP_KEEP_DAILY O1_BACKUP_KEEP_MONTHLY \
+    AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+  cat >"$tmp/backup-o1.env" <<'O1ENV'
+O1_RESEND_API_KEY=resend-secret-for-tests
+O1_EMAIL_FROM=o1 <noreply@example.com>
+O1ENV
+
+  start_fixture_postgres
+  create_fixture_schema "$backup_test_container"
+
+  # 1. Success: one tagged snapshot, state file, no stray dump, success ping.
+  root="$tmp/backup-success"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container"
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "backup.sh failed for a healthy database"
+
+  count=$(repo_restic "$root" snapshots --tag o1-db --json | jq 'length') ||
+    fail "could not list snapshots"
+  [[ $count -eq 1 ]] || fail "expected one o1-db snapshot, found $count"
+  repo_restic "$root" snapshots --json |
+    jq -e '.[0].tags | index("daily")' >/dev/null ||
+    fail "the snapshot is not tagged daily"
+  repo_restic "$root" ls latest >"$tmp/ls.out" 2>"$tmp/ls.err" ||
+    fail "could not list the snapshot: $(cat "$tmp/ls.err")"
+  grep -q 'o1.dump' "$tmp/ls.out" ||
+    fail "the snapshot does not contain o1.dump"
+
+  [[ -f $root/last-success ]] || fail "backup.sh did not write last-success"
+  IFS='|' read -r snapid ts dur bytes <"$root/last-success"
+  [[ -n $snapid && -n $ts && -n $dur && -n $bytes ]] ||
+    fail "last-success does not have four fields: $(cat "$root/last-success")"
+  [[ $ts =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    fail "last-success timestamp is not UTC: $ts"
+  [[ $dur =~ ^[0-9]+$ ]] || fail "last-success duration is not seconds: $dur"
+  if [[ ! $bytes =~ ^[0-9]+$ ]] || ((bytes <= 0)); then
+    fail "last-success byte count is not positive: $bytes"
+  fi
+  id=$(repo_restic "$root" snapshots --tag o1-db --json | jq -r '.[0].short_id')
+  [[ ${snapid:0:8} == "$id" ]] ||
+    fail "last-success snapshot $snapid does not match $id"
+  [[ $(file_mode "$root/last-success") == 600 ]] ||
+    fail "last-success is not mode 0600"
+  [[ -z $(find "$root" -name '*.dump' -print -quit) ]] ||
+    fail "a *.dump file was left under the test root"
+
+  grep -q 'https://ping.example/success' "$FAKE_DIR/curl.args" ||
+    fail "the successful backup did not ping the success URL"
+  if grep -q 'https://ping.example/failure' "$FAKE_DIR/curl.args"; then
+    fail "the successful backup pinged the failure URL"
+  fi
+  if grep -q 'api.resend.com' "$FAKE_DIR/curl.args"; then
+    fail "the successful backup sent a failure alert"
+  fi
+  pass "backup.sh uploads a tagged snapshot and records last-success"
+
+  # 2. pg_dump failure: partial snapshot removed, alert and failure ping sent.
+  root="$tmp/backup-dump-failure"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/backup.env" "$root" "o1-backup-test-missing-$$"
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh succeeded with a missing container"
+  count=$(repo_restic "$root" snapshots --tag o1-db --json | jq 'length') ||
+    fail "could not list snapshots after the dump failure"
+  [[ $count -eq 0 ]] || fail "the partial snapshot was not removed"
+  [[ ! -e $root/last-success ]] ||
+    fail "backup.sh wrote last-success after a dump failure"
+  grep -q 'api.resend.com' "$FAKE_DIR/curl.args" ||
+    fail "the dump failure did not send an alert"
+  [[ $(grep -c 'api.resend.com' "$FAKE_DIR/curl.args") -eq 1 ]] ||
+    fail "the dump failure sent more than one alert"
+  grep -q 'stage=dump' "$FAKE_DIR/curl.body" ||
+    fail "the alert does not name the dump stage: $(cat "$FAKE_DIR/curl.body" 2>/dev/null)"
+  grep -q 'https://ping.example/failure' "$FAKE_DIR/curl.args" ||
+    fail "the dump failure did not ping the failure URL"
+  pass "backup.sh removes a partial snapshot and alerts on dump failure"
+
+  # 3. Lock held: backup fails and alerts, prune-only skips quietly.
+  root="$tmp/backup-lock"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container"
+  hold_lock "$root/repo.lock" "$root/lock.ready" ||
+    fail "could not hold the repository lock"
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh ignored a held lock"
+  grep -q 'api.resend.com' "$FAKE_DIR/curl.args" ||
+    fail "the lock-held backup did not alert"
+  grep -q 'lock' "$FAKE_DIR/curl.body" ||
+    fail "the lock-held alert does not mention the lock"
+  count=$(repo_restic "$root" snapshots --tag o1-db --json | jq 'length') ||
+    fail "could not list snapshots after the lock-held run"
+  [[ $count -eq 0 ]] || fail "the lock-held backup created a snapshot"
+
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" --prune-only >"$tmp/last.out" 2>&1 ||
+    status=$?
+  [[ $status -eq 0 ]] || fail "prune-only did not exit 0 when the lock was held"
+  [[ ! -s $FAKE_DIR/curl.args ]] ||
+    fail "a skipped prune-only run sent an alert or ping"
+
+  kill "$hold_pid" 2>/dev/null || true
+  wait "$hold_pid" 2>/dev/null || true
+  hold_pid=
+  pass "backup.sh alerts on a held lock and prune-only skips quietly"
+
+  # 4. Prune-only: a snapshot older than 30 days is removed, the new one stays.
+  #    Restic counts periods that contain snapshots, not calendar days, so pin
+  #    both policies to one: a two-snapshot fixture then exercises pruning.
+  root="$tmp/backup-prune"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  old_time=$(days_ago 40)
+  new_time=$(date -u '+%Y-%m-%d %H:%M:%S')
+  printf 'old' | repo_restic "$root" backup --stdin --stdin-filename o1.dump \
+    --tag o1-db --time "$old_time" >/dev/null || fail "could not write the old snapshot"
+  printf 'new' | repo_restic "$root" backup --stdin --stdin-filename o1.dump \
+    --tag o1-db --time "$new_time" >/dev/null || fail "could not write the new snapshot"
+  old_id=$(repo_restic "$root" snapshots --json |
+    jq -r 'sort_by(.time) | .[0].short_id')
+  new_id=$(repo_restic "$root" snapshots --json |
+    jq -r 'sort_by(.time) | .[-1].short_id')
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container" 1 1
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" --prune-only >"$tmp/last.out" 2>&1 ||
+    status=$?
+  [[ $status -eq 0 ]] || fail "prune-only failed"
+  ids=$(repo_restic "$root" snapshots --json | jq -r '.[].short_id')
+  grep -qx "$new_id" <<<"$ids" || fail "prune-only removed the new snapshot"
+  if grep -qx "$old_id" <<<"$ids"; then
+    fail "prune-only kept the snapshot older than 30 days"
+  fi
+  [[ ! -e $root/last-success ]] ||
+    fail "prune-only wrote last-success"
+  [[ ! -s $FAKE_DIR/curl.args ]] || fail "prune-only sent a ping"
+  pass "prune-only forgets old snapshots and keeps the latest"
+
+  # 5. Secret containment: no secret reaches curl argv or the alert body in
+  #    any call made by any scenario above.
+  [[ -s $FAKE_DIR/curl.all.args ]] ||
+    fail "no curl calls were recorded for the secret check"
+  [[ -s $FAKE_DIR/curl.all.body ]] ||
+    fail "no alert bodies were recorded for the secret check"
+  for secret in "$TEST_RESTIC_PASSWORD" aws-secret-for-tests \
+    resend-secret-for-tests; do
+    if grep -qF -- "$secret" "$FAKE_DIR/curl.all.args"; then
+      fail "a secret leaked into curl argv"
+    fi
+    if grep -qF -- "$secret" "$FAKE_DIR/curl.all.body"; then
+      fail "a secret leaked into the alert body"
+    fi
+  done
+  if grep -qF 'AWS_SECRET_ACCESS_KEY' "$FAKE_DIR/curl.all.args"; then
+    fail "the AWS secret variable name reached curl argv"
+  fi
+  pass "backup runs keep repository and notification secrets out of argv"
+}
+
+run_lib_tests
+run_backup_tests
+
+echo "PASS: all backup tests ($checks checks)"
