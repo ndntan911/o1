@@ -1,10 +1,12 @@
 # Standalone production stack for o1.
 #
 # It deliberately does not extend the development compose.yaml at the repository
-# root: no Mailpit, no published database/API/metrics ports, no development
-# keys, and no raised auth rate limits. Only the web container publishes ports
-# (80 and 443). All secrets come from the environment or an untracked
-# deploy/production/.env. See README.md in this directory for the runbook.
+# root: no Mailpit, no bundled database, no published database/API/metrics
+# ports, no development keys, and no raised auth rate limits. PostgreSQL is a
+# managed service reached through O1_DATABASE_URL. Only the web container
+# publishes ports (80 and 443). All secrets come from the environment or an
+# untracked deploy/production/.env. See README.md in this directory for the
+# runbook.
 #
 #   # Registry deploy on a provisioned host:
 #   #   /opt/o1/bin/deploy.sh /opt/o1/incoming/<release>
@@ -23,31 +25,13 @@
 name: ${O1_COMPOSE_PROJECT:-o1-production}
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: o1
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
-      POSTGRES_DB: o1
-    # No published port: only the Compose network can reach PostgreSQL.
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U o1 -d o1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-
   api:
     image: ${O1_BACKEND_IMAGE:-o1-backend:local}
     entrypoint: ["/api"]
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment: &backend-env
       O1_ENV: production
-      O1_DATABASE_URL: postgres://o1:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/o1?sslmode=disable
+      O1_DATABASE_URL: "${O1_DATABASE_URL:?set O1_DATABASE_URL in .env}"
+      O1_DB_MAX_CONNS: ${O1_DB_MAX_CONNS:-10}
       O1_SECRET_KEY: "${O1_SECRET_KEY:?set O1_SECRET_KEY in .env}"
       O1_ENCRYPTION_KEY: "${O1_ENCRYPTION_KEY:?set O1_ENCRYPTION_KEY in .env}"
       # Production email goes through Resend. The API and worker refuse to
@@ -88,9 +72,6 @@ services:
   scheduler:
     image: ${O1_BACKEND_IMAGE:-o1-backend:local}
     entrypoint: ["/scheduler"]
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       <<: *backend-env
       O1_SCHEDULER_HEALTH_ADDR: ":8081"
@@ -99,9 +80,6 @@ services:
   worker:
     image: ${O1_BACKEND_IMAGE:-o1-backend:local}
     entrypoint: ["/worker"]
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       <<: *backend-env
       O1_WORKER_HEALTH_ADDR: ":8082"
@@ -159,7 +137,6 @@ services:
     restart: "no"
 
 volumes:
-  postgres-data:
   caddy_data:
   caddy_config:
   alloy-data:
