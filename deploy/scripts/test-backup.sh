@@ -435,6 +435,47 @@ create_restore_snapshot() {
     fail "could not create the restore fixture snapshot"
 }
 
+# write_fake_docker DIR: a Docker wrapper that logs argv and emulates just
+# enough of the drill (run/exec/rm). A fixed openssl value lets the tests
+# prove the scratch password never reaches argv or the log.
+write_fake_docker() {
+  local dir=$1
+  mkdir -p "$dir"
+  cat >"$dir/openssl" <<'FAKE_OPENSSL'
+#!/usr/bin/env bash
+printf 'sentinel-scratch-password\n'
+FAKE_OPENSSL
+  cat >"$dir/docker" <<'FAKE_DOCKER'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
+case ${1:-} in
+  run)
+    printf 'fake-container-id\n'
+    ;;
+  exec)
+    case " $* " in
+      *" pg_restore "*)
+        cat >/dev/null
+        ;;
+      *" pg_isready "*)
+        [[ ${FAKE_DOCKER_PGREADY_FAIL:-0} == 1 ]] && exit 1
+        ;;
+      *" psql "*)
+        case "$*" in
+          *'count(*)'*) printf '1\n' ;;
+        esac
+        ;;
+    esac
+    ;;
+  rm) ;;
+esac
+exit 0
+FAKE_DOCKER
+  chmod +x "$dir/docker" "$dir/openssl"
+  : >"$dir/docker.args"
+}
+
 start_fixture_postgres() {
   local name="o1-backup-test-pg-$$-$RANDOM"
   docker run -d --rm --name "$name" \
@@ -679,7 +720,7 @@ O1ENV
 
 run_restore_tests() {
   local restore="$repo_root/deploy/scripts/restore-verify.sh"
-  local root status before snapid ts rstatus sid table log
+  local root status before snapid ts rstatus sid table log hard drill_pid
 
   [[ -f $restore ]] || fail "$restore is missing"
   restore_script=$restore
@@ -800,6 +841,73 @@ run_restore_tests() {
   wait "$hold_pid" 2>/dev/null || true
   hold_pid=
   pass "restore-verify.sh skips quietly while another job holds the lock"
+
+  # 6. Secret containment: the random scratch password travels in the client
+  #    environment, never in docker(1) argv or the drill log, and no host port
+  #    is published.
+  root="$tmp/restore-argv"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  create_restore_snapshot "$root" "$backup_test_container"
+  write_backup_env "$root/restore.env" "$root" "$backup_test_container"
+  printf 'O1_BACKUP_DRILL_MIN_FREE_KB=1\n' >>"$root/restore.env"
+  hard="$tmp/fake-docker-argv"
+  write_fake_docker "$hard"
+  reset_curl
+  status=0
+  PATH="$hard:$PATH" FAKE_DOCKER_LOG="$hard/docker.args" \
+    BACKUP_ENV="$root/restore.env" bash "$restore_script" \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "the fake-Docker restore drill failed"
+  [[ -s $hard/docker.args ]] || fail "the fake Docker wrapper was not called"
+  grep -q -- '-e POSTGRES_PASSWORD -e POSTGRES_DB=o1_restore' \
+    "$hard/docker.args" ||
+    fail "the drill did not use the client-environment password form"
+  if grep -q 'POSTGRES_PASSWORD=' "$hard/docker.args"; then
+    fail "the scratch password was passed as a docker argument"
+  fi
+  if grep -q 'sentinel-scratch-password' "$hard/docker.args"; then
+    fail "the scratch password value reached Docker argv"
+  fi
+  if grep -q 'sentinel-scratch-password' "$tmp/last.out"; then
+    fail "the drill logged the scratch password value"
+  fi
+  if grep -q -- '-p 127.0.0.1' "$hard/docker.args"; then
+    fail "the drill published a host port for the scratch database"
+  fi
+  pass "the scratch password stays out of Docker argv and no port is published"
+
+  # 7. SIGTERM runs the EXIT cleanup: the scratch container is removed and the
+  #    drill exits 143.
+  root="$tmp/restore-term"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  create_restore_snapshot "$root" "$backup_test_container"
+  write_backup_env "$root/restore.env" "$root" "$backup_test_container"
+  printf 'O1_BACKUP_DRILL_MIN_FREE_KB=1\n' >>"$root/restore.env"
+  hard="$tmp/fake-docker-term"
+  write_fake_docker "$hard"
+  PATH="$hard:$PATH" FAKE_DOCKER_LOG="$hard/docker.args" \
+    FAKE_DOCKER_PGREADY_FAIL=1 BACKUP_ENV="$root/restore.env" \
+    bash "$restore_script" >"$tmp/last.out" 2>&1 &
+  drill_pid=$!
+  for _ in {1..200}; do
+    grep -q 'pg_isready' "$hard/docker.args" 2>/dev/null && break
+    sleep 0.05
+  done
+  if ! grep -q 'pg_isready' "$hard/docker.args"; then
+    kill -KILL "$drill_pid" 2>/dev/null || true
+    wait "$drill_pid" 2>/dev/null || true
+    fail "the drill never reached the readiness wait"
+  fi
+  kill -TERM "$drill_pid"
+  status=0
+  wait "$drill_pid" 2>/dev/null || status=$?
+  [[ $status -eq 143 ]] ||
+    fail "a SIGTERM drill exited $status instead of 143"
+  grep -q 'rm -f -v' "$hard/docker.args" ||
+    fail "SIGTERM did not remove the scratch container"
+  pass "SIGTERM exits 143 after removing the scratch container"
 }
 
 run_lib_tests

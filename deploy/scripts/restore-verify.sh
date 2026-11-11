@@ -3,10 +3,10 @@
 # Postgres, validate the schema and a representative join, then verify 5% of
 # the repository data.
 #
-# The scratch container has a random name and password, publishes only a
-# loopback port, and is always removed with its anonymous volume. Production
-# Compose is never targeted: the only production access is an optional
-# database-size query for the disk preflight.
+# The scratch container has a random name and password, publishes no host
+# port, and is always removed with its anonymous volume. Production Compose is
+# never targeted: the only production access is an optional database-size
+# query for the disk preflight.
 set -Eeuo pipefail
 umask 077
 
@@ -53,6 +53,9 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
+# A timeout or supervisor stop must still run the EXIT cleanup, so turn the
+# signal into a normal exit instead of letting bash die on the signal.
+trap 'exit 143' TERM INT
 
 # send_failure_alert STAGE MESSAGE: email the failure and ping the failure
 # URL. It disables the ERR trap first so an alert failure cannot recurse.
@@ -147,10 +150,11 @@ name="o1-restore-verify-$(date +%s)-$$"
 scratch_name=$name
 password=$(openssl rand -hex 16) ||
   fail "could not generate a scratch database password"
-docker run -d --name "$name" \
-  -e POSTGRES_USER=o1 -e POSTGRES_PASSWORD="$password" \
-  -e POSTGRES_DB=o1_restore \
-  -p 127.0.0.1::5432 postgres:16-alpine >/dev/null ||
+# POSTGRES_PASSWORD with no value copies the client environment: the secret is
+# never an argument, so it cannot appear in a process listing.
+POSTGRES_PASSWORD="$password" docker run -d --name "$name" \
+  -e POSTGRES_USER=o1 -e POSTGRES_PASSWORD -e POSTGRES_DB=o1_restore \
+  postgres:16-alpine >/dev/null ||
   fail "could not start the scratch Postgres"
 bl_log info "scratch Postgres started: container=$name"
 
