@@ -246,13 +246,44 @@ func (s *Service) PublicPage(ctx context.Context, slug string) (PublicPage, erro
 
 	now := s.now()
 	since := startOfUTCDay(now).Add(-(publicDayCount - 1) * 24 * time.Hour)
-	stats, err := s.q.ListProbeDayStats(ctx, sqlc.ListProbeDayStatsParams{
+
+	// A watermark makes the UTC day containing it the split: completed days
+	// below it come from hourly rollups and the split day onward comes from
+	// raw. Without a watermark no rollup day is trustworthy yet, so every day
+	// stays on raw. The two ranges are half-open and disjoint, so a day is
+	// never counted twice.
+	watermark, err := s.q.GetRollupWatermark(ctx)
+	if err != nil {
+		return PublicPage{}, fmt.Errorf("get rollup watermark: %w", err)
+	}
+
+	var rollups []sqlc.ListRollupDayStatsRow
+	rawSince := since
+	if watermark != nil {
+		split := startOfUTCDay(*watermark)
+		if split.After(since) {
+			rollups, err = s.q.ListRollupDayStats(ctx, sqlc.ListRollupDayStatsParams{
+				MonitorIds: ids,
+				Since:      since,
+				Until:      split,
+			})
+			if err != nil {
+				return PublicPage{}, fmt.Errorf("list rollup day stats: %w", err)
+			}
+		}
+		if split.After(rawSince) {
+			rawSince = split
+		}
+	}
+
+	raw, err := s.q.ListProbeDayStats(ctx, sqlc.ListProbeDayStatsParams{
 		MonitorIds: ids,
-		Since:      since,
+		Since:      rawSince,
 	})
 	if err != nil {
 		return PublicPage{}, fmt.Errorf("list probe day stats: %w", err)
 	}
+	stats := mergeDayStats(rollups, raw)
 
 	// Only the 90 emitted UTC dates count toward the bars and uptime. Probes
 	// outside that window, such as future-dated rows, must not inflate uptime.
@@ -265,7 +296,7 @@ func (s *Service) PublicPage(ctx context.Context, slug string) (PublicPage, erro
 	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
 		allowedDays[day.Format("2006-01-02")] = struct{}{}
 	}
-	windowStats := make([]sqlc.ListProbeDayStatsRow, 0, len(stats))
+	windowStats := make([]dayStat, 0, len(stats))
 	for _, row := range stats {
 		if _, ok := allowedDays[row.Day]; ok {
 			windowStats = append(windowStats, row)
@@ -273,7 +304,7 @@ func (s *Service) PublicPage(ctx context.Context, slug string) (PublicPage, erro
 	}
 	stats = windowStats
 
-	statsByMonitor := make(map[uuid.UUID][]sqlc.ListProbeDayStatsRow, len(monitors))
+	statsByMonitor := make(map[uuid.UUID][]dayStat, len(monitors))
 	for _, row := range stats {
 		statsByMonitor[row.MonitorID] = append(statsByMonitor[row.MonitorID], row)
 	}
@@ -325,6 +356,42 @@ func (s *Service) PublicPage(ctx context.Context, slug string) (PublicPage, erro
 	return page, nil
 }
 
+// dayStat is the shared shape for a monitor's checks on one UTC day. Rollup
+// and raw rows both convert into it so buildDays and buildUptime do not care
+// which source produced a day.
+type dayStat struct {
+	MonitorID uuid.UUID
+	Day       string
+	Checks    int64
+	UpCount   int64
+	DownCount int64
+}
+
+// mergeDayStats converts rollup and raw rows into one slice. Callers pass
+// disjoint date ranges, so the merge never adds two rows for the same day.
+func mergeDayStats(rollups []sqlc.ListRollupDayStatsRow, raw []sqlc.ListProbeDayStatsRow) []dayStat {
+	stats := make([]dayStat, 0, len(rollups)+len(raw))
+	for _, row := range rollups {
+		stats = append(stats, dayStat{
+			MonitorID: row.MonitorID,
+			Day:       row.Day,
+			Checks:    row.Checks,
+			UpCount:   row.UpCount,
+			DownCount: row.DownCount,
+		})
+	}
+	for _, row := range raw {
+		stats = append(stats, dayStat{
+			MonitorID: row.MonitorID,
+			Day:       row.Day,
+			Checks:    row.Checks,
+			UpCount:   row.UpCount,
+			DownCount: row.DownCount,
+		})
+	}
+	return stats
+}
+
 // startOfUTCDay truncates t to midnight UTC.
 func startOfUTCDay(t time.Time) time.Time {
 	t = t.UTC()
@@ -334,8 +401,8 @@ func startOfUTCDay(t time.Time) time.Time {
 // buildDays returns publicDayCount daily buckets ending on the UTC day of now.
 // Days are keyed by the SQL date string YYYY-MM-DD and marked no_data, up,
 // down, or partial.
-func buildDays(stats []sqlc.ListProbeDayStatsRow, since, now time.Time) []PublicDay {
-	byDay := make(map[string]sqlc.ListProbeDayStatsRow, len(stats))
+func buildDays(stats []dayStat, since, now time.Time) []PublicDay {
+	byDay := make(map[string]dayStat, len(stats))
 	for _, row := range stats {
 		byDay[row.Day] = row
 	}
@@ -371,7 +438,7 @@ func buildDays(stats []sqlc.ListProbeDayStatsRow, since, now time.Time) []Public
 
 // buildUptime returns the share of successful checks across the rows, or nil
 // when the monitor has no checks in the window.
-func buildUptime(stats []sqlc.ListProbeDayStatsRow) *float64 {
+func buildUptime(stats []dayStat) *float64 {
 	var checks, up int64
 	for _, row := range stats {
 		checks += row.Checks

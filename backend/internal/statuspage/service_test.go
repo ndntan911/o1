@@ -255,6 +255,40 @@ func (e *serviceEnv) ensureProbePartition(t *testing.T, day time.Time) {
 	}
 }
 
+// insertHourlyStat inserts one completed hourly rollup bucket.
+func (e *serviceEnv) insertHourlyStat(t *testing.T, monitorID uuid.UUID, bucket time.Time, up, down int64) {
+	t.Helper()
+	if _, err := e.pool.Exec(context.Background(), `
+		INSERT INTO monitor_hourly_stats (
+			monitor_id, workspace_id, bucket_start, up_count, down_count, checks,
+			avg_latency_ms, min_latency_ms, max_latency_ms, p95_latency_ms
+		) VALUES ($1,$2,$3,$4,$5,$6,100,90,110,105)`,
+		monitorID, e.wsID, bucket, up, down, up+down); err != nil {
+		t.Fatalf("insert hourly stat: %v", err)
+	}
+}
+
+// setRollupWatermark marks the last contiguous fully rolled-up hour.
+func (e *serviceEnv) setRollupWatermark(t *testing.T, at time.Time) {
+	t.Helper()
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE rollup_state SET watermark=$1 WHERE id`, at); err != nil {
+		t.Fatalf("set rollup watermark: %v", err)
+	}
+}
+
+// insertDayProbes writes up and down raw checks spread across one UTC day.
+func (e *serviceEnv) insertDayProbes(t *testing.T, monitorID uuid.UUID, day time.Time, up, down int) {
+	t.Helper()
+	e.ensureProbePartition(t, day)
+	for i := 0; i < up; i++ {
+		e.insertProbe(t, monitorID, day.Add(time.Duration(i+1)*time.Minute), "up")
+	}
+	for i := 0; i < down; i++ {
+		e.insertProbe(t, monitorID, day.Add(time.Duration(up+i+1)*time.Minute), "down")
+	}
+}
+
 func (e *serviceEnv) insertIncident(t *testing.T, monitorID uuid.UUID, status string, startedAt time.Time, acknowledgedAt, resolvedAt *time.Time) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
@@ -317,6 +351,187 @@ func TestService_PublicPageBuckets(t *testing.T) {
 	}
 	if page.Monitors[0].Uptime == nil || *page.Monitors[0].Uptime != 0.5 {
 		t.Fatalf("uptime = %v, want 0.5", page.Monitors[0].Uptime)
+	}
+}
+
+func TestPublicPage_UsesRollupsBelowWatermarkAndRawAtTheFrontier(t *testing.T) {
+	env := newServiceEnv(t)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	env.svc.now = func() time.Time { return now }
+	monitorID := env.addMonitor("API")
+	env.enablePage(t, monitorID)
+
+	day := func(offset int) time.Time {
+		return startOfUTCDay(now).AddDate(0, 0, offset)
+	}
+
+	// The watermark is late on 11-09, so rollups are trusted only below the
+	// split at the start of that day. The 11-09 rollup row must not be counted
+	// because raw owns 11-09 onward.
+	env.setRollupWatermark(t, day(-2).Add(23*time.Hour))
+	env.insertHourlyStat(t, monitorID, day(-3).Add(10*time.Hour), 9, 0) // 11-08, rollup
+	env.insertHourlyStat(t, monitorID, day(-2).Add(6*time.Hour), 5, 0)  // 11-09, ignored
+	env.insertDayProbes(t, monitorID, day(-1), 2, 2)                    // 11-10, raw
+	env.insertDayProbes(t, monitorID, day(0), 2, 0)                     // 11-11, raw
+
+	page, err := env.svc.PublicPage(context.Background(), env.slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	days := page.Monitors[0].Days
+	if len(days) != 90 {
+		t.Fatalf("days = %d, want 90", len(days))
+	}
+	if got := days[89]; got.Date != "2026-11-11" || got.Status != "up" {
+		t.Fatalf("today = %+v, want 11-11 up from raw", got)
+	}
+	if got := days[88]; got.Date != "2026-11-10" || got.Status != "partial" {
+		t.Fatalf("frontier day = %+v, want 11-10 partial from raw", got)
+	}
+	if got := days[87]; got.Date != "2026-11-09" || got.Status != "no_data" || got.Uptime != nil {
+		t.Fatalf("split day = %+v, want 11-09 no_data from absent raw", got)
+	}
+	if got := days[86]; got.Date != "2026-11-08" || got.Status != "up" {
+		t.Fatalf("rollup day = %+v, want 11-08 up from rollups", got)
+	}
+	// 11-08 (9/9) + 11-10 (2/4) + 11-11 (2/2) = 13/15. The 11-09 rollup is
+	// excluded, so neither source is double counted.
+	if page.Monitors[0].Uptime == nil || *page.Monitors[0].Uptime != 13.0/15.0 {
+		t.Fatalf("uptime = %v, want %v", page.Monitors[0].Uptime, 13.0/15.0)
+	}
+}
+
+func TestPublicPage_NoWatermarkUsesRawOnly(t *testing.T) {
+	env := newServiceEnv(t)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	env.svc.now = func() time.Time { return now }
+	monitorID := env.addMonitor("API")
+	env.enablePage(t, monitorID)
+
+	// A fresh database has a null watermark, so every day is served by raw.
+	today := startOfUTCDay(now)
+	env.insertDayProbes(t, monitorID, today.AddDate(0, 0, -1), 1, 1)
+	env.insertDayProbes(t, monitorID, today, 1, 0)
+
+	page, err := env.svc.PublicPage(context.Background(), env.slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	days := page.Monitors[0].Days
+	if got := days[89]; got.Date != "2026-11-11" || got.Status != "up" {
+		t.Fatalf("today = %+v", got)
+	}
+	if got := days[88]; got.Date != "2026-11-10" || got.Status != "partial" {
+		t.Fatalf("yesterday = %+v", got)
+	}
+	if got := days[87]; got.Status != "no_data" || got.Uptime != nil {
+		t.Fatalf("empty day = %+v", got)
+	}
+	if page.Monitors[0].Uptime == nil || *page.Monitors[0].Uptime != 2.0/3.0 {
+		t.Fatalf("uptime = %v, want %v", page.Monitors[0].Uptime, 2.0/3.0)
+	}
+}
+
+func TestPublicPage_MissingRollupDayIsNoData(t *testing.T) {
+	env := newServiceEnv(t)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	env.svc.now = func() time.Time { return now }
+	monitorID := env.addMonitor("API")
+	env.enablePage(t, monitorID)
+
+	day := func(offset int) time.Time {
+		return startOfUTCDay(now).AddDate(0, 0, offset)
+	}
+
+	// The split is 11-10. Rollups own 11-09 but no row exists for it, and raw
+	// starts at the split, so the day is empty rather than fabricated.
+	env.setRollupWatermark(t, day(-1).Add(5*time.Hour))
+	env.insertHourlyStat(t, monitorID, day(-3).Add(10*time.Hour), 3, 0) // 11-08
+	env.insertDayProbes(t, monitorID, day(-1), 0, 2)                    // 11-10
+	env.insertDayProbes(t, monitorID, day(0), 1, 1)                     // 11-11
+
+	page, err := env.svc.PublicPage(context.Background(), env.slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	days := page.Monitors[0].Days
+	if got := days[87]; got.Date != "2026-11-09" || got.Status != "no_data" || got.Uptime != nil {
+		t.Fatalf("missing rollup day = %+v, want 11-09 no_data", got)
+	}
+	if got := days[86]; got.Date != "2026-11-08" || got.Status != "up" {
+		t.Fatalf("rollup day = %+v", got)
+	}
+	// 11-08 (3/3) + 11-10 (0/2) + 11-11 (1/2) = 4/7; the empty 11-09 adds no
+	// checks and cannot drag uptime down.
+	if page.Monitors[0].Uptime == nil || *page.Monitors[0].Uptime != 4.0/7.0 {
+		t.Fatalf("uptime = %v, want %v", page.Monitors[0].Uptime, 4.0/7.0)
+	}
+}
+
+// ninetyBarCase returns the rollup data and expected status for the i-th bar of
+// the 90-day window. It is the test's independent expectation, not the
+// production classification logic.
+func ninetyBarCase(i int) (up, down int64, status string) {
+	switch {
+	case i%10 == 3:
+		return 0, 0, "no_data"
+	case i%7 == 0:
+		return 0, 5, "down"
+	case i%3 == 0:
+		return 2, 1, "partial"
+	default:
+		return 4, 0, "up"
+	}
+}
+
+func TestPublicPage_NinetyBarsRemainUnchanged(t *testing.T) {
+	env := newServiceEnv(t)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	env.svc.now = func() time.Time { return now }
+	monitorID := env.addMonitor("API")
+	env.enablePage(t, monitorID)
+
+	today := startOfUTCDay(now)
+	first := today.AddDate(0, 0, -(publicDayCount - 1))
+
+	// Rollups cover the completed days; the watermark day's first hours are
+	// rolled up too, but that whole day is re-read from raw.
+	env.setRollupWatermark(t, today.Add(10*time.Hour))
+	var wantUp, wantChecks int64
+	for i := 0; i < publicDayCount-1; i++ {
+		up, down, _ := ninetyBarCase(i)
+		wantUp += up
+		wantChecks += up + down
+		if up+down == 0 {
+			continue
+		}
+		env.insertHourlyStat(t, monitorID, first.AddDate(0, 0, i).Add(12*time.Hour), up, down)
+	}
+	env.insertDayProbes(t, monitorID, today, 3, 1)
+	wantUp += 3
+	wantChecks += 4
+
+	page, err := env.svc.PublicPage(context.Background(), env.slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	days := page.Monitors[0].Days
+	if len(days) != publicDayCount {
+		t.Fatalf("days = %d, want %d", len(days), publicDayCount)
+	}
+	for i, got := range days {
+		wantDate := first.AddDate(0, 0, i).Format("2006-01-02")
+		wantStatus := "partial"
+		if i < publicDayCount-1 {
+			_, _, wantStatus = ninetyBarCase(i)
+		}
+		if got.Date != wantDate || got.Status != wantStatus {
+			t.Fatalf("day %d = %+v, want date %s status %s", i, got, wantDate, wantStatus)
+		}
+	}
+	want := float64(wantUp) / float64(wantChecks)
+	if page.Monitors[0].Uptime == nil || *page.Monitors[0].Uptime != want {
+		t.Fatalf("uptime = %v, want %v", page.Monitors[0].Uptime, want)
 	}
 }
 
