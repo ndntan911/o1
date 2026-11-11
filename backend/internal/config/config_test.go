@@ -581,6 +581,49 @@ func TestEmailProvider_RejectsInvalidResendLimits(t *testing.T) {
 	}
 }
 
+func TestRetentionConfig_Defaults(t *testing.T) {
+	setEmailEnv(t, "development")
+	for _, key := range []string{
+		"O1_RAW_RETENTION_DAYS", "O1_ROLLUP_RETENTION_MONTHS",
+		"O1_AUDIT_RETENTION_MONTHS", "O1_RETENTION_DRY_RUN",
+		"O1_RETENTION_MAX_PARTITION_DROPS", "O1_ROLLUP_INTERVAL",
+		"O1_ROLLUP_MAX_HOURS_PER_RUN",
+	} {
+		t.Setenv(key, "")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RawRetentionDays != 90 || cfg.RollupRetentionMonths != 13 ||
+		cfg.AuditRetentionMonths != 12 || !cfg.RetentionDryRun ||
+		cfg.RetentionMaxPartitionDrops != 1 || cfg.RollupInterval != 15*time.Minute ||
+		cfg.RollupMaxHoursPerRun != 24 {
+		t.Fatalf("retention defaults = %+v", cfg)
+	}
+}
+
+func TestRetentionConfig_RejectsInvalid(t *testing.T) {
+	cases := map[string]string{
+		"O1_RAW_RETENTION_DAYS":            "6",
+		"O1_ROLLUP_RETENTION_MONTHS":       "3",
+		"O1_AUDIT_RETENTION_MONTHS":        "0",
+		"O1_RETENTION_DRY_RUN":             "sometimes",
+		"O1_RETENTION_MAX_PARTITION_DROPS": "0",
+		"O1_ROLLUP_INTERVAL":               "500ms",
+		"O1_ROLLUP_MAX_HOURS_PER_RUN":      "0",
+	}
+	for key, value := range cases {
+		t.Run(key, func(t *testing.T) {
+			setEmailEnv(t, "development")
+			t.Setenv(key, value)
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load accepted %s=%s", key, value)
+			}
+		})
+	}
+}
+
 func TestLoad_RejectsInvalidAuthRate(t *testing.T) {
 	t.Setenv("O1_DATABASE_URL", "postgres://example")
 	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))

@@ -75,6 +75,16 @@ type Config struct {
 	WorkerHealthAddr    string
 	BootstrapAdminEmail string
 
+	// Retention and rollup maintenance. RetentionDryRun defaults to true so
+	// destructive maintenance is opt-in.
+	RawRetentionDays           int
+	RollupRetentionMonths      int
+	AuditRetentionMonths       int
+	RetentionDryRun            bool
+	RetentionMaxPartitionDrops int
+	RollupInterval             time.Duration
+	RollupMaxHoursPerRun       int
+
 	// Observability. Empty endpoints/DSNs disable the corresponding
 	// integration; defaults keep all three binaries fully functional.
 	APIHealthAddr        string
@@ -139,6 +149,18 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid %s %q: %w", key, v, err)
 	}
 	return d, nil
+}
+
+func envBool(key string, fallback bool) (bool, error) {
+	v := env(key, "")
+	if v == "" {
+		return fallback, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: must be true or false", key)
+	}
+	return b, nil
 }
 
 func envPorts(key string, fallback []int) ([]int, error) {
@@ -342,6 +364,27 @@ func Load() (Config, error) {
 	if cfg.ResendBurst, err = envInt("O1_RESEND_BURST", 2); err != nil {
 		return cfg, err
 	}
+	if cfg.RawRetentionDays, err = envInt("O1_RAW_RETENTION_DAYS", 90); err != nil {
+		return cfg, err
+	}
+	if cfg.RollupRetentionMonths, err = envInt("O1_ROLLUP_RETENTION_MONTHS", 13); err != nil {
+		return cfg, err
+	}
+	if cfg.AuditRetentionMonths, err = envInt("O1_AUDIT_RETENTION_MONTHS", 12); err != nil {
+		return cfg, err
+	}
+	if cfg.RetentionDryRun, err = envBool("O1_RETENTION_DRY_RUN", true); err != nil {
+		return cfg, err
+	}
+	if cfg.RetentionMaxPartitionDrops, err = envInt("O1_RETENTION_MAX_PARTITION_DROPS", 1); err != nil {
+		return cfg, err
+	}
+	if cfg.RollupInterval, err = envDuration("O1_ROLLUP_INTERVAL", 15*time.Minute); err != nil {
+		return cfg, err
+	}
+	if cfg.RollupMaxHoursPerRun, err = envInt("O1_ROLLUP_MAX_HOURS_PER_RUN", 24); err != nil {
+		return cfg, err
+	}
 
 	if err := cfg.validate(); err != nil {
 		return cfg, err
@@ -404,6 +447,24 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.WorkerConcurrency <= 0 {
 		return fmt.Errorf("invalid O1_WORKER_CONCURRENCY: must be positive")
+	}
+	if cfg.RawRetentionDays < 7 || cfg.RawRetentionDays > 365 {
+		return fmt.Errorf("invalid O1_RAW_RETENTION_DAYS: must be between 7 and 365, got %d", cfg.RawRetentionDays)
+	}
+	if cfg.RollupRetentionMonths < 4 || cfg.RollupRetentionMonths > 60 {
+		return fmt.Errorf("invalid O1_ROLLUP_RETENTION_MONTHS: must be between 4 and 60, got %d", cfg.RollupRetentionMonths)
+	}
+	if cfg.AuditRetentionMonths < 1 || cfg.AuditRetentionMonths > 60 {
+		return fmt.Errorf("invalid O1_AUDIT_RETENTION_MONTHS: must be between 1 and 60, got %d", cfg.AuditRetentionMonths)
+	}
+	if cfg.RetentionMaxPartitionDrops < 1 || cfg.RetentionMaxPartitionDrops > 12 {
+		return fmt.Errorf("invalid O1_RETENTION_MAX_PARTITION_DROPS: must be between 1 and 12, got %d", cfg.RetentionMaxPartitionDrops)
+	}
+	if cfg.RollupInterval < time.Minute || cfg.RollupInterval > 24*time.Hour {
+		return fmt.Errorf("invalid O1_ROLLUP_INTERVAL: must be between 1m and 24h, got %v", cfg.RollupInterval)
+	}
+	if cfg.RollupMaxHoursPerRun < 1 || cfg.RollupMaxHoursPerRun > 720 {
+		return fmt.Errorf("invalid O1_ROLLUP_MAX_HOURS_PER_RUN: must be between 1 and 720, got %d", cfg.RollupMaxHoursPerRun)
 	}
 
 	provider, err := cfg.ResolveEmailProvider()
