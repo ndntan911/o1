@@ -12,6 +12,30 @@ import (
 	"github.com/google/uuid"
 )
 
+const countOldHourlyStats = `-- name: CountOldHourlyStats :one
+SELECT count(*)::bigint FROM monitor_hourly_stats
+WHERE bucket_start < $1::timestamptz
+`
+
+func (q *Queries) CountOldHourlyStats(ctx context.Context, before time.Time) (int64, error) {
+	row := q.db.QueryRow(ctx, countOldHourlyStats, before)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countOldSecurityEvents = `-- name: CountOldSecurityEvents :one
+SELECT count(*)::bigint FROM security_events
+WHERE created_at < $1::timestamptz
+`
+
+func (q *Queries) CountOldSecurityEvents(ctx context.Context, before time.Time) (int64, error) {
+	row := q.db.QueryRow(ctx, countOldSecurityEvents, before)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countProbeChecks = `-- name: CountProbeChecks :one
 SELECT count(*)::bigint FROM probe_results
 WHERE checked_at >= $1 AND checked_at < $2
@@ -147,21 +171,17 @@ func (q *Queries) ListRollupDayStats(ctx context.Context, arg ListRollupDayStats
 }
 
 const oldestProbeHour = `-- name: OldestProbeHour :one
-SELECT p.checked_at
-FROM (VALUES (1)) AS seed(x)
-LEFT JOIN probe_results p
-  ON p.checked_at = (SELECT min(checked_at) FROM probe_results)
-LIMIT 1
+WITH oldest AS (SELECT min(checked_at) AS ts FROM probe_results)
+SELECT (date_trunc('hour', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::rollup_hour FROM oldest
 `
 
-// Returns the oldest probe check time; callers truncate it to the hour. The
-// LEFT JOIN keeps the result nullable for an empty table because sqlc cannot
-// infer nullability through min()/date_trunc() expressions.
+// rollup_hour is a timestamptz domain so sqlc emits a nullable *time.Time.
+// The value is the oldest check truncated to the UTC hour, NULL when empty.
 func (q *Queries) OldestProbeHour(ctx context.Context) (*time.Time, error) {
 	row := q.db.QueryRow(ctx, oldestProbeHour)
-	var checked_at *time.Time
-	err := row.Scan(&checked_at)
-	return checked_at, err
+	var column_1 *time.Time
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const rollupHourlyStats = `-- name: RollupHourlyStats :execrows
@@ -170,7 +190,8 @@ INSERT INTO monitor_hourly_stats (
   avg_latency_ms, min_latency_ms, max_latency_ms, p95_latency_ms, updated_at
 )
 SELECT
-  monitor_id, workspace_id, date_trunc('hour', checked_at),
+  monitor_id, workspace_id,
+  date_trunc('hour', checked_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
   count(*) FILTER (WHERE status = 'up'),
   count(*) FILTER (WHERE status = 'down'),
   count(*),
@@ -181,7 +202,7 @@ SELECT
   now()
 FROM probe_results
 WHERE checked_at >= $1 AND checked_at < $2
-GROUP BY monitor_id, workspace_id, date_trunc('hour', checked_at)
+GROUP BY monitor_id, workspace_id, date_trunc('hour', checked_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
 ON CONFLICT (monitor_id, bucket_start) DO UPDATE SET
   up_count = EXCLUDED.up_count, down_count = EXCLUDED.down_count,
   checks = EXCLUDED.checks, avg_latency_ms = EXCLUDED.avg_latency_ms,

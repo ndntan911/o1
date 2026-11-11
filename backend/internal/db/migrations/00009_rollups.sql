@@ -1,4 +1,8 @@
 -- +goose Up
+-- rollup_hour marks hour-bucket timestamptz values. The domain lets sqlc map
+-- the nullable OldestProbeHour result to *time.Time.
+CREATE DOMAIN rollup_hour AS timestamptz;
+
 CREATE TABLE monitor_hourly_stats (
   monitor_id uuid NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -31,3 +35,4 @@ DROP INDEX IF EXISTS security_events_created_idx;
 DROP INDEX IF EXISTS probe_results_checked_idx;
 DROP TABLE rollup_state;
 DROP TABLE monitor_hourly_stats;
+DROP DOMAIN rollup_hour;

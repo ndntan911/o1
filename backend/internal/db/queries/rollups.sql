@@ -4,7 +4,8 @@ INSERT INTO monitor_hourly_stats (
   avg_latency_ms, min_latency_ms, max_latency_ms, p95_latency_ms, updated_at
 )
 SELECT
-  monitor_id, workspace_id, date_trunc('hour', checked_at),
+  monitor_id, workspace_id,
+  date_trunc('hour', checked_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
   count(*) FILTER (WHERE status = 'up'),
   count(*) FILTER (WHERE status = 'down'),
   count(*),
@@ -15,7 +16,7 @@ SELECT
   now()
 FROM probe_results
 WHERE checked_at >= sqlc.arg('start') AND checked_at < sqlc.arg('end')
-GROUP BY monitor_id, workspace_id, date_trunc('hour', checked_at)
+GROUP BY monitor_id, workspace_id, date_trunc('hour', checked_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
 ON CONFLICT (monitor_id, bucket_start) DO UPDATE SET
   up_count = EXCLUDED.up_count, down_count = EXCLUDED.down_count,
   checks = EXCLUDED.checks, avg_latency_ms = EXCLUDED.avg_latency_ms,
@@ -29,18 +30,22 @@ SELECT watermark FROM rollup_state WHERE id;
 UPDATE rollup_state SET watermark = sqlc.arg('watermark')::timestamptz, updated_at = now() WHERE id;
 
 -- name: OldestProbeHour :one
--- Returns the oldest probe check time; callers truncate it to the hour. The
--- LEFT JOIN keeps the result nullable for an empty table because sqlc cannot
--- infer nullability through min()/date_trunc() expressions.
-SELECT p.checked_at
-FROM (VALUES (1)) AS seed(x)
-LEFT JOIN probe_results p
-  ON p.checked_at = (SELECT min(checked_at) FROM probe_results)
-LIMIT 1;
+-- rollup_hour is a timestamptz domain so sqlc emits a nullable *time.Time.
+-- The value is the oldest check truncated to the UTC hour, NULL when empty.
+WITH oldest AS (SELECT min(checked_at) AS ts FROM probe_results)
+SELECT (date_trunc('hour', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::rollup_hour FROM oldest;
 
 -- name: CountProbeChecks :one
 SELECT count(*)::bigint FROM probe_results
 WHERE checked_at >= sqlc.arg('start') AND checked_at < sqlc.arg('end');
+
+-- name: CountOldHourlyStats :one
+SELECT count(*)::bigint FROM monitor_hourly_stats
+WHERE bucket_start < sqlc.arg('before')::timestamptz;
+
+-- name: CountOldSecurityEvents :one
+SELECT count(*)::bigint FROM security_events
+WHERE created_at < sqlc.arg('before')::timestamptz;
 
 -- name: CountRollupChecks :one
 SELECT COALESCE(sum(checks), 0)::bigint FROM monitor_hourly_stats
