@@ -30,6 +30,7 @@ type Config struct {
 	Env               string
 	HTTPAddr          string
 	DatabaseURL       string
+	DBMaxConns        int
 	AppBaseURL        string
 	AllowedOrigins    []string
 	SessionCookieName string
@@ -352,6 +353,9 @@ func Load() (Config, error) {
 	if cfg.WorkerConcurrency, err = envInt("O1_WORKER_CONCURRENCY", 50); err != nil {
 		return cfg, err
 	}
+	if cfg.DBMaxConns, err = envInt("O1_DB_MAX_CONNS", 10); err != nil {
+		return cfg, err
+	}
 	if cfg.OTELExporterHeaders, err = envHeaders("O1_OTEL_EXPORTER_OTLP_HEADERS"); err != nil {
 		return cfg, err
 	}
@@ -447,6 +451,9 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.WorkerConcurrency <= 0 {
 		return fmt.Errorf("invalid O1_WORKER_CONCURRENCY: must be positive")
+	}
+	if cfg.DBMaxConns < 1 || cfg.DBMaxConns > 100 {
+		return fmt.Errorf("invalid O1_DB_MAX_CONNS: must be between 1 and 100, got %d", cfg.DBMaxConns)
 	}
 	if cfg.RawRetentionDays < 7 || cfg.RawRetentionDays > 365 {
 		return fmt.Errorf("invalid O1_RAW_RETENTION_DAYS: must be between 7 and 365, got %d", cfg.RawRetentionDays)

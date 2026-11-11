@@ -8,15 +8,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Open creates a connection pool for the given database URL, confines it to
-// a small maximum number of connections, and verifies connectivity with a
-// ping. The caller is responsible for closing the pool.
-func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+// Open creates a connection pool for the given database URL, caps it at the
+// caller-supplied maximum number of connections, and verifies connectivity
+// with a ping. The caller is responsible for closing the pool.
+func Open(ctx context.Context, databaseURL string, maxConns int) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
-	cfg.MaxConns = 10
+	cfg.MaxConns = int32(maxConns)
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)

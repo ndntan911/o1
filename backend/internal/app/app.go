@@ -36,7 +36,7 @@ func Start(ctx context.Context) (*Runtime, error) {
 		logger.Log(ctx, slog.LevelWarn, "O1_ENCRYPTION_KEY is not set; deriving tenant encryption key from O1_SECRET_KEY (development only)")
 	}
 
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	pool, err := db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
 		return nil, err
 	}

@@ -51,7 +51,7 @@ func newTOTPTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("get mapped port: %v", err)
 	}
 	databaseURL := fmt.Sprintf("postgres://postgres:postgres@%s:%s/postgres?sslmode=disable", host, port.Port())
-	pool, err := db.Open(ctx, databaseURL)
+	pool, err := db.Open(ctx, databaseURL, 10)
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}

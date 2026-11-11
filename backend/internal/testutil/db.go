@@ -66,7 +66,7 @@ func NewPostgres(t *testing.T) (*pgxpool.Pool, func()) {
 	}
 	databaseURL := fmt.Sprintf("postgres://postgres:postgres@%s:%s/postgres?sslmode=disable", host, port.Port())
 
-	pool, err := db.Open(ctx, databaseURL)
+	pool, err := db.Open(ctx, databaseURL, 10)
 	if err != nil {
 		terminate()
 		t.Fatalf("open pool: %v", err)

@@ -640,3 +640,44 @@ func TestLoad_RejectsInvalidAuthRate(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_DBMaxConnsDefault(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_DB_MAX_CONNS", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBMaxConns != 10 {
+		t.Fatalf("DBMaxConns = %d, want 10", cfg.DBMaxConns)
+	}
+}
+
+func TestLoad_DBMaxConnsExplicit(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_DB_MAX_CONNS", "7")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBMaxConns != 7 {
+		t.Fatalf("DBMaxConns = %d, want 7", cfg.DBMaxConns)
+	}
+}
+
+func TestLoad_RejectsInvalidDBMaxConns(t *testing.T) {
+	for _, value := range []string{"0", "101", "abc"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("O1_DATABASE_URL", "postgres://example")
+			t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+			t.Setenv("O1_DB_MAX_CONNS", value)
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load() accepted O1_DB_MAX_CONNS=%q", value)
+			}
+		})
+	}
+}
