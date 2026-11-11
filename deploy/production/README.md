@@ -43,10 +43,13 @@ they exercise the same compose file the deploy script uses.
 - **Plan 11** added CI/CD and is implemented. Deploys normally run from the
   Deploy workflow with digest-pinned registry images; the manual commands here
   remain for first-run, offline, and recovery use. See [../CICD.md](../CICD.md).
-- **Backups and restore are Plan 12.** There is no backup job, retention policy,
-  or restore procedure in this stack yet. Until Plan 12 lands, take and store a
+- **Backups are not implemented; Plan 12 is skipped.** There is no backup job,
+  WAL archiving, or restore procedure in this stack, and this release adds
+  retention: the scheduler deletes raw probe partitions older than 90+ days and
+  prunes hourly rollups and audit events past their windows. Rollups are
+  aggregates, not a backup. Until an external backup exists, take and store a
   `pg_dump` yourself if the data matters, and note that the Caddy volumes hold
-  the TLS certificates, not application data.
+  the TLS certificates, not application data. See [Retention](#retention).
 - `/metrics` is private. Caddy answers `404` and the metrics listeners are never
   published.
 - The Resend free tier has daily and monthly send caps. Verification mail,
@@ -348,7 +351,86 @@ Useful checks:
 - `worker` logs show probe jobs, incidents, and email delivery failures. Errors
   are sanitized: they never include the Resend key, recipient address, or
   provider response body.
-- `scheduler` logs show due-monitor enqueueing and partition maintenance.
+- `scheduler` logs show due-monitor enqueueing, partition maintenance, hourly
+  rollups, and retention counts.
+
+## Retention
+
+The scheduler owns maintenance. It runs one maintenance pass at startup, then
+rolls up completed UTC hours every `O1_ROLLUP_INTERVAL` (default `15m`) and runs
+retention once per day. Each pass takes a PostgreSQL advisory lock, so only one
+scheduler process does the work. Deploys and rollbacks do not run retention.
+
+Retention is a dry run by default. With `O1_RETENTION_DRY_RUN=true`, the
+scheduler computes candidates and logs the counts it would delete but changes no
+data. Deletion requires an explicit `O1_RETENTION_DRY_RUN=false`.
+
+The windows are:
+
+- Raw probe partitions: at least 90 days (`O1_RAW_RETENTION_DAYS`, range 7–365).
+  Partitions are UTC months, so the effective window is 90–120 days.
+- Hourly rollups: 13 months (`O1_ROLLUP_RETENTION_MONTHS`, range 4–60).
+- Audit events: 12 months (`O1_AUDIT_RETENTION_MONTHS`, range 1–60).
+
+At most `O1_RETENTION_MAX_PARTITION_DROPS` raw partitions (default `1`, range
+1–12) are dropped per run. A partition drops only when it is wholly expired and
+either beyond the rollup window or fully covered by rollups whose check counts
+match the raw rows. A mismatch is re-rolled once; a partition that still
+mismatches stays in place for a later run and for operator review.
+
+Preview a pass from the scheduler logs:
+
+```sh
+docker compose --env-file deploy/production/.env \
+  -f deploy/production/compose.yaml logs --tail=200 scheduler | grep retention
+```
+
+Dry-run lines carry `partition`, `raw_checks`, `rollup_checks`, and
+`gate_required`. The pass summary reports `candidates`, `partitions_dropped`,
+`skipped_dry_run`, `skipped_watermark`, `skipped_mismatch`, `rollup_rows`, and
+`audit_rows`. Inspect the database directly when needed:
+
+```sh
+docker compose --env-file deploy/production/.env \
+  -f deploy/production/compose.yaml exec postgres \
+  psql -U o1 -d o1 -c "SELECT watermark FROM rollup_state;"
+```
+
+```sql
+SELECT max(bucket_start) FROM monitor_hourly_stats;
+SELECT watermark FROM rollup_state;
+SELECT count(*) FROM monitor_hourly_stats;
+SELECT relname FROM pg_class WHERE relname LIKE 'probe_results_%' AND relkind = 'r';
+```
+
+Deletion is irreversible. **Plan 12 (backups) is skipped:** there is no backup,
+WAL archive, or restore path. Once a raw partition drops, the individual probe
+rows, status codes, error text, and exact check timestamps are gone. The hourly
+rollups preserve up/down counts and avg/min/max/p95 latency for the status page
+and long-window aggregates, but they are not a backup of the raw data.
+
+### Retention rollout
+
+1. Deploy with the defaults. `O1_RETENTION_DRY_RUN` is `true`, so the release
+   rolls up existing raw data and deletes nothing.
+2. Watch `rollup_state.watermark` advance from the oldest raw hour until it
+   reaches the most recent completed hour. A pass processes at most
+   `O1_ROLLUP_MAX_HOURS_PER_RUN` hours (default `24`), so a long backfill takes
+   several intervals.
+3. Confirm the public status page still shows the same 90 daily bars and uptime
+   as before the release.
+4. Review the dry-run retention logs, especially `candidates`, `raw_checks`, and
+   `rollup_checks` for the oldest partitions.
+5. Set `O1_RETENTION_DRY_RUN=false` in `deploy/production/.env` and recreate the
+   scheduler so the new environment applies:
+
+   ```sh
+   docker compose --env-file deploy/production/.env \
+     -f deploy/production/compose.yaml up -d --force-recreate scheduler
+   ```
+
+   Expect at most one raw partition drop per daily run, so a backlog clears one
+   month at a time.
 
 ## 8. Update and restart
 
@@ -466,5 +548,7 @@ remote-write errors.
   rejects the development email provider.
 - Keep Caddy's `caddy_data` volume; it holds the certificates and ACME account
   material. Application data lives in `postgres-data`.
-- Backups are Plan 12. CI/CD deploys and the release/rollback process are
+- There are no backups (Plan 12 is skipped). Retention deletes expired raw
+  probes and is a dry run until `O1_RETENTION_DRY_RUN=false`; see
+  [Retention](#retention). CI/CD deploys and the release/rollback process are
   documented in [../CICD.md](../CICD.md).

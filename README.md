@@ -19,7 +19,8 @@ serializes migrations, so they can be started concurrently.
 
 Probe results are stored in monthly range partitions. The scheduler creates
 partitions for the previous month through two months ahead and refreshes them
-daily.
+daily. It also rolls completed hours up into hourly summaries and runs the data
+retention pass described under [Data lifecycle](#data-lifecycle).
 
 ## Quick start
 
@@ -200,6 +201,64 @@ limited to 60 requests per minute per IP.
 V1 limits: one page per workspace, no custom domains, no separate page slug, no
 subscriber notifications, and no public incident detail pages. Suspended
 workspaces keep the public page read-only.
+
+## Data lifecycle
+
+Probe data is kept at two resolutions with fixed retention windows:
+
+- **Raw probe results** (`probe_results`) are kept for at least 90 days. Raw
+  rows live in UTC monthly range partitions, so the effective window is 90–120
+  days: a partition is dropped only after the whole month has expired.
+- **Hourly rollups** (`monitor_hourly_stats`) are kept for 13 months by default
+  (minimum 4). Buckets are UTC hours and hold up/down check counts plus
+  avg/min/max and p95 latency. They back the public status page's completed
+  days and the 90-day uptime.
+- **Audit events** (`security_events`) are kept for 12 months.
+
+Retention is a dry run by default. The scheduler logs the candidate counts and
+partitions it would delete and changes nothing until
+`O1_RETENTION_DRY_RUN=false` is set explicitly. At most `O1_RETENTION_MAX_PARTITION_DROPS` raw partitions (default
+`1`) are dropped per run.
+
+A raw partition is dropped only when it is wholly older than the raw cutoff and
+either:
+
+- it is also beyond the rollup window, so no rollup history depends on it; or
+- hourly rollups fully cover it and their check counts match the raw counts. A
+  mismatch is re-rolled once; a partition that still mismatches is retained for
+  a later run.
+
+**Plan 12 (backups) is skipped.** There is no backup, WAL archive, or restore
+procedure, so retention deletes the only copy of expired raw probes. Rollups are
+aggregates, not a backup: they preserve up/down counts and latency summaries,
+not individual status codes, error text, or exact probe rows. Treat raw deletion
+as irreversible.
+
+The scheduler runs one maintenance pass after startup, catches up rollups every
+`O1_ROLLUP_INTERVAL`, and runs retention once per day behind a PostgreSQL
+advisory lock. Deploys and rollbacks do not run retention.
+
+| Variable | Default | Range | Purpose |
+|----------|---------|-------|---------|
+| `O1_RAW_RETENTION_DAYS` | `90` | 7–365 | Raw probe retention |
+| `O1_ROLLUP_RETENTION_MONTHS` | `13` | 4–60 | Hourly rollup retention |
+| `O1_AUDIT_RETENTION_MONTHS` | `12` | 1–60 | Audit event retention |
+| `O1_RETENTION_DRY_RUN` | `true` | `true` / `false` | Log candidates without deleting |
+| `O1_RETENTION_MAX_PARTITION_DROPS` | `1` | 1–12 | Raw partitions dropped per run |
+| `O1_ROLLUP_INTERVAL` | `15m` | 1m–24h | Rollup catch-up cadence |
+| `O1_ROLLUP_MAX_HOURS_PER_RUN` | `24` | 1–720 | Hours rolled up per pass |
+
+Inspect the rollup frontier and the remaining raw partitions:
+
+```sql
+SELECT max(bucket_start) FROM monitor_hourly_stats;
+SELECT watermark FROM rollup_state;
+SELECT relname FROM pg_class WHERE relname LIKE 'probe_results_%' AND relkind = 'r';
+```
+
+`max(bucket_start)` is the newest bucket with data;
+`rollup_state.watermark` is the last contiguous hour that has been rolled up.
+The partition query lists the raw months that still exist.
 
 ## API keys
 
@@ -465,8 +524,9 @@ checks, administrator bootstrap, email smoke tests, logs, updates, and
 troubleshooting: [deploy/production/README.md](deploy/production/README.md).
 
 Production email is Resend only. `O1_ENV=production` requires
-`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. Backups and restore
-are Plan 12.
+`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. Backups were
+planned as Plan 12 but are skipped: there is no backup or restore path, and
+retention deletes expired raw probes. See [Data lifecycle](#data-lifecycle).
 
 ### CI/CD
 
@@ -548,6 +608,19 @@ Common optional settings:
 - `O1_PROBE_GLOBAL_RPS` — global probe rate limit, default `50`.
 - `O1_SCHEDULER_TICK` / `O1_SCHEDULER_BATCH` — default `10s` / `500`.
 - `O1_WORKER_CONCURRENCY` — probe workers per process, default `50`.
+- `O1_RAW_RETENTION_DAYS` — raw probe retention in days, default `90`
+  (7–365). Monthly partitions extend the effective window to 90–120 days.
+- `O1_ROLLUP_RETENTION_MONTHS` — hourly rollup retention in months, default
+  `13` (4–60).
+- `O1_AUDIT_RETENTION_MONTHS` — audit event retention in months, default `12`
+  (1–60).
+- `O1_RETENTION_DRY_RUN` — when `true` (the default), retention logs candidates
+  and deletes nothing. Set to `false` to enable deletion.
+- `O1_RETENTION_MAX_PARTITION_DROPS` — maximum raw partitions dropped per
+  retention run, default `1` (1–12).
+- `O1_ROLLUP_INTERVAL` — rollup catch-up interval, default `15m` (1m–24h).
+- `O1_ROLLUP_MAX_HOURS_PER_RUN` — maximum hours rolled up per pass, default
+  `24` (1–720).
 - `O1_BOOTSTRAP_ADMIN_EMAIL` — promotes an existing verified account to
   administrator at startup.
 

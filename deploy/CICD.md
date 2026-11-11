@@ -465,6 +465,8 @@ containers.
 - Migrations run at process startup from `api`, `scheduler`, and `worker`. A
   PostgreSQL advisory lock serializes them, so concurrent starts are safe.
   There is no separate migration job or container.
+- Deploys and rollbacks do not run retention; the scheduler runs maintenance
+  after startup, and `O1_RETENTION_DRY_RUN` controls deletion.
 - Migrations are **forward-only**. There are no down migrations.
 - Image and config rollback does **not** undo schema. Restoring an earlier
   release restores its compose file and digest-pinned images only. If the new
