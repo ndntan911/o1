@@ -79,12 +79,27 @@ func New(pool *pgxpool.Pool, q *sqlc.Queries, logger *slog.Logger, cfg Config, r
 	}
 }
 
-// Run performs one retention pass. On error it returns the partial Result so
-// callers can still report the work that completed.
+// Run performs one retention pass: expired raw partitions first, then rollups,
+// then audit events. On error it returns the partial Result so callers can
+// still report the work that completed.
 func (r *Retainer) Run(ctx context.Context) (Result, error) {
 	var res Result
 	if err := r.runPartitions(ctx, &res); err != nil {
 		return res, err
 	}
+
+	now := r.now().UTC()
+	rollups, err := r.pruneRollups(ctx, now)
+	res.RollupRows += rollups
+	if err != nil {
+		return res, err
+	}
+
+	audit, err := r.pruneAudit(ctx, now)
+	res.AuditRows += audit
+	if err != nil {
+		return res, err
+	}
+
 	return res, nil
 }
