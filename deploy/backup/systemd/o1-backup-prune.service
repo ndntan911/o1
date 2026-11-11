@@ -5,6 +5,7 @@ Description=Weekly o1 backup repository prune
 Type=oneshot
 User=root
 EnvironmentFile=/opt/o1/backup/backup.env
+Environment=BACKUP_ENV=/opt/o1/backup/backup.env
 ExecStart=/opt/o1/bin/backup.sh --prune-only
 Nice=10
 IOSchedulingClass=best-effort

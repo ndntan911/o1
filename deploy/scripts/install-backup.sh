@@ -63,8 +63,8 @@ while [[ $root == */ && $root != / ]]; do
 done
 [[ $root != *$'\n'* ]] || bl_die "the install root must not contain a newline"
 
-# The default is /etc/systemd/system. Tests and unprivileged dry runs override
-# it so they never write to the host's unit directory.
+# Test-only override. Production installs always use /etc/systemd/system; the
+# installer tests point this at a temporary directory.
 unit_dir=${O1_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
 backup_env="$root/backup/backup.env"
 restic_pass="$root/backup/restic.pass"
@@ -109,6 +109,13 @@ sed_replacement() {
   printf '%s' "$1" | sed 's/[\\|&]/\\&/g'
 }
 
+# redact_repository REPO: hide userinfo in repositories such as
+# s3:https://user:secret@host/bucket and sftp:user@host:/path.
+redact_repository() {
+  printf '%s\n' "$1" |
+    sed -E 's#(://)([^/@]*@)+#\1#g; s#^(sftp:)([^/@]*@)+#\1#'
+}
+
 # render_file SRC DEST MODE [TIMEOUT]: rewrite /opt/o1 to the install root and
 # optionally replace the backup service timeout.
 render_file() {
@@ -128,18 +135,21 @@ render_file() {
 }
 
 root_sed=$(sed_replacement "$root")
-timeout_sed=
-if [[ -n ${O1_BACKUP_TIMEOUT:-} ]]; then
-  [[ $O1_BACKUP_TIMEOUT != *$'\n'* ]] ||
-    bl_die "O1_BACKUP_TIMEOUT must not contain a newline"
-  timeout_sed=$(sed_replacement "$O1_BACKUP_TIMEOUT")
-fi
 
 # --- environment and password ---------------------------------------------
 
 # env_key NAME: read one key from backup.env without executing the file.
 env_key() {
   bl_env_get "$backup_env" "$1" || true
+}
+
+# resolve_timeout: a shell O1_BACKUP_TIMEOUT wins, then backup.env, then 2h.
+resolve_timeout() {
+  timeout_value=${O1_BACKUP_TIMEOUT:-$(env_key O1_BACKUP_TIMEOUT)}
+  timeout_value=${timeout_value:-2h}
+  [[ $timeout_value != *$'\n'* ]] ||
+    bl_die "O1_BACKUP_TIMEOUT must not contain a newline"
+  timeout_sed=$(sed_replacement "$timeout_value")
 }
 
 ensure_backup_env() {
@@ -152,7 +162,7 @@ ensure_backup_env() {
 }
 
 ensure_password() {
-  local repo repo_path candidate init_output key value
+  local repo repo_path redacted_repo candidate init_output key value
   local -a init_env
 
   if [[ -f $restic_pass ]]; then
@@ -167,6 +177,7 @@ ensure_password() {
   repo=$(env_key RESTIC_REPOSITORY)
   [[ -n $repo ]] ||
     bl_die "RESTIC_REPOSITORY is empty in $backup_env; configure it before --init-new-repo"
+  redacted_repo=$(redact_repository "$repo")
 
   # Confirm a local repository has no config before generating anything.
   repo_path=$repo
@@ -174,7 +185,7 @@ ensure_password() {
     local:*) repo_path=${repo_path#local:} ;;
   esac
   if [[ $repo_path != *:* && -e $repo_path/config ]]; then
-    bl_die "repository $repo already exists; restore $restic_pass from the password manager instead of generating a new password"
+    bl_die "repository $redacted_repo already exists; restore $restic_pass from the password manager instead of generating a new password"
   fi
 
   candidate=$(openssl rand -hex 32) ||
@@ -206,25 +217,22 @@ ensure_password() {
     if grep -qiE 'already (exists|initialized)' <<<"$init_output"; then
       bl_die "restic reports that the repository already exists; removed the generated password. Restore the real $restic_pass from the password manager and re-run without --init-new-repo"
     fi
-    bl_log error "restic init failed"
-    if [[ -n $init_output ]]; then
-      bl_log error "$init_output"
-    fi
-    bl_die "removed the generated password; no password was installed at $restic_pass"
+    bl_log error "restic init failed; its output is not repeated because it may contain repository credentials"
+    bl_die "removed the generated password; no password was installed at $restic_pass (run restic init manually to see the error)"
   fi
 
   # Only pair the new password with the repository after init succeeds.
   mv -f -- "$password_candidate" "$restic_pass"
   password_candidate=
 
-  bl_log info "initialized restic repository $repo"
+  bl_log info "initialized restic repository $redacted_repo"
   bl_log info "copy $restic_pass offsite now; its contents are never printed"
 }
 
 # --- enable checks ---------------------------------------------------------
 
 require_enable_config() {
-  local ping failure alert
+  local ping failure alert repo password
   ping=$(env_key O1_BACKUP_PING_URL)
   if [[ -z $ping ]]; then
     bl_die "--enable requires O1_BACKUP_PING_URL in $backup_env; the units were installed but the timers were not enabled"
@@ -234,6 +242,14 @@ require_enable_config() {
   if [[ -z $failure && -z $alert ]]; then
     bl_die "--enable requires O1_BACKUP_FAILURE_URL or O1_BACKUP_ALERT_EMAIL in $backup_env; the units were installed but the timers were not enabled"
   fi
+  repo=$(env_key RESTIC_REPOSITORY)
+  if [[ -z $repo ]]; then
+    bl_die "--enable requires RESTIC_REPOSITORY in $backup_env; the units were installed but the timers were not enabled"
+  fi
+  password=$(env_key RESTIC_PASSWORD_FILE)
+  if [[ -z $password ]]; then
+    bl_die "--enable requires RESTIC_PASSWORD_FILE in $backup_env; the units were installed but the timers were not enabled"
+  fi
 }
 
 # --- install ---------------------------------------------------------------
@@ -242,6 +258,7 @@ install -d -m 0700 "$root" "$root/backup" "$root/backup/cache" "$root/bin"
 install -d -m 0755 "$unit_dir"
 
 ensure_backup_env
+resolve_timeout
 ensure_password
 
 for script in "${runtime_scripts[@]}"; do
@@ -250,9 +267,9 @@ done
 bl_log info "installed backup scripts in $root/bin"
 
 for unit in "${units[@]}"; do
-  if [[ $unit == o1-backup.service && -n ${O1_BACKUP_TIMEOUT:-} ]]; then
+  if [[ $unit == o1-backup.service ]]; then
     render_file "$source_dir/backup/systemd/$unit" "$unit_dir/$unit" 0644 \
-      "$O1_BACKUP_TIMEOUT"
+      "$timeout_value"
   else
     render_file "$source_dir/backup/systemd/$unit" "$unit_dir/$unit" 0644
   fi

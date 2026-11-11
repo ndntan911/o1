@@ -917,13 +917,14 @@ install_source=
 install_fake=
 install_unit_dir=
 
-# write_install_env FILE ROOT REPO [PING] [FAILURE] [ALERT]
+# write_install_env FILE ROOT REPO [PING] [FAILURE] [ALERT] [PASSWORD_FILE]
 write_install_env() {
   local file=$1 root=$2 repo=$3 ping=${4:-} failure=${5:-} alert=${6:-}
+  local pass_file=${7-$root/backup/restic.pass}
   mkdir -p "$(dirname -- "$file")"
   cat >"$file" <<ENV
 RESTIC_REPOSITORY=$repo
-RESTIC_PASSWORD_FILE=$root/backup/restic.pass
+RESTIC_PASSWORD_FILE=$pass_file
 RESTIC_CACHE_DIR=$root/backup/cache
 O1_COMPOSE_FILE=$root/current/deploy/production/compose.yaml
 O1_ENV_FILE=$root/.env
@@ -979,6 +980,11 @@ if [[ ${1:-} == init ]]; then
     ok) exit 0 ;;
     exists)
       printf 'Fatal: repository master key and config already initialized\n' >&2
+      exit 1
+      ;;
+    leak)
+      printf 'Fatal: cannot open %s with token sekret\n' \
+        "${RESTIC_REPOSITORY:-}" >&2
       exit 1
       ;;
     *)
@@ -1077,6 +1083,12 @@ run_install_tests() {
   grep -q "EnvironmentFile=$root/backup/backup.env" \
     "$install_unit_dir/o1-backup.service" ||
     fail "the backup service does not use the custom root env file"
+  for u in o1-backup.service o1-backup-prune.service \
+    o1-restore-verify.service; do
+    grep -qx "Environment=BACKUP_ENV=$root/backup/backup.env" \
+      "$install_unit_dir/$u" ||
+      fail "$u does not pass BACKUP_ENV for the custom root"
+  done
   grep -q "ExecStart=$root/bin/backup.sh" \
     "$install_unit_dir/o1-backup.service" ||
     fail "the backup service ExecStart was not rewritten"
@@ -1164,6 +1176,14 @@ run_install_tests() {
   grep -q '^TimeoutStartSec=4h$' \
     "$install_unit_dir/o1-backup-prune.service" ||
     fail "the timeout rewrite changed the prune service"
+  printf 'O1_BACKUP_TIMEOUT=4h\n' >>"$root/backup/backup.env"
+  status=0
+  run_install --source "$install_source" --root "$root" \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "the backup.env timeout run failed"
+  grep -q '^TimeoutStartSec=4h$' \
+    "$install_unit_dir/o1-backup.service" ||
+    fail "O1_BACKUP_TIMEOUT in backup.env did not rewrite the service timeout"
   grep -q '^EDITED_BY_OPERATOR=yes$' "$root/backup/backup.env" ||
     fail "the installer overwrote an edited backup.env"
   [[ $(cat "$root/backup/restic.pass") == \
@@ -1246,7 +1266,46 @@ run_install_tests() {
   fi
   pass "install-backup.sh safely initializes a repository or backs out"
 
-  # 5. --enable refuses without a ping URL or without a failure path.
+  # 5. Repository credentials are redacted, and raw restic output is not echoed.
+  root="$tmp/install-root-redact"
+  mkdir -p "$root/backup"
+  write_install_env "$root/backup/backup.env" "$root" \
+    "s3:https://access:sekret@example.com/bucket"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  FAKE_RESTIC_INIT=ok run_install --source "$install_source" \
+    --root "$root" --init-new-repo >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "the redacted-repository install failed"
+  grep -qF 's3:https://example.com/bucket' "$tmp/last.out" ||
+    fail "the installer did not log the redacted repository"
+  if grep -qF -- 'sekret' "$tmp/last.out"; then
+    fail "the installer logged repository credentials"
+  fi
+  if grep -qF -- 'access:' "$tmp/last.out"; then
+    fail "the installer logged repository userinfo"
+  fi
+
+  root="$tmp/install-root-init-leak"
+  mkdir -p "$root/backup"
+  write_install_env "$root/backup/backup.env" "$root" \
+    "s3:https://access:sekret@example.com/bucket"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  FAKE_RESTIC_INIT=leak run_install --source "$install_source" \
+    --root "$root" --init-new-repo >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "a leaking restic init failure was accepted"
+  [[ ! -e $root/backup/restic.pass ]] ||
+    fail "the leaking init failure left restic.pass behind"
+  if grep -qF -- 'sekret' "$tmp/last.out"; then
+    fail "the installer echoed restic init output with credentials"
+  fi
+  grep -q 'restic init failed' "$tmp/last.out" ||
+    fail "the installer did not report the restic init failure"
+  pass "install-backup.sh redacts repository credentials and init output"
+
+  # 6. --enable refuses without a ping URL or without a failure path.
   root="$tmp/install-root-enable-missing"
   mkdir -p "$root/backup"
   printf 'existing-password\n' >"$root/backup/restic.pass"
@@ -1280,7 +1339,40 @@ run_install_tests() {
     fail "the enable refusal does not name the failure path variables"
   pass "install-backup.sh requires ping and a failure path before enabling"
 
-  # 6. --enable with a complete configuration enables all three timers.
+  # 7. --enable also requires repository and password file settings.
+  root="$tmp/install-root-enable-repo"
+  mkdir -p "$root/backup"
+  printf 'existing-password\n' >"$root/backup/restic.pass"
+  chmod 600 "$root/backup/restic.pass"
+  write_install_env "$root/backup/backup.env" "$root" "" \
+    "https://ping.example/success" "https://ping.example/failure" ""
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" --enable \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "--enable accepted an empty RESTIC_REPOSITORY"
+  if grep -q 'enable' "$install_fake/systemctl.args"; then
+    fail "--enable enabled timers without a repository"
+  fi
+  grep -q 'RESTIC_REPOSITORY' "$tmp/last.out" ||
+    fail "the enable refusal does not name RESTIC_REPOSITORY"
+
+  write_install_env "$root/backup/backup.env" "$root" "$tmp/install-repo-seven" \
+    "https://ping.example/success" "https://ping.example/failure" "" ""
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" --enable \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "--enable accepted an empty RESTIC_PASSWORD_FILE"
+  if grep -q 'enable' "$install_fake/systemctl.args"; then
+    fail "--enable enabled timers without a password file"
+  fi
+  grep -q 'RESTIC_PASSWORD_FILE' "$tmp/last.out" ||
+    fail "the enable refusal does not name RESTIC_PASSWORD_FILE"
+  pass "install-backup.sh requires repository and password settings before enabling"
+
+  # 8. --enable with a complete configuration enables all three timers.
   root="$tmp/install-root-enable"
   mkdir -p "$root/backup"
   printf 'existing-password\n' >"$root/backup/restic.pass"
@@ -1303,7 +1395,7 @@ run_install_tests() {
     fail "the installer did not verify the units before enabling"
   pass "install-backup.sh enables all three timers with a complete config"
 
-  # 7. Missing source files and commands fail before touching the install root.
+  # 9. Missing source files and commands fail before touching the install root.
   bad_source="$tmp/install-source-missing"
   rm -rf "$bad_source"
   cp -R "$install_source" "$bad_source"
