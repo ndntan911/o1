@@ -150,7 +150,9 @@ bl_take_lock() {
 }
 
 bl_release_lock() {
-  exec 9>&- 2>/dev/null || true
+  # Keep the redirection scoped to the group: on exec builtins, `exec 9>&-
+  # 2>/dev/null` would permanently send the caller's stderr to /dev/null.
+  { exec 9>&-; } 2>/dev/null || true
 }
 
 # bl_write_state PATH CONTENT: replace PATH atomically with CONTENT.
