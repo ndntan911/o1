@@ -97,18 +97,52 @@ func New(pool *pgxpool.Pool, q *sqlc.Queries, logger *slog.Logger, metrics Metri
 // retention can repair a partition it is about to drop. It returns the number
 // of summary rows written.
 func (r *Rolluper) RollupHour(ctx context.Context, hour time.Time) (int64, error) {
+	return r.q.RollupHourlyStats(ctx, hourlyParams(hour))
+}
+
+// hourlyParams returns the half-open [start, end) range for hour's bucket.
+func hourlyParams(hour time.Time) sqlc.RollupHourlyStatsParams {
 	start := hour.UTC().Truncate(time.Hour)
-	return r.q.RollupHourlyStats(ctx, sqlc.RollupHourlyStatsParams{
+	return sqlc.RollupHourlyStatsParams{
 		Start: start,
 		End:   start.Add(time.Hour),
-	})
+	}
+}
+
+// rollupHourTx rolls up one hour and advances the watermark in a single
+// transaction. Either both the bucket and the watermark commit, or neither
+// does; the next pass can therefore always resume from the last committed
+// hour without skipping or double-reporting a frontier.
+func (r *Rolluper) rollupHourTx(ctx context.Context, hour time.Time) (int64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		// A committed transaction returns ErrTxClosed here, which is safe to
+		// ignore; a failed one is rolled back.
+		_ = tx.Rollback(ctx)
+	}()
+
+	q := r.q.WithTx(tx)
+	rows, err := q.RollupHourlyStats(ctx, hourlyParams(hour))
+	if err != nil {
+		return 0, fmt.Errorf("roll up stats: %w", err)
+	}
+	if err := q.SetRollupWatermark(ctx, hour); err != nil {
+		return 0, fmt.Errorf("set watermark: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit transaction: %w", err)
+	}
+	return rows, nil
 }
 
 // Run performs one catch-up pass. It processes at most maxHours contiguous
-// hours, oldest first, advancing the watermark after each one. When the pass
-// starts with the watermark already at or past the target it replays the
-// trailing two hours so late rows are folded into existing buckets. On error
-// it returns the partial result.
+// hours, oldest first, committing each bucket and its watermark together. When
+// the pass starts with the watermark already at or past the target it replays
+// the trailing two hours so late rows are folded into existing buckets. On
+// error it returns the partial result.
 func (r *Rolluper) Run(ctx context.Context) (res Result, err error) {
 	startedAt := time.Now()
 	defer func() {
@@ -156,15 +190,13 @@ func (r *Rolluper) Run(ctx context.Context) (res Result, err error) {
 	// trailing re-read can wait for the next tick.
 	caughtUp := watermark != nil && !watermark.UTC().Truncate(time.Hour).Before(target)
 
-	// Catch up contiguously. The cap stops the pass early; the watermark stays
-	// on the last committed hour so the next pass resumes there.
+	// Catch up contiguously. The cap stops the pass early; each hour commits
+	// its bucket and watermark together, so the next pass resumes exactly at
+	// the last committed hour.
 	for hour := next; !hour.After(target) && res.Hours < r.maxHours; hour = hour.Add(time.Hour) {
-		rows, err := r.RollupHour(ctx, hour)
+		rows, err := r.rollupHourTx(ctx, hour)
 		if err != nil {
 			return res, fmt.Errorf("roll up hour %s: %w", hour.Format(time.RFC3339), err)
-		}
-		if err := r.q.SetRollupWatermark(ctx, hour); err != nil {
-			return res, fmt.Errorf("set rollup watermark %s: %w", hour.Format(time.RFC3339), err)
 		}
 		res.add(hour, rows)
 		r.logger.Log(ctx, slog.LevelDebug, "rolled up hour", "hour", hour, "rows", rows)

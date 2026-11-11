@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -435,4 +436,91 @@ func TestRun_EmptyDatabaseIsANoOp(t *testing.T) {
 		t.Fatalf("Result = %+v, want zero value", res)
 	}
 	assertWatermarkNil(t, e)
+}
+
+func TestRun_NoWorkPassKeepsExistingWatermark(t *testing.T) {
+	e := newRollupEnv(t, 24)
+	m := &fakeMetrics{}
+	e.rolluper.metrics = m
+	e.setWatermark(testBase)
+	e.at(testBase.Add(2 * time.Hour)) // target == watermark; no raw rows to replay
+
+	res, err := e.rolluper.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Hours != 0 || res.Rows != 0 {
+		t.Fatalf("Result work = hours %d rows %d, want 0/0", res.Hours, res.Rows)
+	}
+	if !res.To.Equal(testBase) {
+		t.Fatalf("Result.To = %s, want the existing watermark %s", res.To, testBase)
+	}
+	assertWatermark(t, e, testBase)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.observeCalls != 1 || m.observedErr != nil {
+		t.Fatalf("ObserveRollup = calls %d err %v, want 1/nil", m.observeCalls, m.observedErr)
+	}
+	if len(m.watermarkCalls) != 1 || !m.watermarkCalls[0].Equal(testBase) {
+		t.Fatalf("SetRollupWatermark calls = %v, want [%s]", m.watermarkCalls, testBase)
+	}
+}
+
+func TestRun_TransactionFailureDoesNotAdvanceWatermark(t *testing.T) {
+	e := newRollupEnv(t, 24)
+	e.at(testBase.Add(2 * time.Hour))
+	e.seedProbe(testBase.Add(5*time.Minute), "up", 100)
+
+	// Fail the watermark update after the bucket upsert has already run inside
+	// the same transaction. If they are atomic, neither survives.
+	failAt := testBase.Format(time.RFC3339)
+	if _, err := e.pool.Exec(context.Background(), fmt.Sprintf(`
+		CREATE FUNCTION fail_rollup_watermark() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.watermark = '%s'::timestamptz THEN
+				RAISE EXCEPTION 'forced rollup watermark failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql`, failAt)); err != nil {
+		t.Fatalf("create failure function: %v", err)
+	}
+	if _, err := e.pool.Exec(context.Background(), `
+		CREATE TRIGGER fail_rollup_watermark
+		BEFORE UPDATE ON rollup_state
+		FOR EACH ROW EXECUTE FUNCTION fail_rollup_watermark()`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	res, err := e.rolluper.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run succeeded, want the forced watermark failure")
+	}
+	if res.Hours != 0 || res.Rows != 0 {
+		t.Fatalf("Result = %+v, want no committed work", res)
+	}
+	assertWatermarkNil(t, e)
+	if rows := e.hourlyRows(); len(rows) != 0 {
+		t.Fatalf("hourly rows = %+v, want none after rollback", rows)
+	}
+
+	if _, err := e.pool.Exec(context.Background(),
+		`DROP TRIGGER fail_rollup_watermark ON rollup_state`); err != nil {
+		t.Fatalf("drop failure trigger: %v", err)
+	}
+	if _, err := e.pool.Exec(context.Background(),
+		`DROP FUNCTION fail_rollup_watermark()`); err != nil {
+		t.Fatalf("drop failure function: %v", err)
+	}
+
+	// Once the watermark can commit again, the same hour is retried cleanly.
+	if _, err := e.rolluper.Run(context.Background()); err != nil {
+		t.Fatalf("Run after removing the trigger: %v", err)
+	}
+	assertWatermark(t, e, testBase)
+	rows := e.hourlyRows()
+	if len(rows) != 1 || rows[0].Checks != 1 {
+		t.Fatalf("hourly rows after retry = %+v, want one bucket with checks=1", rows)
+	}
 }
