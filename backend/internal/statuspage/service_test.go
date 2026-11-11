@@ -371,8 +371,11 @@ func TestPublicPage_UsesRollupsBelowWatermarkAndRawAtTheFrontier(t *testing.T) {
 	env.setRollupWatermark(t, day(-2).Add(23*time.Hour))
 	env.insertHourlyStat(t, monitorID, day(-3).Add(10*time.Hour), 9, 0) // 11-08, rollup
 	env.insertHourlyStat(t, monitorID, day(-2).Add(6*time.Hour), 5, 0)  // 11-09, ignored
-	env.insertDayProbes(t, monitorID, day(-1), 2, 2)                    // 11-10, raw
-	env.insertDayProbes(t, monitorID, day(0), 2, 0)                     // 11-11, raw
+	// Raw rows below the split must never be read: the rollup owns 11-08.
+	// Merging these in would make the day partial and inflate uptime to 14/17.
+	env.insertDayProbes(t, monitorID, day(-3), 1, 1) // 11-08, raw below split
+	env.insertDayProbes(t, monitorID, day(-1), 2, 2) // 11-10, raw
+	env.insertDayProbes(t, monitorID, day(0), 2, 0)  // 11-11, raw
 
 	page, err := env.svc.PublicPage(context.Background(), env.slug)
 	if err != nil {
@@ -392,7 +395,7 @@ func TestPublicPage_UsesRollupsBelowWatermarkAndRawAtTheFrontier(t *testing.T) {
 		t.Fatalf("split day = %+v, want 11-09 no_data from absent raw", got)
 	}
 	if got := days[86]; got.Date != "2026-11-08" || got.Status != "up" {
-		t.Fatalf("rollup day = %+v, want 11-08 up from rollups", got)
+		t.Fatalf("rollup day = %+v, want 11-08 up from rollups (raw below the split ignored)", got)
 	}
 	// 11-08 (9/9) + 11-10 (2/4) + 11-11 (2/2) = 13/15. The 11-09 rollup is
 	// excluded, so neither source is double counted.
@@ -463,6 +466,47 @@ func TestPublicPage_MissingRollupDayIsNoData(t *testing.T) {
 	}
 	// 11-08 (3/3) + 11-10 (0/2) + 11-11 (1/2) = 4/7; the empty 11-09 adds no
 	// checks and cannot drag uptime down.
+	if page.Monitors[0].Uptime == nil || *page.Monitors[0].Uptime != 4.0/7.0 {
+		t.Fatalf("uptime = %v, want %v", page.Monitors[0].Uptime, 4.0/7.0)
+	}
+}
+
+func TestPublicPage_WatermarkBeforeWindowUsesRawOnly(t *testing.T) {
+	env := newServiceEnv(t)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	env.svc.now = func() time.Time { return now }
+	monitorID := env.addMonitor("API")
+	env.enablePage(t, monitorID)
+
+	today := startOfUTCDay(now)
+	// The watermark predates the 90-day window, so its UTC day is before
+	// since: no rollup day is usable and raw must cover the whole window.
+	env.setRollupWatermark(t, today.AddDate(-1, 0, 0))
+	// This in-window rollup row must be ignored because the split is behind
+	// the window. Using it would turn 11-08 into a 102-check up day.
+	env.insertHourlyStat(t, monitorID, today.AddDate(0, 0, -3), 100, 0)
+	env.insertDayProbes(t, monitorID, today.AddDate(0, 0, -3), 1, 1) // 11-08
+	env.insertDayProbes(t, monitorID, today.AddDate(0, 0, -1), 2, 2) // 11-10
+	env.insertDayProbes(t, monitorID, today, 1, 0)                   // 11-11
+
+	page, err := env.svc.PublicPage(context.Background(), env.slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	days := page.Monitors[0].Days
+	if got := days[89]; got.Date != "2026-11-11" || got.Status != "up" {
+		t.Fatalf("today = %+v", got)
+	}
+	if got := days[88]; got.Date != "2026-11-10" || got.Status != "partial" {
+		t.Fatalf("yesterday = %+v", got)
+	}
+	if got := days[87]; got.Status != "no_data" || got.Uptime != nil {
+		t.Fatalf("empty day = %+v", got)
+	}
+	if got := days[86]; got.Date != "2026-11-08" || got.Status != "partial" {
+		t.Fatalf("old watermark day = %+v, want 11-08 partial from raw", got)
+	}
+	// Raw only: 11-08 (1/2) + 11-10 (2/4) + 11-11 (1/1) = 4/7.
 	if page.Monitors[0].Uptime == nil || *page.Monitors[0].Uptime != 4.0/7.0 {
 		t.Fatalf("uptime = %v, want %v", page.Monitors[0].Uptime, 4.0/7.0)
 	}
