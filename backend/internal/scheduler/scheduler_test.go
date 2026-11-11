@@ -3,6 +3,7 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,8 @@ import (
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/observability"
+	"o1/internal/retention"
+	"o1/internal/rollup"
 	"o1/internal/testutil"
 	"o1/internal/workspaces"
 )
@@ -383,6 +386,195 @@ func TestSchedulerPanicIsCapturedAndLoopContinues(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "panic") {
 		t.Fatalf("scheduler log missing panic entry:\n%s", logs.String())
+	}
+}
+
+// callRecorder records maintenance runner calls in order.
+type callRecorder struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *callRecorder) add(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, name)
+}
+
+func (r *callRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+type fakeRollupRunner struct {
+	mu     sync.Mutex
+	calls  int
+	rec    *callRecorder
+	result rollup.Result
+	err    error
+	onRun  func()
+}
+
+func (f *fakeRollupRunner) Run(context.Context) (rollup.Result, error) {
+	f.mu.Lock()
+	f.calls++
+	rec, onRun := f.rec, f.onRun
+	result, err := f.result, f.err
+	f.mu.Unlock()
+	if rec != nil {
+		rec.add("rollup")
+	}
+	if onRun != nil {
+		onRun()
+	}
+	return result, err
+}
+
+func (f *fakeRollupRunner) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+type fakeRetentionRunner struct {
+	mu     sync.Mutex
+	calls  int
+	rec    *callRecorder
+	result retention.Result
+	err    error
+	onRun  func()
+}
+
+func (f *fakeRetentionRunner) Run(context.Context) (retention.Result, error) {
+	f.mu.Lock()
+	f.calls++
+	rec, onRun := f.rec, f.onRun
+	result, err := f.result, f.err
+	f.mu.Unlock()
+	if rec != nil {
+		rec.add("retention")
+	}
+	if onRun != nil {
+		onRun()
+	}
+	return result, err
+}
+
+func (f *fakeRetentionRunner) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func TestMaintenance_RunsRollupThenRetention(t *testing.T) {
+	env := newSchedulerEnv(t)
+	rec := &callRecorder{}
+	env.sched.SetMaintenance(&fakeRollupRunner{rec: rec}, &fakeRetentionRunner{rec: rec})
+
+	env.sched.runMaintenance(context.Background(), true, true)
+
+	got := rec.snapshot()
+	want := []string{"rollup", "retention"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("maintenance order = %v, want %v", got, want)
+	}
+}
+
+func TestMaintenance_FailureDoesNotStopProbeTick(t *testing.T) {
+	env := newSchedulerEnv(t)
+	env.addMonitor(t, "due", 60, false, false, time.Now().Add(-time.Minute))
+
+	var logs bytes.Buffer
+	env.sched.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	env.sched.SetMaintenance(
+		&fakeRollupRunner{err: errors.New("rollup exploded")},
+		&fakeRetentionRunner{},
+	)
+
+	env.sched.runMaintenance(context.Background(), true, false)
+
+	n, err := env.sched.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("Tick after failed maintenance: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("Tick enqueued %d, want 1", n)
+	}
+	if !strings.Contains(logs.String(), "rollup exploded") {
+		t.Fatalf("maintenance error was not logged:\n%s", logs.String())
+	}
+}
+
+func TestMaintenance_SkipsWhenLockHeld(t *testing.T) {
+	env := newSchedulerEnv(t)
+	ctx := context.Background()
+
+	conn, err := env.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire lock connection: %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, maintenanceLockID); err != nil {
+		t.Fatalf("acquire advisory lock: %v", err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, maintenanceLockID); err != nil {
+			t.Errorf("release advisory lock: %v", err)
+		}
+	}()
+
+	rollupFake := &fakeRollupRunner{}
+	retentionFake := &fakeRetentionRunner{}
+	env.sched.SetMaintenance(rollupFake, retentionFake)
+
+	env.sched.runMaintenance(ctx, true, true)
+
+	if got := rollupFake.callCount(); got != 0 {
+		t.Errorf("rollup calls = %d, want 0 while the lock is held", got)
+	}
+	if got := retentionFake.callCount(); got != 0 {
+		t.Errorf("retention calls = %d, want 0 while the lock is held", got)
+	}
+}
+
+func TestMaintenance_StartupPassRuns(t *testing.T) {
+	env := newSchedulerEnv(t)
+	env.sched.cfg.RollupInterval = time.Hour
+
+	started := make(chan string, 4)
+	rollupFake := &fakeRollupRunner{onRun: func() { started <- "rollup" }}
+	retentionFake := &fakeRetentionRunner{onRun: func() { started <- "retention" }}
+	env.sched.SetMaintenance(rollupFake, retentionFake)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- env.sched.Run(ctx) }()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			cancel()
+			t.Fatal("startup maintenance pass did not run both runners")
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after the context was canceled")
+	}
+
+	if got := rollupFake.callCount(); got != 1 {
+		t.Errorf("startup rollup calls = %d, want 1", got)
+	}
+	if got := retentionFake.callCount(); got != 1 {
+		t.Errorf("startup retention calls = %d, want 1", got)
 	}
 }
 

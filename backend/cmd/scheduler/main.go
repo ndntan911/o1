@@ -18,6 +18,8 @@ import (
 	"o1/internal/app"
 	"o1/internal/db/sqlc"
 	"o1/internal/observability"
+	"o1/internal/retention"
+	"o1/internal/rollup"
 	"o1/internal/scheduler"
 )
 
@@ -55,6 +57,18 @@ func run() error {
 
 	obs.Metrics.Register(observability.NewPoolCollector(rt.Pool))
 	sched := scheduler.New(rt.Pool, sqlc.New(rt.Pool), riverClient, rt.Config, rt.Logger, obs.Metrics, obs.Tracer)
+
+	// The scheduler observes each maintenance pass, so the Runner must not
+	// report the same pass again: rollup metrics would otherwise double-count.
+	rolluper := rollup.New(rt.Pool, sqlc.New(rt.Pool), rt.Logger, nil, rt.Config.RollupMaxHoursPerRun)
+	retainer := retention.New(rt.Pool, sqlc.New(rt.Pool), rt.Logger, retention.Config{
+		RawRetentionDays:      rt.Config.RawRetentionDays,
+		RollupRetentionMonths: rt.Config.RollupRetentionMonths,
+		AuditRetentionMonths:  rt.Config.AuditRetentionMonths,
+		MaxPartitionDrops:     rt.Config.RetentionMaxPartitionDrops,
+		DryRun:                rt.Config.RetentionDryRun,
+	}, rolluper)
+	sched.SetMaintenance(rolluper, retainer)
 
 	health := app.StartHealthServer(rt.Config.SchedulerHealthAddr, rt.Logger, rt.Pool.Ping, obs.Metrics.Handler())
 	healthErr := make(chan error, 1)
