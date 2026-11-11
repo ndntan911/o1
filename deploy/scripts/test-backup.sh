@@ -910,8 +910,446 @@ run_restore_tests() {
   pass "SIGTERM exits 143 after removing the scratch container"
 }
 
+# --- install-backup.sh tests ----------------------------------------------
+
+install_script=
+install_source=
+install_fake=
+install_unit_dir=
+
+# write_install_env FILE ROOT REPO [PING] [FAILURE] [ALERT]
+write_install_env() {
+  local file=$1 root=$2 repo=$3 ping=${4:-} failure=${5:-} alert=${6:-}
+  mkdir -p "$(dirname -- "$file")"
+  cat >"$file" <<ENV
+RESTIC_REPOSITORY=$repo
+RESTIC_PASSWORD_FILE=$root/backup/restic.pass
+RESTIC_CACHE_DIR=$root/backup/cache
+O1_COMPOSE_FILE=$root/current/deploy/production/compose.yaml
+O1_ENV_FILE=$root/.env
+O1_BACKUP_PING_URL=$ping
+O1_BACKUP_FAILURE_URL=$failure
+O1_BACKUP_ALERT_EMAIL=$alert
+ENV
+  chmod 600 "$file"
+}
+
+reset_install_logs() {
+  : >"$install_fake/restic.args"
+  : >"$install_fake/systemctl.args"
+  : >"$install_fake/docker.args"
+  : >"$install_fake/analyze.args"
+  rm -f "$install_fake/seen.pass"
+}
+
+reset_install_unit_dir() {
+  rm -rf "$install_unit_dir"
+  mkdir -p "$install_unit_dir"
+}
+
+# run_install ARGS...: run the installer with the fake host commands.
+run_install() {
+  PATH="$install_fake:$PATH" \
+    FAKE_INSTALL_DIR="$install_fake" \
+    O1_SYSTEMD_UNIT_DIR="$install_unit_dir" \
+    FAKE_RESTIC_INIT="${FAKE_RESTIC_INIT:-ok}" \
+    FAKE_SYSTEMCTL_FAIL="${FAKE_SYSTEMCTL_FAIL:-0}" \
+    FAKE_ANALYZE_EXIT="${FAKE_ANALYZE_EXIT:-0}" \
+    O1_BACKUP_TIMEOUT="${O1_BACKUP_TIMEOUT:-}" \
+    bash "$install_script" "$@"
+}
+
+dir_is_empty() {
+  [[ -z $(find "$1" -mindepth 1 -maxdepth 1 -print -quit) ]]
+}
+
+make_install_fakes() {
+  install_fake="$tmp/install-fake"
+  mkdir -p "$install_fake"
+
+  cat >"$install_fake/restic" <<'FAKE_RESTIC'
+#!/usr/bin/env bash
+set -u
+printf 'args: %s\n' "$*" >>"$FAKE_INSTALL_DIR/restic.args"
+if [[ ${1:-} == init ]]; then
+  if [[ -n ${RESTIC_PASSWORD_FILE:-} && -f ${RESTIC_PASSWORD_FILE:-} ]]; then
+    cp "$RESTIC_PASSWORD_FILE" "$FAKE_INSTALL_DIR/seen.pass"
+  fi
+  case ${FAKE_RESTIC_INIT:-ok} in
+    ok) exit 0 ;;
+    exists)
+      printf 'Fatal: repository master key and config already initialized\n' >&2
+      exit 1
+      ;;
+    *)
+      printf 'Fatal: unable to create repository\n' >&2
+      exit 1
+      ;;
+  esac
+fi
+exit 0
+FAKE_RESTIC
+
+  cat >"$install_fake/systemctl" <<'FAKE_SYSTEMCTL'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"$FAKE_INSTALL_DIR/systemctl.args"
+if [[ ${FAKE_SYSTEMCTL_FAIL:-0} == 1 && ${1:-} == enable ]]; then
+  exit 1
+fi
+exit 0
+FAKE_SYSTEMCTL
+
+  cat >"$install_fake/docker" <<'FAKE_DOCKER_INSTALL'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"$FAKE_INSTALL_DIR/docker.args"
+exit 0
+FAKE_DOCKER_INSTALL
+
+  cat >"$install_fake/systemd-analyze" <<'FAKE_ANALYZE'
+#!/usr/bin/env bash
+set -u
+printf 'systemd-analyze %s\n' "$*" >>"$FAKE_INSTALL_DIR/analyze.args"
+exit "${FAKE_ANALYZE_EXIT:-0}"
+FAKE_ANALYZE
+
+  chmod +x "$install_fake/restic" "$install_fake/systemctl" \
+    "$install_fake/docker" "$install_fake/systemd-analyze"
+  reset_install_logs
+}
+
+prepare_install_source() {
+  install_source="$tmp/install-source"
+  rm -rf "$install_source"
+  mkdir -p "$install_source"
+  cp -R "$repo_root/deploy/backup" "$install_source/backup"
+  cp -R "$repo_root/deploy/scripts" "$install_source/scripts"
+}
+
+unit_list() {
+  printf '%s\n' o1-backup.service o1-backup.timer \
+    o1-backup-prune.service o1-backup-prune.timer \
+    o1-restore-verify.service o1-restore-verify.timer
+}
+
+run_install_tests() {
+  local install="$repo_root/deploy/scripts/install-backup.sh"
+  local root status f u pass_file pass_value candidate bash_bin
+  local repo_dir bad_source minbin
+
+  [[ -f $install ]] || fail "$install is missing"
+  install_script=$install
+  install_unit_dir="$tmp/install-units"
+  make_install_fakes
+  prepare_install_source
+
+  # 1. Installs scripts and units with the expected modes, creates the backup
+  #    tree, rewrites /opt/o1 for a custom root, and initializes a new repo.
+  root="$tmp/install-root-one"
+  reset_install_unit_dir
+  reset_install_logs
+  repo_dir="$tmp/install-repo-one"
+  mkdir -p "$repo_dir"
+  status=0
+  FAKE_RESTIC_INIT=ok run_install --source "$install_source" \
+    --root "$root" --init-new-repo >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "a fresh install with --init-new-repo failed"
+
+  [[ $(file_mode "$root") == 700 ]] || fail "the install root is not 0700"
+  for f in "$root/backup" "$root/backup/cache" "$root/bin"; do
+    [[ -d $f ]] || fail "the installer did not create $f"
+    [[ $(file_mode "$f") == 700 ]] || fail "$f is not 0700"
+  done
+
+  for f in backup.sh restore-verify.sh backup-lib.sh; do
+    [[ -f $root/bin/$f ]] || fail "the installer did not install $f"
+    [[ $(file_mode "$root/bin/$f") == 755 ]] ||
+      fail "$root/bin/$f is not 0755"
+  done
+
+  while IFS= read -r u; do
+    [[ -f $install_unit_dir/$u ]] || fail "the installer did not install $u"
+    [[ $(file_mode "$install_unit_dir/$u") == 644 ]] ||
+      fail "$install_unit_dir/$u is not 0644"
+  done < <(unit_list)
+
+  grep -q "EnvironmentFile=$root/backup/backup.env" \
+    "$install_unit_dir/o1-backup.service" ||
+    fail "the backup service does not use the custom root env file"
+  grep -q "ExecStart=$root/bin/backup.sh" \
+    "$install_unit_dir/o1-backup.service" ||
+    fail "the backup service ExecStart was not rewritten"
+  grep -q '^TimeoutStartSec=2h$' \
+    "$install_unit_dir/o1-backup.service" ||
+    fail "the backup service does not have the default 2h timeout"
+  grep -q "ExecStart=$root/bin/backup.sh --prune-only" \
+    "$install_unit_dir/o1-backup-prune.service" ||
+    fail "the prune service does not pass --prune-only"
+  grep -q "ExecStart=$root/bin/restore-verify.sh" \
+    "$install_unit_dir/o1-restore-verify.service" ||
+    fail "the restore service ExecStart was not rewritten"
+  grep -q '^TimeoutStartSec=4h$' \
+    "$install_unit_dir/o1-restore-verify.service" ||
+    fail "the restore service does not have a 4h timeout"
+  if grep -q '/opt/o1' "$install_unit_dir"/*; then
+    fail "the installed units still contain /opt/o1"
+  fi
+  grep -q '^OnCalendar=\*-\*-\* 02:30:00 UTC$' \
+    "$install_unit_dir/o1-backup.timer" ||
+    fail "the daily timer is not 02:30 UTC"
+  grep -q '^OnCalendar=Sun \*-\*-\* 03:30:00 UTC$' \
+    "$install_unit_dir/o1-backup-prune.timer" ||
+    fail "the prune timer is not Sunday 03:30 UTC"
+  grep -q '^OnCalendar=\*-\*-01 04:00:00 UTC$' \
+    "$install_unit_dir/o1-restore-verify.timer" ||
+    fail "the restore timer is not the first at 04:00 UTC"
+  for u in o1-backup.timer o1-backup-prune.timer \
+    o1-restore-verify.timer; do
+    grep -q '^Persistent=true$' "$install_unit_dir/$u" ||
+      fail "$u is not persistent"
+  done
+
+  [[ $(file_mode "$root/backup/backup.env") == 600 ]] ||
+    fail "backup.env is not 0600"
+  grep -q "RESTIC_PASSWORD_FILE=$root/backup/restic.pass" \
+    "$root/backup/backup.env" ||
+    fail "the generated backup.env does not use the custom root"
+  pass_file="$root/backup/restic.pass"
+  [[ -f $pass_file ]] || fail "the installer did not generate restic.pass"
+  [[ $(file_mode "$pass_file") == 600 ]] ||
+    fail "restic.pass is not 0600"
+  [[ -s $pass_file ]] || fail "restic.pass is empty"
+  grep -q 'args: init' "$install_fake/restic.args" ||
+    fail "the installer did not call restic init"
+  pass_value=$(cat "$pass_file")
+  if grep -qF -- "$pass_value" "$tmp/last.out"; then
+    fail "the installer printed the restic password"
+  fi
+  grep -qF -- "$pass_file" "$tmp/last.out" ||
+    fail "the installer did not print the password file path"
+  grep -q 'daemon-reload' "$install_fake/systemctl.args" ||
+    fail "the installer did not run systemctl daemon-reload"
+  if grep -q 'enable' "$install_fake/systemctl.args"; then
+    fail "the installer enabled timers without --enable"
+  fi
+  grep -q 'verify' "$install_fake/analyze.args" ||
+    fail "the installer did not run systemd-analyze verify"
+  pass "install-backup.sh installs scripts, units, and a new backup tree"
+
+  # 2. A second run keeps an edited backup.env and an existing restic.pass.
+  root="$tmp/install-root-two"
+  mkdir -p "$root/backup"
+  write_install_env "$root/backup/backup.env" "$root" "$tmp/install-repo-two"
+  printf 'operator-restored-password\n' >"$root/backup/restic.pass"
+  chmod 600 "$root/backup/restic.pass"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "the first upgrade run failed"
+  printf 'EDITED_BY_OPERATOR=yes\n' >>"$root/backup/backup.env"
+  printf 'restored-from-password-manager\n' >"$root/backup/restic.pass"
+  chmod 600 "$root/backup/restic.pass"
+  O1_BACKUP_TIMEOUT=45m
+  status=0
+  run_install --source "$install_source" --root "$root" \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "the second upgrade run failed"
+  unset O1_BACKUP_TIMEOUT
+  grep -q '^TimeoutStartSec=45m$' \
+    "$install_unit_dir/o1-backup.service" ||
+    fail "O1_BACKUP_TIMEOUT did not rewrite the backup service timeout"
+  grep -q '^TimeoutStartSec=4h$' \
+    "$install_unit_dir/o1-backup-prune.service" ||
+    fail "the timeout rewrite changed the prune service"
+  grep -q '^EDITED_BY_OPERATOR=yes$' "$root/backup/backup.env" ||
+    fail "the installer overwrote an edited backup.env"
+  [[ $(cat "$root/backup/restic.pass") == \
+    restored-from-password-manager ]] ||
+    fail "the installer overwrote an existing restic.pass"
+  [[ ! -s $install_fake/restic.args ]] ||
+    fail "the installer called restic when restic.pass already existed"
+  pass "install-backup.sh preserves backup.env and restic.pass on re-run"
+
+  # 3. No password file, a configured repository, and no --init-new-repo:
+  #    refuse before installing scripts or units.
+  root="$tmp/install-root-refuse"
+  mkdir -p "$root/backup"
+  write_install_env "$root/backup/backup.env" "$root" "$tmp/install-repo-three"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "the installer accepted a missing restic.pass"
+  grep -qi 'restic.pass' "$tmp/last.out" ||
+    fail "the refusal does not name restic.pass"
+  grep -qi 'password manager' "$tmp/last.out" ||
+    fail "the refusal does not point at the password manager"
+  [[ ! -e $root/backup/restic.pass ]] ||
+    fail "the refused install created restic.pass"
+  [[ ! -e $root/bin/backup.sh ]] ||
+    fail "the refused install installed the scripts"
+  dir_is_empty "$install_unit_dir" ||
+    fail "the refused install installed systemd units"
+  [[ ! -s $install_fake/restic.args ]] ||
+    fail "the refused install called restic"
+  pass "install-backup.sh refuses a missing password without --init-new-repo"
+
+  # 4. --init-new-repo generates the password and calls restic init; a repo
+  #    that already exists removes the candidate and aborts.
+  root="$tmp/install-root-init"
+  mkdir -p "$root/backup"
+  write_install_env "$root/backup/backup.env" "$root" "$tmp/install-repo-four"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  FAKE_RESTIC_INIT=ok run_install --source "$install_source" \
+    --root "$root" --init-new-repo >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "a successful --init-new-repo run failed"
+  [[ -s $root/backup/restic.pass ]] ||
+    fail "--init-new-repo did not generate restic.pass"
+  [[ -s $install_fake/seen.pass ]] ||
+    fail "restic init did not receive the generated password file"
+  [[ $(cat "$root/backup/restic.pass") == $(cat "$install_fake/seen.pass") ]] ||
+    fail "restic init received a different password file"
+
+  root="$tmp/install-root-init-exists"
+  mkdir -p "$root/backup"
+  write_install_env "$root/backup/backup.env" "$root" "$tmp/install-repo-exists"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  FAKE_RESTIC_INIT=exists run_install --source "$install_source" \
+    --root "$root" --init-new-repo >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "the installer accepted an existing repository"
+  [[ ! -e $root/backup/restic.pass ]] ||
+    fail "the failed init left a new restic.pass behind"
+  [[ ! -e $root/bin/backup.sh ]] ||
+    fail "the failed init installed the scripts"
+  dir_is_empty "$install_unit_dir" ||
+    fail "the failed init installed systemd units"
+  grep -qi 'already' "$tmp/last.out" ||
+    fail "the existing repository failure is not explained"
+  grep -qi 'password manager' "$tmp/last.out" ||
+    fail "the existing repository failure does not point at the password manager"
+  [[ -s $install_fake/seen.pass ]] ||
+    fail "restic init did not see the candidate password"
+  candidate=$(cat "$install_fake/seen.pass")
+  if grep -qF -- "$candidate" "$tmp/last.out"; then
+    fail "the failed install printed the candidate password"
+  fi
+  if grep -qF -- "$candidate" "$install_fake/restic.args"; then
+    fail "the candidate password reached restic argv"
+  fi
+  pass "install-backup.sh safely initializes a repository or backs out"
+
+  # 5. --enable refuses without a ping URL or without a failure path.
+  root="$tmp/install-root-enable-missing"
+  mkdir -p "$root/backup"
+  printf 'existing-password\n' >"$root/backup/restic.pass"
+  chmod 600 "$root/backup/restic.pass"
+  write_install_env "$root/backup/backup.env" "$root" "$tmp/install-repo-five"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" --enable \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "--enable accepted an empty ping URL"
+  grep -q 'daemon-reload' "$install_fake/systemctl.args" ||
+    fail "the installer did not daemon-reload before the enable check"
+  if grep -q 'enable' "$install_fake/systemctl.args"; then
+    fail "--enable enabled timers without a ping URL"
+  fi
+  grep -qi 'O1_BACKUP_PING_URL' "$tmp/last.out" ||
+    fail "the enable refusal does not name O1_BACKUP_PING_URL"
+
+  write_install_env "$root/backup/backup.env" "$root" \
+    "$tmp/install-repo-five" "https://ping.example/success" "" ""
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" --enable \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "--enable accepted a missing failure path"
+  if grep -q 'enable' "$install_fake/systemctl.args"; then
+    fail "--enable enabled timers without a failure path"
+  fi
+  grep -qE 'O1_BACKUP_FAILURE_URL|O1_BACKUP_ALERT_EMAIL' "$tmp/last.out" ||
+    fail "the enable refusal does not name the failure path variables"
+  pass "install-backup.sh requires ping and a failure path before enabling"
+
+  # 6. --enable with a complete configuration enables all three timers.
+  root="$tmp/install-root-enable"
+  mkdir -p "$root/backup"
+  printf 'existing-password\n' >"$root/backup/restic.pass"
+  chmod 600 "$root/backup/restic.pass"
+  write_install_env "$root/backup/backup.env" "$root" \
+    "$tmp/install-repo-six" "https://ping.example/success" \
+    "https://ping.example/failure" ""
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" --enable \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "a complete --enable run failed"
+  grep -q 'daemon-reload' "$install_fake/systemctl.args" ||
+    fail "the installer did not run daemon-reload"
+  grep -q 'enable --now o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer' \
+    "$install_fake/systemctl.args" ||
+    fail "the installer did not enable all three timers"
+  grep -q 'verify' "$install_fake/analyze.args" ||
+    fail "the installer did not verify the units before enabling"
+  pass "install-backup.sh enables all three timers with a complete config"
+
+  # 7. Missing source files and commands fail before touching the install root.
+  bad_source="$tmp/install-source-missing"
+  rm -rf "$bad_source"
+  cp -R "$install_source" "$bad_source"
+  rm -f "$bad_source/backup/systemd/o1-restore-verify.timer"
+  root="$tmp/install-root-bad-source"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  run_install --source "$bad_source" --root "$root" --init-new-repo \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "the installer accepted an incomplete source tree"
+  grep -q 'o1-restore-verify.timer' "$tmp/last.out" ||
+    fail "the source failure does not name the missing unit"
+  [[ ! -e $root/bin/backup.sh ]] ||
+    fail "the incomplete source installed scripts"
+  dir_is_empty "$install_unit_dir" ||
+    fail "the incomplete source installed units"
+
+  # Hide restic behind a minimal PATH; dirname and date still have to work for
+  # the installer and its error logging.
+  minbin="$tmp/install-minbin"
+  rm -rf "$minbin"
+  mkdir -p "$minbin"
+  ln -s "$(type -P dirname)" "$minbin/dirname"
+  ln -s "$(type -P date)" "$minbin/date"
+  ln -s "$(type -P true)" "$minbin/docker"
+  bash_bin=$(command -v bash)
+  root="$tmp/install-root-no-restic"
+  reset_install_unit_dir
+  status=0
+  PATH="$minbin" O1_SYSTEMD_UNIT_DIR="$install_unit_dir" \
+    "$bash_bin" "$install_script" --source "$install_source" \
+    --root "$root" --init-new-repo >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "the installer accepted a missing restic"
+  grep -q 'missing required command: restic' "$tmp/last.out" ||
+    fail "the missing-command failure does not name restic"
+  [[ ! -e $root/bin/backup.sh ]] ||
+    fail "the missing-command install created scripts"
+  dir_is_empty "$install_unit_dir" ||
+    fail "the missing-command install created units"
+  pass "install-backup.sh fails clearly for missing sources and commands"
+}
+
 run_lib_tests
 run_backup_tests
 run_restore_tests
+run_install_tests
 
 echo "PASS: all backup tests ($checks checks)"

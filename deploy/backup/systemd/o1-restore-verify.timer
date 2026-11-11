@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly o1 PostgreSQL restore verification drill
+
+[Timer]
+OnCalendar=*-*-01 04:00:00 UTC
+Persistent=true
+Unit=o1-restore-verify.service
+
+[Install]
+WantedBy=timers.target

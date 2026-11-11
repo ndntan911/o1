@@ -1,0 +1,14 @@
+[Unit]
+Description=Monthly o1 PostgreSQL restore verification drill
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/opt/o1/backup/backup.env
+ExecStart=/opt/o1/bin/restore-verify.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=4h

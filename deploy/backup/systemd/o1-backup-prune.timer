@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly o1 backup repository prune
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00 UTC
+Persistent=true
+Unit=o1-backup-prune.service
+
+[Install]
+WantedBy=timers.target
