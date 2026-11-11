@@ -1,0 +1,32 @@
+# Local-build override for deploy/production/compose.yaml.
+#
+# The base file pulls digest-pinned images from the registry. Add this file to
+# build api, scheduler, worker, and web from a checkout instead, for example:
+#
+#   docker compose --env-file deploy/production/.env \
+#     -f deploy/production/compose.yaml \
+#     -f deploy/production/compose.build.yaml up -d --build
+#
+# The VITE_* values are baked into the web bundle at build time. Image names are
+# pinned to local tags so an images.env containing registry digests cannot leak
+# into a local build.
+services:
+  api:
+    image: o1-backend:local
+    build:
+      context: ../../backend
+  scheduler:
+    image: o1-backend:local
+    build:
+      context: ../../backend
+  worker:
+    image: o1-backend:local
+    build:
+      context: ../../backend
+  web:
+    image: o1-web:local
+    build:
+      context: ../../web
+      args:
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_RELEASE: ${VITE_RELEASE:-production}

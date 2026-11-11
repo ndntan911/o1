@@ -1,0 +1,4 @@
+# DS-0002: web/Dockerfile builds on the official Caddy image, which runs as
+# root so it can bind 80/443. TLS terminates there; no application code runs
+# as root in this container. Re-review: 2027-05-10.
+DS-0002

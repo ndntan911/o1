@@ -6,12 +6,21 @@
 # (80 and 443). All secrets come from the environment or an untracked
 # deploy/production/.env. See README.md in this directory for the runbook.
 #
+#   # Registry deploy on a provisioned host:
+#   #   /opt/o1/bin/deploy.sh /opt/o1/incoming/<release>
+#   # Local build from a checkout:
 #   cp deploy/production/env.example deploy/production/.env
 #   $EDITOR deploy/production/.env
 #   docker compose --env-file deploy/production/.env \
-#     -f deploy/production/compose.yaml up -d --build
+#     -f deploy/production/compose.yaml \
+#     -f deploy/production/compose.build.yaml up -d --build
+#
+# The app services pull digest-pinned images; on a host the deploy script writes
+# their refs to images.env and enforces the digests. The plain base file has no
+# image defaults suitable for production, so use the deploy script for registry
+# deploys and the build override for local builds. See README.md for the runbook.
 
-name: o1-production
+name: ${O1_COMPOSE_PROJECT:-o1-production}
 
 services:
   postgres:
@@ -31,8 +40,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   api:
-    build:
-      context: ../../backend
+    image: ${O1_BACKEND_IMAGE:-o1-backend:local}
     entrypoint: ["/api"]
     depends_on:
       postgres:
@@ -69,8 +77,7 @@ services:
     restart: unless-stopped
 
   scheduler:
-    build:
-      context: ../../backend
+    image: ${O1_BACKEND_IMAGE:-o1-backend:local}
     entrypoint: ["/scheduler"]
     depends_on:
       postgres:
@@ -81,8 +88,7 @@ services:
     restart: unless-stopped
 
   worker:
-    build:
-      context: ../../backend
+    image: ${O1_BACKEND_IMAGE:-o1-backend:local}
     entrypoint: ["/worker"]
     depends_on:
       postgres:
@@ -93,11 +99,7 @@ services:
     restart: unless-stopped
 
   web:
-    build:
-      context: ../../web
-      args:
-        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
-        VITE_RELEASE: ${VITE_RELEASE:-production}
+    image: ${O1_WEB_IMAGE:-o1-web:local}
     depends_on:
       - api
     environment:
