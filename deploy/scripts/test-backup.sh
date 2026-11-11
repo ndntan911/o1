@@ -403,6 +403,38 @@ O1_BACKUP_PG_CONTAINER=$pg_container
 ENV
 }
 
+# --- restore drill helpers -------------------------------------------------
+
+restore_script=
+
+run_restore_script() {
+  local envfile=$1
+  shift
+  BACKUP_ENV="$envfile" bash "$restore_script" "$@"
+}
+
+# Containers created by restore-verify.sh share this name prefix.
+scratch_containers() {
+  docker ps -a --filter 'name=o1-restore-verify-' --format '{{.Names}}' \
+    2>/dev/null || true
+}
+
+# assert_no_new_scratch LABEL BEFORE: fail when a drill leaked a container.
+assert_no_new_scratch() {
+  local label=$1 before=$2 after
+  after=$(scratch_containers)
+  [[ $after == "$before" ]] ||
+    fail "$label left a scratch container behind: ${after:-<none>}"
+}
+
+create_restore_snapshot() {
+  local root=$1 container=$2
+  docker exec "$container" pg_dump -U o1 -d o1 -Fc |
+    repo_restic "$root" backup --stdin --stdin-filename o1.dump \
+      --tag o1-db >/dev/null ||
+    fail "could not create the restore fixture snapshot"
+}
+
 start_fixture_postgres() {
   local name="o1-backup-test-pg-$$-$RANDOM"
   docker run -d --rm --name "$name" \
@@ -426,13 +458,15 @@ CREATE TABLE goose_db_version (id serial primary key, version_id bigint not null
 INSERT INTO goose_db_version (version_id) VALUES (9);
 CREATE TABLE users (id uuid primary key);
 CREATE TABLE workspaces (id uuid primary key);
-CREATE TABLE monitors (id uuid primary key);
-CREATE TABLE probe_results (id uuid, checked_at timestamptz);
-CREATE TABLE monitor_hourly_stats (monitor_id uuid, bucket_start timestamptz);
-CREATE TABLE incidents (id uuid primary key);
+CREATE TABLE monitors (id uuid primary key, workspace_id uuid not null REFERENCES workspaces(id));
+CREATE TABLE probe_results (id uuid, workspace_id uuid, checked_at timestamptz);
+CREATE TABLE monitor_hourly_stats (monitor_id uuid, workspace_id uuid, bucket_start timestamptz);
+CREATE TABLE incidents (id uuid primary key, workspace_id uuid);
 INSERT INTO users VALUES (gen_random_uuid());
-INSERT INTO workspaces VALUES (gen_random_uuid());
-INSERT INTO monitors VALUES (gen_random_uuid());
+INSERT INTO workspaces VALUES ('11111111-1111-1111-1111-111111111111');
+INSERT INTO monitors VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111');
+INSERT INTO probe_results VALUES (gen_random_uuid(), '11111111-1111-1111-1111-111111111111', now());
+INSERT INTO incidents VALUES (gen_random_uuid(), '11111111-1111-1111-1111-111111111111');
 SQL
 }
 
@@ -641,7 +675,135 @@ O1ENV
   pass "backup runs keep repository and notification secrets out of argv"
 }
 
+# --- restore-verify.sh tests ----------------------------------------------
+
+run_restore_tests() {
+  local restore="$repo_root/deploy/scripts/restore-verify.sh"
+  local root status before snapid ts rstatus sid table log
+
+  [[ -f $restore ]] || fail "$restore is missing"
+  restore_script=$restore
+  [[ -n $backup_test_container ]] ||
+    fail "restore tests need the fixture Postgres started by the backup tests"
+
+  # 1. Success: restore the snapshot, validate it, record the report, and
+  #    remove the scratch container.
+  root="$tmp/restore-success"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  create_restore_snapshot "$root" "$backup_test_container"
+  write_backup_env "$root/restore.env" "$root" "$backup_test_container"
+  printf 'O1_BACKUP_DRILL_MIN_FREE_KB=1\n' >>"$root/restore.env"
+  log="$tmp/restore-success.log"
+  reset_curl
+  before=$(scratch_containers)
+  status=0
+  run_restore_script "$root/restore.env" >"$log" 2>&1 || status=$?
+  cp "$log" "$tmp/last.out"
+  [[ $status -eq 0 ]] || fail "restore-verify.sh failed for a good snapshot"
+  assert_no_new_scratch "the successful restore drill" "$before"
+
+  [[ -f $root/last-restore-verify ]] ||
+    fail "restore-verify.sh did not write last-restore-verify"
+  IFS='|' read -r snapid ts rstatus <"$root/last-restore-verify"
+  [[ -n $snapid && -n $ts && $rstatus == success ]] ||
+    fail "last-restore-verify is malformed: $(cat "$root/last-restore-verify")"
+  [[ $ts =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    fail "last-restore-verify timestamp is not UTC: $ts"
+  [[ $(file_mode "$root/last-restore-verify") == 600 ]] ||
+    fail "last-restore-verify is not mode 0600"
+  sid=$(repo_restic "$root" snapshots --tag o1-db --json | jq -r '.[0].short_id')
+  [[ ${snapid:0:8} == "$sid" ]] ||
+    fail "last-restore-verify snapshot $snapid does not match $sid"
+  if grep -q 'api.resend.com' "$FAKE_DIR/curl.args"; then
+    fail "the successful restore drill sent an alert"
+  fi
+  pass "restore-verify.sh restores a snapshot and records last-restore-verify"
+
+  # 2. Missing snapshot: nonzero, an alert naming the stage, no report, and no
+  #    scratch container.
+  root="$tmp/restore-missing"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/restore.env" "$root" "$backup_test_container"
+  printf 'O1_BACKUP_DRILL_MIN_FREE_KB=1\n' >>"$root/restore.env"
+  reset_curl
+  before=$(scratch_containers)
+  status=0
+  run_restore_script "$root/restore.env" deadbeef >"$tmp/last.out" 2>&1 ||
+    status=$?
+  [[ $status -ne 0 ]] || fail "restore-verify.sh accepted a missing snapshot"
+  grep -q 'api.resend.com' "$FAKE_DIR/curl.args" ||
+    fail "the missing snapshot did not send an alert"
+  grep -q 'snapshot' "$FAKE_DIR/curl.body" ||
+    fail "the alert does not name the snapshot stage"
+  [[ ! -e $root/last-restore-verify ]] ||
+    fail "a failed drill wrote last-restore-verify"
+  assert_no_new_scratch "the missing snapshot drill" "$before"
+  pass "restore-verify.sh alerts and stops for a missing snapshot"
+
+  # 3. Disk preflight: a huge minimum aborts before creating a container.
+  root="$tmp/restore-disk"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  create_restore_snapshot "$root" "$backup_test_container"
+  write_backup_env "$root/restore.env" "$root" "$backup_test_container"
+  printf 'O1_BACKUP_DRILL_MIN_FREE_KB=999999999999999\n' >>"$root/restore.env"
+  reset_curl
+  before=$(scratch_containers)
+  status=0
+  run_restore_script "$root/restore.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "restore-verify.sh ignored the disk preflight"
+  grep -q 'free disk' "$tmp/last.out" ||
+    fail "the disk failure does not mention free disk"
+  assert_no_new_scratch "the disk preflight" "$before"
+  grep -q 'api.resend.com' "$FAKE_DIR/curl.args" ||
+    fail "the disk preflight did not send an alert"
+  [[ ! -e $root/last-restore-verify ]] ||
+    fail "the disk preflight wrote last-restore-verify"
+  pass "restore-verify.sh aborts before Docker when free disk is too low"
+
+  # 4. The validation output names goose_db_version and every core table count.
+  grep -q 'goose_db_version' "$log" ||
+    fail "the drill did not log goose_db_version"
+  for table in users workspaces monitors probe_results monitor_hourly_stats \
+    incidents; do
+    grep -q "table $table count=" "$log" ||
+      fail "the drill did not log the $table count"
+  done
+  grep -q 'monitors/workspaces join' "$log" ||
+    fail "the drill did not log the monitors/workspaces join"
+  pass "the drill logs goose_db_version, core table counts, and the join"
+
+  # 5. Lock held: the drill skips with exit 0 and stays quiet.
+  root="$tmp/restore-lock"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  create_restore_snapshot "$root" "$backup_test_container"
+  write_backup_env "$root/restore.env" "$root" "$backup_test_container"
+  printf 'O1_BACKUP_DRILL_MIN_FREE_KB=1\n' >>"$root/restore.env"
+  hold_lock "$root/repo.lock" "$root/lock.ready" ||
+    fail "could not hold the restore repository lock"
+  reset_curl
+  before=$(scratch_containers)
+  status=0
+  run_restore_script "$root/restore.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "a lock-held restore drill did not exit 0"
+  grep -q 'skipped' "$tmp/last.out" ||
+    fail "the lock-held drill did not log a skip"
+  [[ ! -s $FAKE_DIR/curl.args ]] ||
+    fail "the lock-held drill sent an alert"
+  assert_no_new_scratch "the lock-held drill" "$before"
+  [[ ! -e $root/last-restore-verify ]] ||
+    fail "the lock-held drill wrote last-restore-verify"
+  kill "$hold_pid" 2>/dev/null || true
+  wait "$hold_pid" 2>/dev/null || true
+  hold_pid=
+  pass "restore-verify.sh skips quietly while another job holds the lock"
+}
+
 run_lib_tests
 run_backup_tests
+run_restore_tests
 
 echo "PASS: all backup tests ($checks checks)"
