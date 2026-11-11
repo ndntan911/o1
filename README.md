@@ -232,11 +232,12 @@ either:
   run. A mismatch is re-rolled once per run; a partition that still mismatches
   is retained for a later run.
 
-**Plan 12 (backups) is skipped.** There is no backup, WAL archive, or restore
-procedure, so retention deletes the only copy of expired raw probes. Rollups are
-aggregates, not a backup: they preserve up/down counts and latency summaries,
-not individual status codes, error text, or exact probe rows. Treat raw deletion
-as irreversible.
+**Backups come from the managed database provider.** Configure automated
+backups and point-in-time recovery before enabling deletion, and note that
+retention deletes the only copy of expired raw probes. Rollups are aggregates,
+not a backup: they preserve up/down counts and latency summaries, not individual
+status codes, error text, or exact probe rows. Treat raw deletion as
+irreversible.
 
 The scheduler catches up rollups every `O1_ROLLUP_INTERVAL` and runs retention
 once per day behind a PostgreSQL advisory lock. Deploy pipelines do not invoke
@@ -531,10 +532,10 @@ checks, administrator bootstrap, email smoke tests, logs, updates, and
 troubleshooting: [deploy/production/README.md](deploy/production/README.md).
 
 Production email is Resend only. `O1_ENV=production` requires
-`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. Backups were
-planned as Plan 12 but are skipped: there is no backup or restore path, and
-retention can delete expired raw probes once enabled. See
-[Data lifecycle](#data-lifecycle).
+`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. The database is a
+managed PostgreSQL service reached through `O1_DATABASE_URL`; backups and
+point-in-time recovery are the provider's responsibility, and retention can
+delete expired raw probes once enabled. See [Data lifecycle](#data-lifecycle).
 
 ### CI/CD
 

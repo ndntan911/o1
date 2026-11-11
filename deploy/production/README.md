@@ -154,12 +154,15 @@ Supabase's direct connection, RDS, and Aiven all satisfy this.
 ### Connection string
 
 ```dotenv
-O1_DATABASE_URL=postgres://o1:PASSWORD@db.example.com:5432/o1?sslmode=verify-full
+O1_DATABASE_URL='postgres://o1:PASSWORD@db.example.com:5432/o1?sslmode=verify-full'
 ```
 
-Percent-encode `@`, `:`, `/`, `?`, and `#` in the password. The API refuses to
-start when `O1_DATABASE_URL` is empty, and Compose refuses to render the stack
-without it.
+Wrap the value in single quotes. In an unquoted `.env` value, Compose expands
+`$` as a variable reference, so a password containing `$` silently loses part
+of itself; quoting avoids that, and percent-encoding `$` as `%24` is the
+alternative. Percent-encode `@`, `:`, `/`, `?`, and `#` in the password too.
+The API refuses to start when `O1_DATABASE_URL` is empty, and Compose refuses
+to render the stack without it.
 
 Backups and point-in-time recovery are the provider's responsibility. Confirm
 the backup retention window, and that PITR is enabled on the plan you buy,
@@ -177,6 +180,10 @@ that is the active release's copy:
 ```sh
 COMPOSE_FILE=/opt/o1/current/deploy/production/compose.yaml
 ENV_FILE=/opt/o1/.env
+
+# Export the managed DSN in this shell. Use the same value you will write to
+# .env in step 5; the restore and the spot check read this variable.
+export O1_DATABASE_URL='postgres://o1:PASSWORD@db.example.com:5432/o1?sslmode=verify-full'
 ```
 
 On a checkout-based host, run these steps before `git pull` and keep using
@@ -480,7 +487,9 @@ The pass summary reports `candidates`, `partitions_dropped`, `skipped_dry_run`,
 `skipped_watermark` counts partitions retained because
 `rollup_state.watermark` had not reached the partition end, so coverage could
 not be proven. Inspect the database directly when needed, either with `psql`
-and the managed DSN or from the provider console:
+and the managed DSN — export it first, for example with
+`set -a; . /opt/o1/.env; set +a` on a registry host — or from the provider
+console:
 
 ```sh
 psql "$O1_DATABASE_URL" -c "SELECT watermark FROM rollup_state;"
@@ -493,8 +502,10 @@ SELECT count(*) FROM monitor_hourly_stats;
 SELECT relname FROM pg_class WHERE relname LIKE 'probe_results_%' AND relkind = 'r';
 ```
 
-Deletion is irreversible. **Plan 12 (backups) is skipped:** there is no backup,
-WAL archive, or restore path. Once a raw partition drops, the individual probe
+Deletion is irreversible. Backups and point-in-time recovery are the managed
+provider's responsibility: confirm both are enabled (see
+[Managed PostgreSQL](#3-managed-postgresql)) before turning deletion on. Once a
+raw partition drops, the individual probe
 rows, status codes, error text, and exact check timestamps are gone. The hourly
 rollups preserve up/down counts and avg/min/max/p95 latency for the status page
 and long-window aggregates, but they are not a backup of the raw data.
