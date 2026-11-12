@@ -16,7 +16,7 @@ func Open(ctx context.Context, databaseURL string, maxConns int) (*pgxpool.Pool,
 	if err != nil {
 		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
-	cfg.MaxConns = int32(maxConns)
+	cfg.MaxConns = int32(maxConns) //nolint:gosec // config.validate bounds O1_DB_MAX_CONNS to 1-100
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)
