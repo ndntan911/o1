@@ -273,10 +273,13 @@ Each environment needs its own host: staging and production both bind `80` and
    ```
 
    Required: `O1_DOMAIN`, `O1_DATABASE_URL`, `O1_SECRET_KEY`,
-   `O1_ENCRYPTION_KEY`, `O1_EMAIL_FROM`, `O1_RESEND_API_KEY`. Optional:
-   `O1_DB_MAX_CONNS`, `O1_EMAIL_REPLY_TO`, `O1_RESEND_RPS`, `O1_RESEND_BURST`,
-   `O1_BOOTSTRAP_ADMIN_EMAIL`, the observability values, `GHCR_USER`/
-   `GHCR_READ_TOKEN` for private packages, and `DEPLOY_HEALTH_TIMEOUT`.
+   `O1_ENCRYPTION_KEY`, `O1_EMAIL_FROM`, and the credentials for the selected
+   email provider: `O1_RESEND_API_KEY` for `resend`, or `O1_SMTP_ADDR` plus the
+   optional `O1_SMTP_USERNAME`/`O1_SMTP_PASSWORD`/`O1_SMTP_TLS` for `smtp`.
+   Optional: `O1_DB_MAX_CONNS`, `O1_EMAIL_REPLY_TO`, `O1_RESEND_RPS`,
+   `O1_RESEND_BURST`, `O1_BOOTSTRAP_ADMIN_EMAIL`, the observability values,
+   `GHCR_USER`/`GHCR_READ_TOKEN` for private packages, and
+   `DEPLOY_HEALTH_TIMEOUT`.
 
    `O1_DATABASE_URL` points at a managed PostgreSQL service outside the host;
    no database runs in a release bundle. See

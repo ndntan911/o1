@@ -69,7 +69,8 @@ they exercise the same compose file the deploy script uses.
 - Inbound TCP `80` and `443` reachable from the internet, and SSH for
   administration. Do not expose `5432` (the database is not on this host),
   `8080`, `8081`, `8082`, or `8083`.
-- A Resend account with a verified sending domain and an API key.
+- A Resend account with a verified sending domain and an API key, **or** an
+  SMTP relay with sender credentials. See [Email provider](#2-email-provider).
 
 ## 1. DNS and network
 
@@ -99,7 +100,14 @@ curl -I http://o1.example.com
 Before the stack is running this may fail, but it must not time out because of a
 firewall after the stack starts.
 
-## 2. Resend domain verification, SPF, and DKIM
+## 2. Email provider
+
+Production sends transactional and alert email through exactly one provider,
+selected by `O1_EMAIL_PROVIDER`: `resend` (the default) or `smtp`. `mailpit` is
+development-only and is rejected in production. Configure the credentials for
+the provider you choose and leave the other block unset.
+
+### Resend
 
 1. In the Resend dashboard open **Domains → Add Domain** and enter the domain
    you want to send from, for example `example.com` or a sending subdomain such
@@ -124,6 +132,33 @@ on the verified domain or Resend rejects the send.
 Create an API key under **API Keys** with permission to send, and put it in
 `O1_RESEND_API_KEY`. Set `O1_EMAIL_REPLY_TO` if replies should go somewhere
 other than the from address. Both addresses are validated at startup.
+
+### SMTP relay
+
+Use any relay that supports SMTP submission: Amazon SES, Mailgun, Postmark, an
+internal relay, or Gmail with an app password. The relay still requires its own
+verified sending domain or identity; that verification is outside this runbook.
+
+```dotenv
+O1_EMAIL_PROVIDER=smtp
+O1_SMTP_ADDR=smtp.example.net:587
+O1_SMTP_USERNAME=replace-with-username
+O1_SMTP_PASSWORD=replace-with-password
+O1_SMTP_TLS=starttls
+```
+
+- `O1_SMTP_ADDR` — `host:port`. Port `587` normally uses `starttls`; port `465`
+  normally uses `implicit`. In production the Mailpit address
+  `localhost:1025` is rejected.
+- `O1_SMTP_USERNAME` / `O1_SMTP_PASSWORD` — optional, but either both are set or
+  neither. When set, `O1_SMTP_TLS` must not be `none`.
+- `O1_SMTP_TLS` — `starttls`, `implicit`, or `none`. `none` is rejected in
+  production and rejected whenever credentials are configured.
+- `O1_EMAIL_FROM` must be an address the relay accepts as a sender.
+
+Authentication uses PLAIN over TLS 1.2+. Certificate verification is always on;
+there is no skip-verify switch. A 5xx relay response is a permanent failure and
+is not retried; 4xx, TLS, and timeout errors are retried with backoff.
 
 ## 3. Managed PostgreSQL
 
@@ -253,8 +288,11 @@ Fill in at minimum:
 - `O1_DOMAIN` — the exact public hostname Caddy should serve.
 - `O1_DATABASE_URL` — the managed database DSN from step 3.
 - `O1_SECRET_KEY` and `O1_ENCRYPTION_KEY` — the base64 values from step 4.
-- `O1_EMAIL_FROM` — a mailbox on the verified Resend domain.
-- `O1_RESEND_API_KEY` — the Resend sending key.
+- `O1_EMAIL_FROM` — a mailbox the selected email provider accepts as a sender.
+- `O1_EMAIL_PROVIDER` — `resend` (default) or `smtp`.
+- `O1_RESEND_API_KEY` — the Resend sending key, required only for `resend`.
+- SMTP alternative to Resend: `O1_SMTP_ADDR`, `O1_SMTP_USERNAME`,
+  `O1_SMTP_PASSWORD`, and `O1_SMTP_TLS` (see [Email provider](#2-email-provider)).
 
 `O1_DB_MAX_CONNS` is optional. Leave it unset for the default of `10` unless
 the provider tier cannot handle 30 connections from the three processes.
@@ -374,15 +412,16 @@ volume: losing it forces re-issuance and can run into ACME rate limits.
 ### Registration verification email
 
 1. Open `https://o1.example.com` and register with an address you can read.
-2. Confirm the verification email arrives from the verified Resend domain with
-   subject `Verify your email`.
+2. Confirm the verification email arrives from the configured sender address
+   with subject `Verify your email`.
 3. Confirm the link uses `https://o1.example.com`, not localhost, and completes
    verification.
 
-If the mail does not arrive, check the Resend dashboard's email log for the
-send, the spam folder, that the domain is verified, that the API key is active,
-and that the from address is on the verified domain. A `403` or validation error
-in the API logs points at the key or from address.
+If the mail does not arrive, check the provider's email log and quota, the
+sender address, and the credentials. For Resend, also check domain verification
+and the API key; for SMTP, check the relay's auth and that the sender identity is
+accepted. A permanent `4xx`/`5xx` failure in the API or worker logs points at the
+credentials, sender address, or provider policy.
 
 ### Administrator bootstrap
 
@@ -630,7 +669,7 @@ managed database is accepted. See
 | Browser shows `502 Bad Gateway` | The API is not ready. Check `logs api`; verify the managed database is reachable and `O1_DATABASE_URL` is correct. |
 | API exits at startup with a config error | `O1_SECRET_KEY`/`O1_ENCRYPTION_KEY` must be base64 of exactly 32 bytes; `O1_EMAIL_FROM` must be a valid mailbox; the Resend provider requires `O1_RESEND_API_KEY`; production rejects the `mailpit` provider; `O1_DB_MAX_CONNS` must be between 1 and 100. |
 | Database connection fails | Check `sslmode` (`verify-full`, or `require` plus the provider CA), that the host is a direct/session endpoint rather than a transaction pooler, that the password is percent-encoded, that the VPS address passes the provider's IP allowlist or firewall, and that `3 x O1_DB_MAX_CONNS` fits the tier's connection limit. `/readyz` also checks the database. |
-| Email not delivered | Check the Resend email log and quota, domain verification, API key, and that the from/reply-to addresses are on the verified domain. Check the incident delivery status and `logs worker`. |
+| Email not delivered | Check the provider's email log and quota. For Resend: domain verification, API key, and from/reply-to on the verified domain. For SMTP: relay reachability, auth pair, TLS mode, and an accepted sender identity. Check the incident delivery status and `logs worker`. |
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |
 

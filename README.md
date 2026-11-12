@@ -167,11 +167,11 @@ endpoint is treated as a permanent failure.
 
 Development uses Mailpit as the SMTP sink. Compose starts Mailpit at
 <http://localhost:8025>, where every alert email and its rendered content can be
-inspected. Production sends through Resend: the production stack sets
-`O1_EMAIL_PROVIDER=resend`; when running the API outside that stack, set it
-yourself along with a Resend API key and a from address on the verified sending
-domain. Production refuses to start with the `mailpit` provider or without a
-Resend key.
+inspected. Production sends through **Resend** (default) or an **authenticated
+SMTP relay**, selected by `O1_EMAIL_PROVIDER`. When running the API outside the
+production stack, set the provider and its credentials yourself. Production
+refuses to start with the `mailpit` provider, without a Resend key for the
+`resend` provider, or with an insecure SMTP configuration.
 
 Transient send failures (timeouts, `408`, `425`, `429`, and `5xx`) are retried
 with short backoff and an idempotency key, so a lost response does not duplicate
@@ -526,16 +526,17 @@ it, so Caddy serves HTTPS for that name. `O1_SITE_ADDRESS` defaults to `:80`;
 the development Compose explicitly sets that value because it serves plain HTTP
 on <http://localhost:5173>.
 
-The full runbook covers DNS and firewall prerequisites, Resend domain
-verification and SPF/DKIM, secret generation, the first deploy, health and TLS
-checks, administrator bootstrap, email smoke tests, logs, updates, and
-troubleshooting: [deploy/production/README.md](deploy/production/README.md).
+The full runbook covers DNS and firewall prerequisites, email provider setup
+(Resend or SMTP), secret generation, the first deploy, health and TLS checks,
+administrator bootstrap, email smoke tests, logs, updates, and troubleshooting:
+[deploy/production/README.md](deploy/production/README.md).
 
-Production email is Resend only. `O1_ENV=production` requires
-`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. The database is a
-managed PostgreSQL service reached through `O1_DATABASE_URL`; backups and
-point-in-time recovery are the provider's responsibility, and retention can
-delete expired raw probes once enabled. See [Data lifecycle](#data-lifecycle).
+Production email runs through Resend or an authenticated SMTP relay, chosen with
+`O1_EMAIL_PROVIDER`. `O1_ENV=production` requires `O1_ENCRYPTION_KEY` and rejects
+`O1_EMAIL_PROVIDER=mailpit`. The database is a managed PostgreSQL service
+reached through `O1_DATABASE_URL`; backups and point-in-time recovery are the
+provider's responsibility, and retention can delete expired raw probes once
+enabled. See [Data lifecycle](#data-lifecycle).
 
 ### CI/CD
 
@@ -590,13 +591,19 @@ Common optional settings:
 - `O1_ALLOWED_ORIGINS` — comma-separated Origin allowlist for unsafe requests.
   Defaults to `O1_APP_BASE_URL`. Compose forwards this variable; leave it empty
   to use the dashboard origin.
-- `O1_SMTP_ADDR` — Mailpit SMTP address for the `mailpit` provider, default
-  `localhost:1025`.
-- `O1_EMAIL_PROVIDER` — `mailpit` or `resend`. Empty resolves to `mailpit` in
-  development/test and `resend` in production. Production rejects `mailpit`.
+- `O1_SMTP_ADDR` — SMTP address. Mailpit uses the default `localhost:1025`; the
+  `smtp` provider requires the relay's `host:port` (production rejects the
+  Mailpit default).
+- `O1_EMAIL_PROVIDER` — `mailpit`, `resend`, or `smtp`. Empty resolves to
+  `mailpit` in development/test and `resend` in production. Production rejects
+  `mailpit`.
 - `O1_EMAIL_FROM` — sender mailbox for transactional and alert email. Must be a
-  valid address and, in production, on the Resend verified domain.
+  valid address accepted by the selected provider.
 - `O1_RESEND_API_KEY` — Resend API key; required for the `resend` provider.
+- `O1_SMTP_USERNAME` / `O1_SMTP_PASSWORD` — optional SMTP auth pair for the
+  `smtp` provider; setting one without the other fails startup.
+- `O1_SMTP_TLS` — `starttls` (default), `implicit`, or `none` for the `smtp`
+  provider. `none` is rejected in production and with credentials.
 - `O1_EMAIL_REPLY_TO` — optional Reply-To mailbox.
 - `O1_RESEND_RPS` / `O1_RESEND_BURST` — per-process Resend send rate limit,
   default `2` requests/second with a burst of `2`.
