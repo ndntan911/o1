@@ -34,8 +34,7 @@ services:
       # Development-only key. Override O1_SECRET_KEY and O1_ENCRYPTION_KEY in
       # production; see README.md.
       O1_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      O1_SMTP_ADDR: mailpit:1025
-      O1_EMAIL_FROM: o1@localhost
+      O1_EMAIL_FROM: ${O1_EMAIL_FROM:-o1@localhost}
       O1_APP_BASE_URL: http://localhost:5173
       O1_ALLOWED_ORIGINS: ${O1_ALLOWED_ORIGINS:-}
       # Compose only passes .env values into containers when they are
@@ -65,6 +64,11 @@ services:
       O1_RETENTION_MAX_PARTITION_DROPS: ${O1_RETENTION_MAX_PARTITION_DROPS:-1}
       O1_ROLLUP_INTERVAL: ${O1_ROLLUP_INTERVAL:-15m}
       O1_ROLLUP_MAX_HOURS_PER_RUN: ${O1_ROLLUP_MAX_HOURS_PER_RUN:-24}
+      O1_EMAIL_PROVIDER: ${O1_EMAIL_PROVIDER:-mailpit}
+      O1_SMTP_ADDR: ${O1_SMTP_ADDR:-mailpit:1025}
+      O1_SMTP_USERNAME: ${O1_SMTP_USERNAME:-}
+      O1_SMTP_PASSWORD: ${O1_SMTP_PASSWORD:-}
+      O1_SMTP_TLS: ${O1_SMTP_TLS:-starttls}
     ports:
       - "8080:8080"
 
