@@ -539,7 +539,7 @@ Grafana Cloud setup. Point the external dead-man's switch at
 | `denied` / `unauthorized` while pulling from GHCR | Private package without credentials, a token missing `read:packages`, or an expired token. Set `GHCR_USER` and `GHCR_READ_TOKEN` in `/opt/o1/.env`, or make the packages public. On the host, `docker login ghcr.io` reproduces the error. `manifest unknown` means the version tag was never published or the owner name is wrong. |
 | Deploy fails at readiness | `/readyz` also checks PostgreSQL. Inspect `docker compose ... logs api` and `logs web`; a first deploy includes ACME issuance and migrations, so `DEPLOY_HEALTH_TIMEOUT` (default 300s) may be too short. `deploy.sh` restores the previous release automatically and exits non-zero. |
 | Migration failure | The API exits or `/readyz` fails while the schema is mid-change. Read the migration error in `logs api`. Fix forward with a new release; rolling back code does not reverse the schema (see §8). |
-| Trivy blocks a release | A `HIGH` or `CRITICAL` fixable vulnerability in an image (unfixed findings are ignored), or a repository secret/misconfiguration. Upgrade the base image or dependency, remove the secret, or add a narrowly scoped `.trivyignore` entry with a comment naming the check, the reason it is accepted, and a review date. The only current exception is `DS-0002` (the web Caddy image runs as root to bind 80/443; re-review 2027-05-10). |
+| Trivy blocks a release | A `HIGH` or `CRITICAL` fixable vulnerability in an image (unfixed findings are ignored), or a repository secret/misconfiguration. Upgrade the base image or dependency, remove the secret, or add a narrowly scoped `.trivyignore` entry with a comment naming the check, the reason it is accepted, and a review date. The current exceptions are `DS-0002` (the web Caddy image runs as root to bind 80/443; re-review 2027-05-10) and `CVE-2026-78661` (Caddy v2.11.9 links `x/net` v0.60.0; no HTML parsing in this deployment; re-review 2026-12-12). |
 | `deploy: missing /opt/o1/.env` | Bootstrap has not run, or the file is at the wrong path. `bootstrap-host.sh` seeds it from `env.example`; edit it before deploying. A missing `O1_DOMAIN`, `O1_DATABASE_URL`, or app key fails production Compose. |
 | Deploy fails because the database is unreachable | Check the managed DSN, `sslmode` and CA material, that the endpoint is direct (not a transaction pooler), the provider firewall/allowlist for the host address, and that `3 x O1_DB_MAX_CONNS` fits the tier's connection limit. `/readyz` checks the database, so a bad DSN fails the deploy and triggers the automatic restore. |
 | `deploy: another deploy or rollback holds ...` | A previous run is still active. Exit code is `3`. The kernel releases the lock when that process exits; do not delete the lock file while a deploy is running. If no deploy exists, check with `fuser /opt/o1/state/deploy.lock` and remove the file only when nothing holds it. |
@@ -571,12 +571,16 @@ Grafana Cloud setup. Point the external dead-man's switch at
   before any push. `govulncheck` runs in `backend` as an advisory step until
   the Plan 14 security pass: reachable findings include the Go standard library
   and no-fix testcontainers/container modules, so it reports without blocking.
-  The test suites and Trivy image scans remain blocking. The single
-  `.trivyignore` exception is `DS-0002`: `web/Dockerfile` builds on the
+  The test suites and Trivy image scans remain blocking. The current
+  `.trivyignore` exceptions are `DS-0002` (`web/Dockerfile` builds on the
   official Caddy image, which runs as root to bind 80/443; TLS terminates
-  there and no application code runs as root in that container. Re-review
-  2027-05-10. Any new exception must carry a comment naming the check/CVE, the
-  reason, and a review date; review exceptions whenever the file changes.
+  there and no application code runs as root in that container; re-review
+  2027-05-10) and `CVE-2026-78661` (upstream Caddy v2.11.9 still links
+  `golang.org/x/net` v0.60.0, and the image does not enable templates or parse
+  request bodies as HTML, so the `/html` denial of service is not reachable;
+  re-review 2026-12-12 and remove once Caddy ships x/net >= v0.62.0). Any new
+  exception must carry a comment naming the check/CVE, the reason, and a
+  review date; review exceptions whenever the file changes.
 - **Repository controls.** Required checks, linear history, no force pushes,
   restricted `v*` tags, and a reviewed production Environment. Together they
   prevent untested or unreviewed code from reaching a host.

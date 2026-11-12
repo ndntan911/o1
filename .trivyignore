@@ -2,3 +2,12 @@
 # root so it can bind 80/443. TLS terminates there; no application code runs
 # as root in this container. Re-review: 2027-05-10.
 DS-0002
+
+# CVE-2026-78661: golang.org/x/net v0.60.0 is linked into the upstream
+# caddy:2-alpine binary (latest release v2.11.9 still pins it; the fix ships in
+# x/net v0.62.0). The Caddyfile serves static files, redirects HTTP, and proxies
+# /api, /healthz, and /readyz; it enables no templates directive and parses no
+# request bodies as HTML, so the x/net/html denial of service is not reachable
+# in this deployment. Re-review: 2026-12-12, and remove once Caddy ships
+# golang.org/x/net >= v0.62.0.
+CVE-2026-78661
