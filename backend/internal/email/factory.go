@@ -37,8 +37,21 @@ func NewSender(cfg config.Config) (Sender, error) {
 			cfg.ResendRPS,
 			cfg.ResendBurst,
 		)
+	case config.EmailProviderSMTP:
+		sender, err := NewSMTPSender(
+			cfg.SMTPAddr,
+			cfg.EmailFrom,
+			cfg.EmailReplyTo,
+			cfg.SMTPUsername,
+			cfg.SMTPPassword,
+			cfg.SMTPTLS,
+		)
+		if err != nil {
+			return nil, err
+		}
+		inner = sender
 	default:
-		// ResolveEmailProvider only returns the two providers handled above.
+		// ResolveEmailProvider only returns the providers handled above.
 		return nil, fmt.Errorf("email: unsupported provider %q", provider)
 	}
 

@@ -36,8 +36,12 @@ services:
       O1_ENCRYPTION_KEY: "${O1_ENCRYPTION_KEY:?set O1_ENCRYPTION_KEY in .env}"
       # Production email goes through Resend. The API and worker refuse to
       # start in production with the mailpit provider.
-      O1_EMAIL_PROVIDER: resend
-      O1_RESEND_API_KEY: "${O1_RESEND_API_KEY:?set O1_RESEND_API_KEY in .env}"
+      O1_EMAIL_PROVIDER: ${O1_EMAIL_PROVIDER:-resend}
+      O1_RESEND_API_KEY: ${O1_RESEND_API_KEY:-}
+      O1_SMTP_ADDR: ${O1_SMTP_ADDR:-}
+      O1_SMTP_USERNAME: ${O1_SMTP_USERNAME:-}
+      O1_SMTP_PASSWORD: ${O1_SMTP_PASSWORD:-}
+      O1_SMTP_TLS: ${O1_SMTP_TLS:-starttls}
       O1_EMAIL_FROM: "${O1_EMAIL_FROM:?set O1_EMAIL_FROM in .env}"
       O1_EMAIL_REPLY_TO: ${O1_EMAIL_REPLY_TO:-}
       O1_RESEND_RPS: ${O1_RESEND_RPS:-2}

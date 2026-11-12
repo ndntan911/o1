@@ -77,6 +77,25 @@ if env -u O1_COMPOSE_PROJECT -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
 fi
 check "compose refuses to render without O1_DATABASE_URL"
 
+# SMTP deployments do not need a Resend key.
+smtp_env=$(mktemp)
+grep -v '^O1_RESEND_API_KEY=' "$env_file" > "$smtp_env"
+env -u O1_COMPOSE_PROJECT -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  O1_EMAIL_PROVIDER=smtp O1_SMTP_ADDR=smtp.example.net:587 \
+  O1_SMTP_USERNAME=user O1_SMTP_PASSWORD=pass O1_SMTP_TLS=starttls \
+  docker compose --env-file "$smtp_env" --env-file "$images_file" \
+  -f "$compose_file" config --format json \
+  | python3 -c '
+import json, sys
+env = json.load(sys.stdin)["services"]["api"]["environment"]
+assert env["O1_EMAIL_PROVIDER"] == "smtp", env["O1_EMAIL_PROVIDER"]
+assert env["O1_SMTP_ADDR"] == "smtp.example.net:587", env["O1_SMTP_ADDR"]
+assert env["O1_SMTP_TLS"] == "starttls", env["O1_SMTP_TLS"]
+assert env["O1_RESEND_API_KEY"] == "", env["O1_RESEND_API_KEY"]
+'
+rm -f "$smtp_env"
+check "smtp email settings render without a Resend key"
+
 # Project name is overridable.
 O1_COMPOSE_PROJECT=o1-staging \
   env -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \

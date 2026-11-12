@@ -118,3 +118,18 @@ func TestNewSender_WrapsEveryProviderInRetry(t *testing.T) {
 		t.Fatalf("sender = %T, want *email.RetrySender", sender)
 	}
 }
+
+func TestNewSender_SMTP(t *testing.T) {
+	cfg := testutil.TestConfig(t)
+	cfg.Env = "test"
+	cfg.EmailProvider = "smtp"
+	cfg.SMTPAddr = "smtp.example.net:587"
+	cfg.SMTPTLS = "starttls"
+	cfg.SMTPUsername = ""
+	cfg.SMTPPassword = ""
+	cfg.EmailFrom = "o1@example.com"
+
+	if _, err := email.NewSender(cfg); err != nil {
+		t.Fatalf("smtp factory: %v", err)
+	}
+}
