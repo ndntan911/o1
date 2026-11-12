@@ -107,17 +107,19 @@ services:
 
   # Optional scrape/remote-write agent for Grafana Cloud. It is not started by
   # `docker compose up`; use the command in README.md with the observability
-  # profile. It refuses to start with empty remote-write credentials instead of
-  # silently dropping metrics. The config is shared with the development bundle.
+  # profile. It refuses to start with empty Grafana credentials instead of
+  # silently dropping metrics or logs. The config is shared with the
+  # development bundle.
   alloy:
     image: grafana/alloy:v1.21.3
     profiles: ["observability"]
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        for name in GRAFANA_REMOTE_WRITE_URL GRAFANA_REMOTE_WRITE_USER GRAFANA_REMOTE_WRITE_TOKEN; do
+        for name in GRAFANA_REMOTE_WRITE_URL GRAFANA_REMOTE_WRITE_USER GRAFANA_REMOTE_WRITE_TOKEN \
+                    GRAFANA_LOKI_URL GRAFANA_LOKI_USER GRAFANA_LOKI_TOKEN; do
           if [ -z "$$(printenv "$$name")" ]; then
-            echo "alloy: required environment variable $$name is not set; export GRAFANA_REMOTE_WRITE_URL, GRAFANA_REMOTE_WRITE_USER, and GRAFANA_REMOTE_WRITE_TOKEN before starting the observability profile" >&2
+            echo "alloy: required environment variable $$name is not set; set GRAFANA_REMOTE_WRITE_URL, GRAFANA_REMOTE_WRITE_USER, GRAFANA_REMOTE_WRITE_TOKEN, GRAFANA_LOKI_URL, GRAFANA_LOKI_USER, and GRAFANA_LOKI_TOKEN before starting the observability profile" >&2
             exit 1
           fi
         done
@@ -126,11 +128,16 @@ services:
           --storage.path=/var/lib/alloy/data
     environment:
       O1_ENV: production
+      O1_COMPOSE_PROJECT: ${O1_COMPOSE_PROJECT:-o1-production}
       GRAFANA_REMOTE_WRITE_URL: ${GRAFANA_REMOTE_WRITE_URL:-}
       GRAFANA_REMOTE_WRITE_USER: ${GRAFANA_REMOTE_WRITE_USER:-}
       GRAFANA_REMOTE_WRITE_TOKEN: ${GRAFANA_REMOTE_WRITE_TOKEN:-}
+      GRAFANA_LOKI_URL: ${GRAFANA_LOKI_URL:-}
+      GRAFANA_LOKI_USER: ${GRAFANA_LOKI_USER:-}
+      GRAFANA_LOKI_TOKEN: ${GRAFANA_LOKI_TOKEN:-}
     volumes:
       - ../../deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - alloy-data:/var/lib/alloy/data
     depends_on:
       - api

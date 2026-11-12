@@ -119,4 +119,59 @@ assert "context" in c["services"]["web"]["build"]
 '
 check "build override restores contexts and local image names"
 
+
+# Alloy collects this project's container logs and ships them to Grafana Loki.
+obs_env=$(mktemp)
+cat > "$obs_env" <<'ENV'
+O1_COMPOSE_PROJECT=o1-staging
+O1_ENV=production
+GRAFANA_REMOTE_WRITE_URL=https://example.invalid/api/prom/push
+GRAFANA_REMOTE_WRITE_USER=1
+GRAFANA_REMOTE_WRITE_TOKEN=x
+GRAFANA_LOKI_URL=https://example.invalid/loki/api/v1/push
+GRAFANA_LOKI_USER=1
+GRAFANA_LOKI_TOKEN=x
+ENV
+env -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  docker compose --env-file "$env_file" --env-file "$obs_env" \
+  -f "$compose_file" --profile observability config --format json \
+  | python3 -c '
+import json, sys
+a = json.load(sys.stdin)["services"]["alloy"]
+env = a["environment"]
+assert env["O1_COMPOSE_PROJECT"] == "o1-staging", env.get("O1_COMPOSE_PROJECT")
+for key in ("GRAFANA_LOKI_URL", "GRAFANA_LOKI_USER", "GRAFANA_LOKI_TOKEN"):
+    assert env[key], key
+mounts = {m["target"]: m for m in a["volumes"]}
+sock = mounts.get("/var/run/docker.sock")
+assert sock is not None, sorted(mounts)
+assert sock.get("read_only") is True, sock
+cmd = " ".join(a["command"]) if isinstance(a["command"], list) else a["command"]
+for key in ("GRAFANA_REMOTE_WRITE_URL", "GRAFANA_REMOTE_WRITE_USER",
+            "GRAFANA_REMOTE_WRITE_TOKEN", "GRAFANA_LOKI_URL",
+            "GRAFANA_LOKI_USER", "GRAFANA_LOKI_TOKEN"):
+    assert key in cmd, key
+'
+rm -f "$obs_env"
+check "alloy mounts the Docker socket read-only and requires every Grafana variable"
+
+for label in 'target_label  = "service"' 'target_label  = "container"' 'level = ""'; do
+  grep -Fq "$label" deploy/observability/alloy.alloy ||
+    fail "alloy.alloy is missing label rule: $label"
+done
+if grep -Eq 'target_label[[:space:]]*=[[:space:]]*"(user_id|monitor_id|workspace_id|url|email)"' deploy/observability/alloy.alloy; then
+  fail "alloy.alloy promotes a high-cardinality field to a label"
+fi
+check "alloy labels stay bounded to service, container and level"
+
+docker run --rm \
+  -v "$repo_root/deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro" \
+  -e O1_ENV=production -e O1_COMPOSE_PROJECT=o1-staging \
+  -e GRAFANA_REMOTE_WRITE_URL=https://example.invalid/api/prom/push \
+  -e GRAFANA_REMOTE_WRITE_USER=1 -e GRAFANA_REMOTE_WRITE_TOKEN=x \
+  -e GRAFANA_LOKI_URL=https://example.invalid/loki/api/v1/push \
+  -e GRAFANA_LOKI_USER=1 -e GRAFANA_LOKI_TOKEN=x \
+  grafana/alloy:v1.21.3 validate /etc/alloy/config.alloy >/dev/null
+check "alloy config validates"
+
 echo "PASS: $checks compose config checks"

@@ -87,3 +87,73 @@ prometheus.scrape "o1_worker" {
 //     }
 //   }
 // }
+
+// --- Logs ----------------------------------------------------------------
+//
+// Alloy reads the Docker socket read-only, discovers only the containers in
+// this Compose project, and ships their stdout/stderr to Grafana Cloud Loki.
+// Labels stay bounded to env, service, container, and level; application JSON
+// fields remain in the log body.
+
+discovery.docker "o1" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=" + sys.env("O1_COMPOSE_PROJECT")]
+  }
+}
+
+discovery.relabel "o1_logs" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "o1" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.o1.targets
+  labels        = {}
+  relabel_rules = discovery.relabel.o1_logs.rules
+  forward_to    = [loki.process.o1.receiver]
+}
+
+loki.process "o1" {
+  forward_to = [loki.write.grafana_cloud.receiver]
+
+  stage.json {
+    expressions = {
+      level = "level",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+}
+
+loki.write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_LOKI_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_LOKI_USER")
+      password = sys.env("GRAFANA_LOKI_TOKEN")
+    }
+  }
+
+  external_labels = {
+    env = sys.env("O1_ENV"),
+  }
+}
