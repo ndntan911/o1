@@ -500,7 +500,7 @@ func TestEmailProvider_AcceptsDisplayNameReplyTo(t *testing.T) {
 }
 
 func TestEmailProvider_RejectsUnknownProvider(t *testing.T) {
-	for _, provider := range []string{"sendgrid", "smtp", "resendd"} {
+	for _, provider := range []string{"sendgrid", "resendd", "mailpit2"} {
 		t.Run(provider, func(t *testing.T) {
 			setEmailEnv(t, "development")
 			t.Setenv("O1_EMAIL_PROVIDER", provider)
@@ -679,5 +679,104 @@ func TestLoad_RejectsInvalidDBMaxConns(t *testing.T) {
 				t.Fatalf("Load() accepted O1_DB_MAX_CONNS=%q", value)
 			}
 		})
+	}
+}
+
+func TestResolveEmailProvider_SMTP(t *testing.T) {
+	cfg := config.Config{
+		Env:           "production",
+		EmailProvider: "smtp",
+		SMTPAddr:      "smtp.example.net:587",
+		SMTPTLS:       "starttls",
+		SMTPUsername:  "user",
+		SMTPPassword:  "pass",
+		EmailFrom:     "o1 <noreply@example.net>",
+	}
+	got, err := cfg.ResolveEmailProvider()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != config.EmailProviderSMTP {
+		t.Fatalf("provider = %q", got)
+	}
+}
+
+func TestResolveEmailProvider_SMTPNeedsNoResendKey(t *testing.T) {
+	cfg := config.Config{
+		Env:           "production",
+		EmailProvider: "smtp",
+		SMTPAddr:      "smtp.example.net:587",
+		SMTPTLS:       "starttls",
+		EmailFrom:     "o1 <noreply@example.net>",
+	}
+	if _, err := cfg.ResolveEmailProvider(); err != nil {
+		t.Fatalf("smtp should not require a Resend key: %v", err)
+	}
+}
+
+func TestResolveEmailProvider_SMTPRejectsHalfCredentials(t *testing.T) {
+	for _, tc := range []struct{ user, pass string }{{"user", ""}, {"", "pass"}} {
+		cfg := config.Config{
+			Env:           "production",
+			EmailProvider: "smtp",
+			SMTPAddr:      "smtp.example.net:587",
+			SMTPTLS:       "starttls",
+			SMTPUsername:  tc.user,
+			SMTPPassword:  tc.pass,
+			EmailFrom:     "o1 <noreply@example.net>",
+		}
+		if _, err := cfg.ResolveEmailProvider(); err == nil {
+			t.Fatalf("accepted half credentials user=%q", tc.user)
+		}
+	}
+}
+
+func TestResolveEmailProvider_SMTPRejectsInsecureTLS(t *testing.T) {
+	base := config.Config{
+		Env:           "production",
+		EmailProvider: "smtp",
+		SMTPAddr:      "smtp.example.net:587",
+		EmailFrom:     "o1 <noreply@example.net>",
+	}
+	for _, tc := range []struct {
+		tls  string
+		user string
+		pass string
+	}{
+		{"none", "", ""},
+		{"none", "user", "pass"},
+		{"bogus", "user", "pass"},
+	} {
+		cfg := base
+		cfg.SMTPTLS, cfg.SMTPUsername, cfg.SMTPPassword = tc.tls, tc.user, tc.pass
+		if _, err := cfg.ResolveEmailProvider(); err == nil {
+			t.Fatalf("accepted tls=%q with credentials=%v", tc.tls, tc.user != "")
+		}
+	}
+}
+
+func TestResolveEmailProvider_SMTPRejectsMailpitAddrInProduction(t *testing.T) {
+	cfg := config.Config{
+		Env:           "production",
+		EmailProvider: "smtp",
+		SMTPAddr:      "localhost:1025",
+		SMTPTLS:       "starttls",
+		EmailFrom:     "o1 <noreply@example.net>",
+	}
+	if _, err := cfg.ResolveEmailProvider(); err == nil {
+		t.Fatal("accepted the Mailpit address in production")
+	}
+}
+
+func TestLoad_SMTPTLSDefaultsToStartTLS(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_SMTP_TLS", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SMTPTLS != "starttls" {
+		t.Fatalf("SMTPTLS = %q, want starttls", cfg.SMTPTLS)
 	}
 }

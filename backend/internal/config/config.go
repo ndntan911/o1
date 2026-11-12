@@ -19,6 +19,8 @@ const (
 	EmailProviderMailpit = "mailpit"
 	// EmailProviderResend delivers through the Resend HTTP API.
 	EmailProviderResend = "resend"
+	// EmailProviderSMTP delivers through an authenticated SMTP relay.
+	EmailProviderSMTP = "smtp"
 )
 
 // defaultResendAPIURL is used when O1_RESEND_API_URL is unset.
@@ -41,6 +43,9 @@ type Config struct {
 	// the key was derived from O1_SECRET_KEY (development and tests only).
 	EncryptionKeyDerived bool
 	SMTPAddr             string
+	SMTPUsername         string
+	SMTPPassword         string
+	SMTPTLS              string
 	EmailFrom            string
 	ResendAPIKey         string
 	// EmailProvider is the resolved transactional email provider, either
@@ -249,6 +254,9 @@ func Load() (Config, error) {
 		SessionCookieName: env("O1_SESSION_COOKIE_NAME", "o1_session"),
 		SessionTTL:        30 * 24 * time.Hour,
 		SMTPAddr:          env("O1_SMTP_ADDR", "localhost:1025"),
+		SMTPUsername:      os.Getenv("O1_SMTP_USERNAME"),
+		SMTPPassword:      os.Getenv("O1_SMTP_PASSWORD"),
+		SMTPTLS:           strings.ToLower(strings.TrimSpace(env("O1_SMTP_TLS", "starttls"))),
 		EmailFrom:         env("O1_EMAIL_FROM", "o1@localhost"),
 		ResendAPIKey:      os.Getenv("O1_RESEND_API_KEY"),
 		EmailProvider:     strings.ToLower(strings.TrimSpace(env("O1_EMAIL_PROVIDER", ""))),
@@ -502,9 +510,9 @@ func (cfg Config) ResolveEmailProvider() (string, error) {
 		} else {
 			provider = EmailProviderMailpit
 		}
-	case EmailProviderMailpit, EmailProviderResend:
+	case EmailProviderMailpit, EmailProviderResend, EmailProviderSMTP:
 	default:
-		return "", fmt.Errorf("invalid O1_EMAIL_PROVIDER %q: must be one of mailpit, resend", cfg.EmailProvider)
+		return "", fmt.Errorf("invalid O1_EMAIL_PROVIDER %q: must be one of mailpit, resend, smtp", cfg.EmailProvider)
 	}
 
 	switch provider {
@@ -518,6 +526,30 @@ func (cfg Config) ResolveEmailProvider() (string, error) {
 	case EmailProviderResend:
 		if strings.TrimSpace(cfg.ResendAPIKey) == "" {
 			return "", fmt.Errorf("missing required environment variable O1_RESEND_API_KEY for the resend email provider")
+		}
+	case EmailProviderSMTP:
+		addr := strings.TrimSpace(cfg.SMTPAddr)
+		if addr == "" {
+			return "", fmt.Errorf("missing required environment variable O1_SMTP_ADDR for the smtp email provider")
+		}
+		if cfg.Env == "production" && addr == "localhost:1025" {
+			return "", fmt.Errorf("invalid O1_SMTP_ADDR for the smtp email provider in production")
+		}
+		tlsMode := strings.ToLower(strings.TrimSpace(cfg.SMTPTLS))
+		switch tlsMode {
+		case "starttls", "implicit", "none":
+		default:
+			return "", fmt.Errorf("invalid O1_SMTP_TLS: must be one of starttls, implicit, none")
+		}
+		username := strings.TrimSpace(cfg.SMTPUsername)
+		if (username == "" && cfg.SMTPPassword != "") || (username != "" && cfg.SMTPPassword == "") {
+			return "", fmt.Errorf("O1_SMTP_USERNAME and O1_SMTP_PASSWORD must both be set or both be empty")
+		}
+		if tlsMode == "none" && cfg.Env == "production" {
+			return "", fmt.Errorf("O1_SMTP_TLS=none is not allowed in production")
+		}
+		if tlsMode == "none" && username != "" {
+			return "", fmt.Errorf("O1_SMTP_TLS=none cannot be used with SMTP credentials")
 		}
 	}
 
