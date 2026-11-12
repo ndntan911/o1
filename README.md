@@ -463,16 +463,24 @@ For the production stack the equivalent command is in
 `deploy/observability/alloy.alloy` configuration.
 
 Alloy joins the Compose network, scrapes `api:8083`, `scheduler:8081`, and
-`worker:8082` every 15 seconds, and remote-writes to Grafana Cloud. A normal
-`docker compose up` does not start it, and Alloy exits with a clear error if
-`GRAFANA_REMOTE_WRITE_URL`, `GRAFANA_REMOTE_WRITE_USER`, or
-`GRAFANA_REMOTE_WRITE_TOKEN` is empty.
+`worker:8082` every 15 seconds, remote-writes metrics to Grafana Cloud, and
+ships the containers' logs to Grafana Cloud Loki. A normal `docker compose up`
+does not start it, and Alloy exits with a clear error if any of the six Grafana
+values below is empty. The dev profile mounts the Docker socket read-only and
+collects containers in the Compose project named by `O1_COMPOSE_PROJECT`
+(default `o1`, which is the checkout directory).
 
 Grafana Alloy (`observability` profile):
 
 - `GRAFANA_REMOTE_WRITE_URL` — Grafana Cloud Prometheus remote-write endpoint.
 - `GRAFANA_REMOTE_WRITE_USER` — numeric Grafana Cloud user/instance ID.
 - `GRAFANA_REMOTE_WRITE_TOKEN` — access-policy token with `metrics:write`.
+- `GRAFANA_LOKI_URL` — Grafana Cloud Loki push endpoint.
+- `GRAFANA_LOKI_USER` — numeric Grafana Cloud user/instance ID for logs.
+- `GRAFANA_LOKI_TOKEN` — access-policy token with `logs:write`.
+- `O1_COMPOSE_PROJECT` — Compose project name whose containers are collected;
+  defaults to the production project name in the production stack and `o1` in
+  the development stack.
 
 Import the dashboard JSON in Grafana (**Dashboards → New → Import**, UID
 `o1-observability`) and load the alert rules with `mimirtool rules load`.

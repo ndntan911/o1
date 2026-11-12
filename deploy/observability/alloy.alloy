@@ -9,7 +9,8 @@
 //
 // Credentials come from the environment and are never committed. The Compose
 // service refuses to start when GRAFANA_REMOTE_WRITE_URL,
-// GRAFANA_REMOTE_WRITE_USER, or GRAFANA_REMOTE_WRITE_TOKEN is empty. See
+// GRAFANA_REMOTE_WRITE_USER, GRAFANA_REMOTE_WRITE_TOKEN, GRAFANA_LOKI_URL,
+// GRAFANA_LOKI_USER, or GRAFANA_LOKI_TOKEN is empty. See
 // deploy/observability/README.md for the Grafana Cloud setup.
 //
 // Validate this file with:
@@ -104,6 +105,18 @@ discovery.docker "o1" {
   }
 }
 
+discovery.relabel "o1_targets" {
+  targets = discovery.docker.o1.targets
+
+  // Never tail the agent itself; its own remote-write errors would loop back
+  // into the pipeline.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "alloy"
+    action        = "drop"
+  }
+}
+
 discovery.relabel "o1_logs" {
   targets = []
 
@@ -121,7 +134,7 @@ discovery.relabel "o1_logs" {
 
 loki.source.docker "o1" {
   host          = "unix:///var/run/docker.sock"
-  targets       = discovery.docker.o1.targets
+  targets       = discovery.relabel.o1_targets.output
   labels        = {}
   relabel_rules = discovery.relabel.o1_logs.rules
   forward_to    = [loki.process.o1.receiver]

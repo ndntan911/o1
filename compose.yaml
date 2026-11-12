@@ -121,9 +121,10 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        for name in GRAFANA_REMOTE_WRITE_URL GRAFANA_REMOTE_WRITE_USER GRAFANA_REMOTE_WRITE_TOKEN; do
+        for name in GRAFANA_REMOTE_WRITE_URL GRAFANA_REMOTE_WRITE_USER GRAFANA_REMOTE_WRITE_TOKEN \
+                    GRAFANA_LOKI_URL GRAFANA_LOKI_USER GRAFANA_LOKI_TOKEN; do
           if [ -z "$$(printenv "$$name")" ]; then
-            echo "alloy: required environment variable $$name is not set; export GRAFANA_REMOTE_WRITE_URL, GRAFANA_REMOTE_WRITE_USER, and GRAFANA_REMOTE_WRITE_TOKEN before starting the observability profile" >&2
+            echo "alloy: required environment variable $$name is not set; set GRAFANA_REMOTE_WRITE_URL, GRAFANA_REMOTE_WRITE_USER, GRAFANA_REMOTE_WRITE_TOKEN, GRAFANA_LOKI_URL, GRAFANA_LOKI_USER, and GRAFANA_LOKI_TOKEN before starting the observability profile" >&2
             exit 1
           fi
         done
@@ -132,11 +133,16 @@ services:
           --storage.path=/var/lib/alloy/data
     environment:
       O1_ENV: ${O1_ENV:-development}
+      O1_COMPOSE_PROJECT: ${O1_COMPOSE_PROJECT:-o1}
       GRAFANA_REMOTE_WRITE_URL: ${GRAFANA_REMOTE_WRITE_URL:-}
       GRAFANA_REMOTE_WRITE_USER: ${GRAFANA_REMOTE_WRITE_USER:-}
       GRAFANA_REMOTE_WRITE_TOKEN: ${GRAFANA_REMOTE_WRITE_TOKEN:-}
+      GRAFANA_LOKI_URL: ${GRAFANA_LOKI_URL:-}
+      GRAFANA_LOKI_USER: ${GRAFANA_LOKI_USER:-}
+      GRAFANA_LOKI_TOKEN: ${GRAFANA_LOKI_TOKEN:-}
     volumes:
       - ./deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - api
       - scheduler

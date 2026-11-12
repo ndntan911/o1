@@ -152,8 +152,16 @@ for key in ("GRAFANA_REMOTE_WRITE_URL", "GRAFANA_REMOTE_WRITE_USER",
             "GRAFANA_LOKI_USER", "GRAFANA_LOKI_TOKEN"):
     assert key in cmd, key
 '
+if guard_out=$(env -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  docker compose --env-file "$env_file" --env-file "$obs_env" \
+  -f "$compose_file" --profile observability run --rm --no-deps \
+  -e GRAFANA_LOKI_TOKEN= alloy 2>&1); then
+  fail "alloy started with an empty GRAFANA_LOKI_TOKEN"
+fi
+printf '%s' "$guard_out" | grep -q GRAFANA_LOKI_TOKEN ||
+  fail "alloy did not name the missing GRAFANA_LOKI_TOKEN"
 rm -f "$obs_env"
-check "alloy mounts the Docker socket read-only and requires every Grafana variable"
+check "alloy mounts the Docker socket read-only and refuses to start without a Loki variable"
 
 for label in 'target_label  = "service"' 'target_label  = "container"' 'level = ""'; do
   grep -Fq "$label" deploy/observability/alloy.alloy ||
@@ -163,6 +171,12 @@ if grep -Eq 'target_label[[:space:]]*=[[:space:]]*"(user_id|monitor_id|workspace
   fail "alloy.alloy promotes a high-cardinality field to a label"
 fi
 check "alloy labels stay bounded to service, container and level"
+
+grep -Fq 'com.docker.compose.project=' deploy/observability/alloy.alloy ||
+  fail "alloy does not filter containers by Compose project"
+grep -Fq 'targets       = discovery.relabel.o1_targets.output' deploy/observability/alloy.alloy ||
+  fail "alloy does not exclude its own container"
+check "alloy scopes collection to the project and excludes the agent"
 
 docker run --rm \
   -v "$repo_root/deploy/observability/alloy.alloy:/etc/alloy/config.alloy:ro" \
