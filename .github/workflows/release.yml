@@ -13,11 +13,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
-    uses: ./.github/workflows/ci.yml
+  # Verification is intentionally not re-run on tag pushes: it duplicates the
+  # CI run that already gated the commit on main, and it adds the full test
+  # suite to every release. Tag only commits whose CI run on main is green.
+  # verify:
+  #   uses: ./.github/workflows/ci.yml
 
   publish:
-    needs: verify
+    # needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

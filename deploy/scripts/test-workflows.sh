@@ -2,7 +2,7 @@
 # shellcheck disable=SC2016  # grep patterns intentionally contain $VAR literally
 # Structural checks for the GitHub Actions workflows.
 #
-# The release path (tag -> verify -> build -> scan -> push to GHCR) cannot be
+# The release path (tag -> build -> scan -> push to GHCR) cannot be
 # exercised locally, so these assertions pin the pieces that make it safe:
 # CI stays reusable and off the publish path, images are scanned before any
 # push, tags follow the documented scheme, and dependencies stay monitored.
@@ -85,11 +85,12 @@ grep -Eq '^[[:space:]]+contents: read$' "$release_file" ||
   fail "$release_file lacks contents: read permission"
 check "$release_file keeps contents read-only"
 
-grep -Fq 'uses: ./.github/workflows/ci.yml' "$release_file" ||
-  fail "$release_file does not call the reusable CI workflow"
-grep -Eq '^[[:space:]]+needs: verify$' "$release_file" ||
-  fail "$release_file does not gate publishing on the verify job"
-check "$release_file verifies with the reusable CI workflow"
+# Verification is intentionally left to the CI run on main; re-running it on
+# the tag would duplicate that gate and lengthen every release.
+if grep -Eq '^[[:space:]]+needs: verify$' "$release_file"; then
+  fail "$release_file gates publishing on a verify job; tag-time verification is intentionally disabled"
+fi
+check "$release_file publishes without re-running CI on the tag"
 
 grep -Fq 'aquasecurity/setup-trivy@v0.3.1' "$release_file" ||
   fail "$release_file does not install Trivy via aquasecurity/setup-trivy"

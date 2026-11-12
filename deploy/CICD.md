@@ -15,8 +15,8 @@ pull request ──► CI checks ──► merge to main
                                   └─ tag vX.Y.Z ───────┤
                                                        ▼
                                    Release workflow (release.yml)
-                                     verify: reusable ci.yml (backend,
-                                       integration, frontend, e2e, pipeline)
+                                     verify: skipped on the tag; the CI run on
+                                       main before tagging is the gate
                                      publish: build both images, scan with
                                        Trivy, push only if scans pass
                                                        │
@@ -46,12 +46,13 @@ pull request ──► CI checks ──► merge to main
   shellcheck, and the Compose and deploy script suites locally in CI.
   `govulncheck` runs in `backend` as an advisory step (`continue-on-error`)
   until the Plan 14 security pass; Trivy image scans and every test suite
-  remain blocking. `release.yml` reuses the workflow through `workflow_call:`,
-  so a tag cannot publish code that would fail the PR gate.
+  remain blocking. `release.yml` does **not** re-run CI on the tag, to keep
+  releases short: the gate is the CI run on `main` before tagging, so only tag
+  commits whose CI is green.
 - `.github/workflows/release.yml` triggers on `v*` tags. It rejects a tag that
-  is not `vMAJOR.MINOR.PATCH[-PRE]`, runs verification, then builds each image
-  locally, scans it with Trivy, and pushes only after both scans pass. A failed
-  scan leaves the registry untouched.
+  is not `vMAJOR.MINOR.PATCH[-PRE]`, builds each image locally, scans it with
+  Trivy, and pushes only after both scans pass. A failed scan leaves the
+  registry untouched.
 - `.github/workflows/deploy.yml` is `workflow_dispatch` only. It checks out the
   requested tag, resolves the published image digests, uploads a release
   bundle, and runs the host's deploy script over SSH. It never builds images.
