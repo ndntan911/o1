@@ -482,15 +482,21 @@ Two independent copies of secrets are required, stored off the host:
 - `/opt/o1/backup/restic.pass` plus `/opt/o1/backup/backup.env` (S3
   credentials). Without the restic password, the backups are unreadable.
 
-Backups run at 02:30 UTC daily, prune Sunday 03:30 UTC, and drill on the first
-of the month at 04:00 UTC. Check the timers and the last successful runs:
+Backups run at 02:30 UTC daily, prune Sunday 03:30 UTC (with up to 10 minutes of
+randomized delay), and drill on the first of the month at 06:00 UTC (with up to
+15 minutes of randomized delay). Check the timers and the last successful runs:
 
 ```sh
 systemctl list-timers 'o1-*'
 sudo cat /opt/o1/backup/last-success
 sudo cat /opt/o1/backup/last-restore-verify
+sudo cat /opt/o1/backup/last-restore-attempt
 sudo journalctl -u o1-backup.service -n 100 --no-pager
 ```
+
+`last-restore-attempt` records `skipped|timestamp|lock` when the drill could not
+take the repository lock; `last-restore-verify` records only the last success or
+failure.
 
 ### Post-restore checklist
 

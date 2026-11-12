@@ -37,8 +37,8 @@ copy, so that losing the host loses neither the data nor the key.
 |------|---------|
 | `backup.env.example` | Template for `/opt/o1/backup/backup.env`; placeholders only. |
 | `systemd/o1-backup.service`, `.timer` | Daily dump at 02:30 UTC, up to 10 minutes of randomized delay, `Persistent=true`. |
-| `systemd/o1-backup-prune.service`, `.timer` | Weekly `backup.sh --prune-only`, Sunday 03:30 UTC. |
-| `systemd/o1-restore-verify.service`, `.timer` | Monthly restore drill, first day at 04:00 UTC. |
+| `systemd/o1-backup-prune.service`, `.timer` | Weekly `backup.sh --prune-only`, Sunday 03:30 UTC with up to 10 minutes of randomized delay. |
+| `systemd/o1-restore-verify.service`, `.timer` | Monthly restore drill, first day at 06:00 UTC with up to 15 minutes of randomized delay. |
 
 Scripts installed into `/opt/o1/bin`:
 
@@ -117,9 +117,10 @@ sudo AWS_DEFAULT_REGION=us-east-1 /tmp/o1-deploy/scripts/install-backup.sh \
 ```
 
 `sudo -E` also preserves the caller's environment when the sudo policy allows
-it. The installer passes `RESTIC_REPOSITORY`, `RESTIC_PASSWORD_FILE`,
-`RESTIC_CACHE_DIR`, and the two AWS credential variables in addition to
-whatever it inherits.
+it. For `restic init`, the installer exports `RESTIC_REPOSITORY`,
+`RESTIC_PASSWORD_FILE`, `RESTIC_CACHE_DIR`, and the two AWS credential variables
+inside a subshell instead of passing `env VAR=value` argv, so credentials never
+appear in a process listing.
 
 ## 5. Restic password safety and offsite storage
 
@@ -215,6 +216,8 @@ sudo systemctl disable --now o1-backup.timer o1-backup-prune.timer \
 | `O1_BACKUP_KEEP_MONTHLY` | no | Monthly snapshots to keep; default `12`. |
 | `O1_BACKUP_TIMEOUT` | no | Backup timeout; default `2h`. Rewrites the unit on install. |
 | `O1_BACKUP_UPLOAD_LIMIT` | no | Optional restic upload limit in KiB/s, for example `2048`. |
+| `O1_BACKUP_MIN_FREE_KB` | no | Free-disk preflight for `RESTIC_CACHE_DIR`, in KiB; default `1048576` (1 GiB). |
+| `O1_BACKUP_LARGE_DB_WARN_KB` | no | Install-time warning threshold for `pg_database_size('o1')/1024`; default `10485760` (10 GiB). |
 | `O1_BACKUP_PING_URL` | yes (production) | External dead-man's-switch success URL. |
 | `O1_BACKUP_FAILURE_URL` | one failure path | Failure URL; separate from the success URL. |
 | `O1_BACKUP_ALERT_EMAIL` | one failure path | Failure recipient; needs Resend credentials in `.env`. |
@@ -282,9 +285,14 @@ as an argument) and:
    `monitors`, `probe_results`, `monitor_hourly_stats`, `incidents`), their row
    counts, and a representative monitors/workspaces join.
 5. Runs `restic check --read-data-subset=5%`.
-6. Writes `/opt/o1/backup/last-restore-verify` and sends a failure alert if any
-   step fails.
-7. Always removes the scratch container and its anonymous volume, on success or
+6. Writes `/opt/o1/backup/last-restore-verify` as
+   `snapshot|timestamp|success` or `failure|timestamp|stage`, and sends a
+   failure alert if any step fails.
+7. If another job holds `repo.lock`, writes
+   `/opt/o1/backup/last-restore-attempt` as `skipped|timestamp|lock` and exits
+   0. That marker distinguishes a lock skip from a failed drill; it does not
+   replace the success/failure report.
+8. Always removes the scratch container and its anonymous volume, on success or
    failure. It never targets the production database.
 
 The drill proves that the repository password works, the snapshot decrypts,
@@ -458,8 +466,8 @@ message names the host, job, UTC time, failing stage, and a bounded log tail. It
 never includes secrets or row contents. A failure of the alert itself is logged
 and does not mask the original error.
 
-- Backup stages: `startup`, `lock`, `verify`, `dump`, `upload`, `retention`,
-  `prune`, `state`, `ping`. `upload` is reported when a `pg_dump`/restic
+- Backup stages: `startup`, `lock`, `verify`, `preflight`, `dump`, `upload`,
+  `retention`, `prune`, `state`, `ping`. `upload` is reported when a `pg_dump`/restic
   pipeline fails after the dump itself succeeded, and `prune` applies to the
   weekly `--prune-only` run.
 - Restore drill stages: `startup`, `lock`, `snapshot`, `preflight`, `scratch`,
@@ -481,6 +489,9 @@ Repository lock contention is not silent: a backup that cannot take
 `repo.lock` logs a warning, sends a failure alert, and exits nonzero. Prune and
 the restore drill log the skip and exit 0, because another job is already using
 the repository; the success ping from the backup still proves the host is alive.
+A skipped drill also writes `last-restore-attempt` as
+`skipped|timestamp|lock`, so an operator can tell it apart from a drill that
+never ran.
 
 ## 10. Sizing, timeout, upload limit, and schedule
 
@@ -497,10 +508,11 @@ the repository; the success ping from the backup still proves the host is alive.
   `2048` for about 2 MiB/s) when backups compete with production traffic or the
   provider throttles. It only limits restic's upload, not the local dump.
 - **Off-peak schedule.** The daily backup is 02:30 UTC with up to 10 minutes of
-  randomized delay; prune is Sunday 03:30 UTC; the drill is the first of the
-  month at 04:00 UTC. Adjust the `OnCalendar` lines in
-  `deploy/backup/systemd/*.timer`, re-install, and keep the jobs apart so the
-  repository lock does not skip a run.
+  randomized delay; prune is Sunday 03:30 UTC with up to 10 minutes; the drill
+  is the first of the month at 06:00 UTC with up to 15 minutes. The drill was
+  moved off the prune window so the first Sunday of a month does not routinely
+  skip the drill on the shared repository lock. Adjust the `OnCalendar` lines
+  in `deploy/backup/systemd/*.timer`, re-install, and keep the jobs apart.
 - **Monitoring history.** The 30 daily and 12 monthly snapshots together give
   roughly 42 recovery points. Choose retention for the recovery objectives, not
   just for storage cost.
@@ -522,3 +534,13 @@ bash -n deploy/scripts/*.sh
 docker run --rm -v "$PWD:/repo" -w /repo \
   koalaman/shellcheck:v0.11.0 deploy/scripts/*.sh
 ```
+
+## 12. Troubleshooting
+
+| Symptom | Check | Fix |
+|---------|-------|-----|
+| `unable to create lock in backend: repository is already locked` | `sudo journalctl -u o1-backup.service -n 50 --no-pager`; confirm no backup, prune, or drill is running | A restic lock is stale after a crash or killed unit. Remove it with `restic unlock`, using the configured repository and password file: `sudo bash -c 'set -a; . /opt/o1/backup/backup.env; set +a; restic unlock'`. Do not delete lock files in the bucket by hand. |
+| `backup skipped: another job holds /opt/o1/backup/repo.lock` | `systemctl list-jobs 'o1-*'`; `ps -ef \| grep '[b]ackup.sh'` | Wait for the other job. If no job is running, the advisory lock belonged to a dead process; it is released automatically, so re-run the unit. |
+| Drill log says `restore drill skipped` | `sudo cat /opt/o1/backup/last-restore-attempt` | `skipped\|...\|lock` means another job held `repo.lock`; the next timer run retries. `last-restore-verify` still records the last success or failure. |
+| Backup alerts `stage=preflight` | `sudo docker compose ... exec postgres pg_isready -U o1 -d o1`; `df -Pk /opt/o1/backup/cache` | Fix database health or free space, or raise `O1_BACKUP_MIN_FREE_KB` only when the host really has the space. |
+| Backup alerts `stage=verify` | Confirm `RESTIC_REPOSITORY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `RESTIC_PASSWORD_FILE` in `backup.env` | Correct the credential or URL and run a manual backup. The alert prints the repository with userinfo redacted. |

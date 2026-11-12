@@ -24,6 +24,13 @@ bl_die() {
 
 # --- validation ------------------------------------------------------------
 
+# redact_repository REPO: hide userinfo in repositories such as
+# s3:https://user:secret@host/bucket and sftp:user@host:/path.
+redact_repository() {
+  printf '%s\n' "$1" |
+    sed -E 's#(://)([^/@]*@)+#\1#g; s#^(sftp:)([^/@]*@)+#\1#'
+}
+
 bl_require_var() {
   local name
   for name in "$@"; do
@@ -204,7 +211,7 @@ bl_send_alert() {
       --arg subject "$subject" --arg text "$body" \
       '{from: $from, to: [$to], subject: $subject, text: $text}' >"$payload"
 
-    curl -fsS --config "$header" \
+    curl -fsS -m 10 --config "$header" \
       -H 'Content-Type: application/json' \
       --data-binary @"$payload" \
       https://api.resend.com/emails >/dev/null

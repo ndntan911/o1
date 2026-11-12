@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Daily backup at 02:30 UTC; weekly prune Sunday 03:30 UTC; monthly restore drill on day 1 at 04:00 UTC.
+- Daily backup at 02:30 UTC; weekly prune Sunday 03:30 UTC; monthly restore drill on day 1 at 06:00 UTC.
 - Retention: 30 daily and 12 monthly restic snapshots, independent of the app's 90-day/13-month data retention.
 - RPO ≤ 24 hours. No WAL archiving, PITR, or streaming replica.
 - Restic 0.19.1, Postgres 16; the production Compose stack is unchanged.
@@ -439,7 +439,7 @@ WantedBy=timers.target
 
 `o1-backup-prune.service` uses `ExecStart=/opt/o1/bin/backup.sh --prune-only`; its timer uses `OnCalendar=Sun *-*-* 03:30:00 UTC`.
 
-`o1-restore-verify.service` uses `ExecStart=/opt/o1/bin/restore-verify.sh` with a 4h timeout; its timer uses `OnCalendar=*-*-01 04:00:00 UTC`.
+`o1-restore-verify.service` uses `ExecStart=/opt/o1/bin/restore-verify.sh` with a 4h timeout; its timer uses `OnCalendar=*-*-01 06:00:00 UTC`.
 
 All timers use `Persistent=true` and target `timers.target`.
 

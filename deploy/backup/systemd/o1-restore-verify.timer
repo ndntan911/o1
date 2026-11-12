@@ -2,7 +2,8 @@
 Description=Monthly o1 PostgreSQL restore verification drill
 
 [Timer]
-OnCalendar=*-*-01 04:00:00 UTC
+OnCalendar=*-*-01 06:00:00 UTC
+RandomizedDelaySec=15m
 Persistent=true
 Unit=o1-restore-verify.service
 

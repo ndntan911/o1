@@ -109,13 +109,6 @@ sed_replacement() {
   printf '%s' "$1" | sed 's/[\\|&]/\\&/g'
 }
 
-# redact_repository REPO: hide userinfo in repositories such as
-# s3:https://user:secret@host/bucket and sftp:user@host:/path.
-redact_repository() {
-  printf '%s\n' "$1" |
-    sed -E 's#(://)([^/@]*@)+#\1#g; s#^(sftp:)([^/@]*@)+#\1#'
-}
-
 # render_file SRC DEST MODE [TIMEOUT]: rewrite /opt/o1 to the install root and
 # optionally replace the backup service timeout.
 render_file() {
@@ -163,7 +156,6 @@ ensure_backup_env() {
 
 ensure_password() {
   local repo repo_path redacted_repo candidate init_output key value
-  local -a init_env
 
   if [[ -f $restic_pass ]]; then
     bl_log info "keeping existing restic password file: $restic_pass"
@@ -201,17 +193,18 @@ ensure_password() {
   unset candidate
   bl_log info "generating a new restic password for $restic_pass"
 
-  init_env=(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD_FILE="$password_candidate")
-  for key in RESTIC_CACHE_DIR AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
-    value=$(env_key "$key")
-    if [[ -n $value ]]; then
-      init_env+=("$key=$value")
-    fi
-  done
-  unset value
-
-  if ! init_output=$(env -u RESTIC_PASSWORD -u RESTIC_PASSWORD_COMMAND \
-    "${init_env[@]}" restic init 2>&1); then
+  # Export inside a subshell so credentials never appear in a child's argv.
+  if ! init_output=$(
+    unset RESTIC_PASSWORD RESTIC_PASSWORD_COMMAND
+    export RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD_FILE="$password_candidate"
+    for key in RESTIC_CACHE_DIR AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+      value=$(env_key "$key")
+      if [[ -n $value ]]; then
+        export "$key=$value"
+      fi
+    done
+    restic init 2>&1
+  ); then
     rm -f -- "$password_candidate"
     password_candidate=
     if grep -qiE 'already (exists|initialized)' <<<"$init_output"; then
@@ -231,8 +224,54 @@ ensure_password() {
 
 # --- enable checks ---------------------------------------------------------
 
+# warn_large_database: best-effort warning when the database is large enough
+# that the default 2h timeout may be too short. An unreachable database is not
+# an install failure.
+warn_large_database() {
+  local container compose_file env_file threshold output
+  local -a pg_cmd
+
+  threshold=$(env_key O1_BACKUP_LARGE_DB_WARN_KB)
+  threshold=${threshold:-10485760}
+  if [[ ! $threshold =~ ^[0-9]+$ ]]; then
+    bl_log warn "O1_BACKUP_LARGE_DB_WARN_KB is not an integer: $threshold; skipping the database-size warning"
+    return 0
+  fi
+
+  container=$(env_key O1_BACKUP_PG_CONTAINER)
+  if [[ -n $container ]]; then
+    pg_cmd=(docker exec "$container" psql -U o1 -d o1 -tAc
+      "SELECT pg_database_size('o1')/1024")
+  else
+    compose_file=$(env_key O1_COMPOSE_FILE)
+    env_file=$(env_key O1_ENV_FILE)
+    if [[ -z $compose_file || -z $env_file ]]; then
+      bl_log info "no Compose configuration; skipping the database-size warning"
+      return 0
+    fi
+    pg_cmd=(docker compose --env-file "$env_file" -f "$compose_file"
+      exec -T postgres psql -U o1 -d o1 -tAc
+      "SELECT pg_database_size('o1')/1024")
+  fi
+
+  if ! output=$("${pg_cmd[@]}" 2>/dev/null); then
+    bl_log info "database is not reachable; skipping the large-database warning"
+    return 0
+  fi
+  output=${output//[[:space:]]/}
+  if [[ ! $output =~ ^[0-9]+$ ]]; then
+    bl_log warn "unexpected database size for the large-database warning: ${output:-<empty>}"
+    return 0
+  fi
+  if ((output >= threshold)); then
+    bl_log warn "database size ${output}KB is at or above ${threshold}KB; the default 2h backup timeout may be too short. Set O1_BACKUP_TIMEOUT and re-run the installer."
+  else
+    bl_log info "database size ${output}KB is below the ${threshold}KB warning threshold"
+  fi
+}
+
 require_enable_config() {
-  local ping failure alert repo password
+  local ping failure alert repo password o1_env api_key email_from
   ping=$(env_key O1_BACKUP_PING_URL)
   if [[ -z $ping ]]; then
     bl_die "--enable requires O1_BACKUP_PING_URL in $backup_env; the units were installed but the timers were not enabled"
@@ -241,6 +280,18 @@ require_enable_config() {
   alert=$(env_key O1_BACKUP_ALERT_EMAIL)
   if [[ -z $failure && -z $alert ]]; then
     bl_die "--enable requires O1_BACKUP_FAILURE_URL or O1_BACKUP_ALERT_EMAIL in $backup_env; the units were installed but the timers were not enabled"
+  fi
+  if [[ -z $failure ]]; then
+    o1_env=$(env_key O1_ENV_FILE)
+    api_key=
+    email_from=
+    if [[ -n $o1_env && -r $o1_env ]]; then
+      api_key=$(bl_env_get "$o1_env" O1_RESEND_API_KEY) || api_key=
+      email_from=$(bl_env_get "$o1_env" O1_EMAIL_FROM) || email_from=
+    fi
+    if [[ -z $api_key || -z $email_from ]]; then
+      bl_die "--enable with O1_BACKUP_ALERT_EMAIL and no O1_BACKUP_FAILURE_URL requires O1_RESEND_API_KEY and O1_EMAIL_FROM in O1_ENV_FILE (${o1_env:-unset}); the units were installed but the timers were not enabled"
+    fi
   fi
   repo=$(env_key RESTIC_REPOSITORY)
   if [[ -z $repo ]]; then
@@ -259,6 +310,7 @@ install -d -m 0755 "$unit_dir"
 
 ensure_backup_env
 resolve_timeout
+warn_large_database
 ensure_password
 
 for script in "${runtime_scripts[@]}"; do

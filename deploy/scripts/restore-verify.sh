@@ -29,8 +29,9 @@ bl_require_var RESTIC_REPOSITORY RESTIC_PASSWORD_FILE O1_COMPOSE_FILE O1_ENV_FIL
 if [[ -z ${O1_BACKUP_ALERT_EMAIL:-} && -z ${O1_BACKUP_FAILURE_URL:-} ]]; then
   bl_die "set O1_BACKUP_ALERT_EMAIL or O1_BACKUP_FAILURE_URL"
 fi
-bl_require_cmd docker restic jq flock openssl
+bl_require_cmd docker restic jq flock openssl sed
 
+redacted_repo=$(redact_repository "$RESTIC_REPOSITORY")
 current_stage=startup
 scratch_name=
 errlog=
@@ -71,17 +72,21 @@ send_failure_alert() {
     body+=$(tail -n 20 -- "$errlog" 2>/dev/null)
   fi
 
+  # Ping first so a stalled email cannot delay the dead-man's switch.
+  bl_ping "${O1_BACKUP_FAILURE_URL:-}" failure
   # The deployment env may be unreadable or incomplete; the alert helpers then
-  # warn and the failure ping still runs.
+  # warn.
   bl_read_o1_env || true
   bl_send_alert "o1 restore drill failed: $stage on $(hostname)" "$body" ||
     bl_log warn "the failure alert could not be sent"
-  bl_ping "${O1_BACKUP_FAILURE_URL:-}" failure
 }
 
 fail() {
   local stage=$current_stage message=${1:-restore drill failure}
   bl_log error "restore drill failed during $stage: $message"
+  bl_write_state "$ROOT/last-restore-verify" \
+    "failure|$(bl_utc_now)|$stage" ||
+    bl_log warn "could not write the restore drill failure report"
   send_failure_alert "$stage" "$message"
   exit 1
 }
@@ -100,6 +105,9 @@ on_error() {
 current_stage=lock
 if ! bl_take_lock "$ROOT/repo.lock"; then
   bl_log warn "restore drill skipped: another job holds $ROOT/repo.lock"
+  bl_write_state "$ROOT/last-restore-attempt" \
+    "skipped|$(bl_utc_now)|lock" ||
+    bl_log warn "could not write the skipped restore drill marker"
   exit 0
 fi
 lock_held=1
@@ -109,9 +117,9 @@ current_stage=snapshot
 if [[ -z $SNAPSHOT ]]; then
   SNAPSHOT=$(restic snapshots --tag o1-db --latest 1 --json |
     jq -r 'if length > 0 then .[0].short_id else "" end') ||
-    fail "could not list snapshots in $RESTIC_REPOSITORY"
+    fail "could not list snapshots in $redacted_repo"
   [[ -n $SNAPSHOT ]] ||
-    fail "no snapshot tagged o1-db in $RESTIC_REPOSITORY"
+    fail "no snapshot tagged o1-db in $redacted_repo"
 else
   restic snapshots "$SNAPSHOT" --json >/dev/null 2>&1 ||
     fail "snapshot not found: $SNAPSHOT"

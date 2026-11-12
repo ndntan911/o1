@@ -399,6 +399,7 @@ O1_BACKUP_ALERT_EMAIL=ops@example.com
 O1_BACKUP_TIMEOUT=2m
 O1_BACKUP_KEEP_DAILY=$daily
 O1_BACKUP_KEEP_MONTHLY=$monthly
+O1_BACKUP_MIN_FREE_KB=1
 O1_BACKUP_PG_CONTAINER=$pg_container
 ENV
 }
@@ -476,6 +477,24 @@ FAKE_DOCKER
   : >"$dir/docker.args"
 }
 
+# write_dump_fail_docker DIR: delegate to the real docker except for pg_dump,
+# which fails after the preflight checks pass.
+write_dump_fail_docker() {
+  local dir=$1 real_docker
+  real_docker=$(command -v docker)
+  mkdir -p "$dir"
+  cat >"$dir/docker" <<FAKE
+#!/usr/bin/env bash
+set -u
+if [[ \${1:-} == exec && "\$*" == *" pg_dump "* ]]; then
+  printf 'fake pg_dump failure\n' >&2
+  exit 1
+fi
+exec "$real_docker" "\$@"
+FAKE
+  chmod +x "$dir/docker"
+}
+
 start_fixture_postgres() {
   local name="o1-backup-test-pg-$$-$RANDOM"
   docker run -d --rm --name "$name" \
@@ -538,7 +557,7 @@ hold_lock() {
 
 run_backup_tests() {
   local backup="$repo_root/deploy/scripts/backup.sh"
-  local root status count snapid ts dur bytes id
+  local root status count snapid ts dur bytes id dump_fail
   local old_time new_time old_id new_id ids secret
 
   [[ -f $backup ]] || fail "$backup is missing"
@@ -548,6 +567,7 @@ run_backup_tests() {
   unset O1_BACKUP_ALERT_EMAIL O1_BACKUP_FAILURE_URL O1_BACKUP_PING_URL \
     O1_RESEND_API_KEY O1_EMAIL_FROM O1_ENV_FILE O1_BACKUP_PG_CONTAINER \
     O1_BACKUP_TIMEOUT O1_BACKUP_KEEP_DAILY O1_BACKUP_KEEP_MONTHLY \
+    O1_BACKUP_MIN_FREE_KB O1_BACKUP_LARGE_DB_WARN_KB \
     AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
   cat >"$tmp/backup-o1.env" <<'O1ENV'
@@ -607,15 +627,19 @@ O1ENV
   fi
   pass "backup.sh uploads a tagged snapshot and records last-success"
 
-  # 2. pg_dump failure: partial snapshot removed, alert and failure ping sent.
+  # 2. pg_dump failure after the preflight: a partial snapshot is removed and
+  #    the alert and failure ping name the dump stage.
   root="$tmp/backup-dump-failure"
   mkdir -p "$root"
   init_test_repo "$root"
-  write_backup_env "$root/backup.env" "$root" "o1-backup-test-missing-$$"
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container"
+  dump_fail="$tmp/backup-dump-fail-bin"
+  write_dump_fail_docker "$dump_fail"
   reset_curl
   status=0
-  run_backup_script "$root/backup.env" >"$tmp/last.out" 2>&1 || status=$?
-  [[ $status -ne 0 ]] || fail "backup.sh succeeded with a missing container"
+  PATH="$dump_fail:$PATH" run_backup_script "$root/backup.env" \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh succeeded when pg_dump failed"
   count=$(repo_restic "$root" snapshots --tag o1-db --json | jq 'length') ||
     fail "could not list snapshots after the dump failure"
   [[ $count -eq 0 ]] || fail "the partial snapshot was not removed"
@@ -631,7 +655,70 @@ O1ENV
     fail "the dump failure did not ping the failure URL"
   pass "backup.sh removes a partial snapshot and alerts on dump failure"
 
-  # 3. Lock held: backup fails and alerts, prune-only skips quietly.
+  # 3. Repository verify failure: an uninitialized repository alerts and pings
+  #    instead of dying silently, and no snapshot is written.
+  root="$tmp/backup-invalid-repo"
+  mkdir -p "$root/cache"
+  printf '%s\n' "$TEST_RESTIC_PASSWORD" >"$root/restic.pass"
+  chmod 600 "$root/restic.pass"
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container"
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh accepted an uninitialized repository"
+  grep -q 'api.resend.com' "$FAKE_DIR/curl.args" ||
+    fail "the repository verify failure did not send an alert"
+  grep -q 'stage=verify' "$FAKE_DIR/curl.body" ||
+    fail "the verify alert does not name the verify stage"
+  grep -q 'https://ping.example/failure' "$FAKE_DIR/curl.args" ||
+    fail "the repository verify failure did not ping the failure URL"
+  [[ ! -e $root/last-success ]] ||
+    fail "the repository verify failure wrote last-success"
+  [[ ! -e $root/repo/config ]] ||
+    fail "the repository verify failure initialized a repository"
+  pass "backup.sh alerts and pings when the repository cannot be read"
+
+  # 4. Database health preflight: a missing container aborts before dumping.
+  root="$tmp/backup-pg-health"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/backup.env" "$root" "o1-backup-test-missing-$$"
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh dumped without a healthy database"
+  grep -q 'stage=preflight' "$FAKE_DIR/curl.body" ||
+    fail "the database health failure does not name the preflight stage"
+  grep -q 'https://ping.example/failure' "$FAKE_DIR/curl.args" ||
+    fail "the database health failure did not ping the failure URL"
+  count=$(repo_restic "$root" snapshots --tag o1-db --json | jq 'length') ||
+    fail "could not list snapshots after the database health failure"
+  [[ $count -eq 0 ]] || fail "the database health failure created a snapshot"
+  pass "backup.sh stops before dumping when Postgres is not ready"
+
+  # 5. Disk preflight: a huge minimum aborts before dumping. The test hook
+  #    overrides the default 1 GiB threshold.
+  root="$tmp/backup-disk-preflight"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container"
+  printf 'O1_BACKUP_MIN_FREE_KB=999999999999999\n' >>"$root/backup.env"
+  reset_curl
+  status=0
+  run_backup_script "$root/backup.env" >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh ignored the disk preflight"
+  grep -q 'stage=preflight' "$FAKE_DIR/curl.body" ||
+    fail "the disk preflight does not name the preflight stage"
+  grep -q 'free disk' "$FAKE_DIR/curl.body" ||
+    fail "the disk preflight alert does not mention free disk"
+  grep -q 'https://ping.example/failure' "$FAKE_DIR/curl.args" ||
+    fail "the disk preflight did not ping the failure URL"
+  count=$(repo_restic "$root" snapshots --tag o1-db --json | jq 'length') ||
+    fail "could not list snapshots after the disk preflight"
+  [[ $count -eq 0 ]] || fail "the disk preflight created a snapshot"
+  pass "backup.sh aborts before dumping when free disk is too low"
+
+  # 6. Lock held: backup fails and alerts, prune-only skips quietly.
   root="$tmp/backup-lock"
   mkdir -p "$root"
   init_test_repo "$root"
@@ -663,7 +750,7 @@ O1ENV
   hold_pid=
   pass "backup.sh alerts on a held lock and prune-only skips quietly"
 
-  # 4. Prune-only: a snapshot older than 30 days is removed, the new one stays.
+  # 7. Prune-only: a snapshot older than 30 days is removed, the new one stays.
   #    Restic counts periods that contain snapshots, not calendar days, so pin
   #    both policies to one: a two-snapshot fixture then exercises pruning.
   root="$tmp/backup-prune"
@@ -671,10 +758,12 @@ O1ENV
   init_test_repo "$root"
   old_time=$(days_ago 40)
   new_time=$(date -u '+%Y-%m-%d %H:%M:%S')
-  printf 'old' | repo_restic "$root" backup --stdin --stdin-filename o1.dump \
-    --tag o1-db --time "$old_time" >/dev/null || fail "could not write the old snapshot"
-  printf 'new' | repo_restic "$root" backup --stdin --stdin-filename o1.dump \
-    --tag o1-db --time "$new_time" >/dev/null || fail "could not write the new snapshot"
+  printf 'old' | repo_restic "$root" backup --host o1-prod --stdin \
+    --stdin-filename o1.dump --tag o1-db --time "$old_time" >/dev/null ||
+    fail "could not write the old snapshot"
+  printf 'new' | repo_restic "$root" backup --host o1-prod --stdin \
+    --stdin-filename o1.dump --tag o1-db --time "$new_time" >/dev/null ||
+    fail "could not write the new snapshot"
   old_id=$(repo_restic "$root" snapshots --json |
     jq -r 'sort_by(.time) | .[0].short_id')
   new_id=$(repo_restic "$root" snapshots --json |
@@ -695,7 +784,7 @@ O1ENV
   [[ ! -s $FAKE_DIR/curl.args ]] || fail "prune-only sent a ping"
   pass "prune-only forgets old snapshots and keeps the latest"
 
-  # 5. Secret containment: no secret reaches curl argv or the alert body in
+  # 8. Secret containment: no secret reaches curl argv or the alert body in
   #    any call made by any scenario above.
   [[ -s $FAKE_DIR/curl.all.args ]] ||
     fail "no curl calls were recorded for the secret check"
@@ -761,7 +850,8 @@ run_restore_tests() {
   fi
   pass "restore-verify.sh restores a snapshot and records last-restore-verify"
 
-  # 2. Missing snapshot: nonzero, an alert naming the stage, no report, and no
+  # 2. Missing snapshot: an empty repository has no snapshot to select, so the
+  #    drill writes a failure report naming the stage, alerts, and creates no
   #    scratch container.
   root="$tmp/restore-missing"
   mkdir -p "$root"
@@ -771,15 +861,21 @@ run_restore_tests() {
   reset_curl
   before=$(scratch_containers)
   status=0
-  run_restore_script "$root/restore.env" deadbeef >"$tmp/last.out" 2>&1 ||
-    status=$?
+  run_restore_script "$root/restore.env" >"$tmp/last.out" 2>&1 || status=$?
   [[ $status -ne 0 ]] || fail "restore-verify.sh accepted a missing snapshot"
   grep -q 'api.resend.com' "$FAKE_DIR/curl.args" ||
     fail "the missing snapshot did not send an alert"
-  grep -q 'snapshot' "$FAKE_DIR/curl.body" ||
+  grep -q 'stage=snapshot' "$FAKE_DIR/curl.body" ||
     fail "the alert does not name the snapshot stage"
-  [[ ! -e $root/last-restore-verify ]] ||
-    fail "a failed drill wrote last-restore-verify"
+  [[ -f $root/last-restore-verify ]] ||
+    fail "a failed drill did not write last-restore-verify"
+  IFS='|' read -r snapid ts rstatus <"$root/last-restore-verify"
+  [[ $snapid == failure && $rstatus == snapshot ]] ||
+    fail "last-restore-verify is not a snapshot failure: $(cat "$root/last-restore-verify")"
+  [[ $ts =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    fail "the failure timestamp is not UTC: $ts"
+  [[ $(file_mode "$root/last-restore-verify") == 600 ]] ||
+    fail "the failure report is not mode 0600"
   assert_no_new_scratch "the missing snapshot drill" "$before"
   pass "restore-verify.sh alerts and stops for a missing snapshot"
 
@@ -800,8 +896,11 @@ run_restore_tests() {
   assert_no_new_scratch "the disk preflight" "$before"
   grep -q 'api.resend.com' "$FAKE_DIR/curl.args" ||
     fail "the disk preflight did not send an alert"
-  [[ ! -e $root/last-restore-verify ]] ||
-    fail "the disk preflight wrote last-restore-verify"
+  [[ -f $root/last-restore-verify ]] ||
+    fail "the disk preflight did not write a failure report"
+  IFS='|' read -r snapid ts rstatus <"$root/last-restore-verify"
+  [[ $snapid == failure && $rstatus == preflight ]] ||
+    fail "the disk failure report is malformed: $(cat "$root/last-restore-verify")"
   pass "restore-verify.sh aborts before Docker when free disk is too low"
 
   # 4. The validation output names goose_db_version and every core table count.
@@ -837,6 +936,13 @@ run_restore_tests() {
   assert_no_new_scratch "the lock-held drill" "$before"
   [[ ! -e $root/last-restore-verify ]] ||
     fail "the lock-held drill wrote last-restore-verify"
+  [[ -f $root/last-restore-attempt ]] ||
+    fail "the lock-held drill did not write last-restore-attempt"
+  IFS='|' read -r snapid ts rstatus <"$root/last-restore-attempt"
+  [[ $snapid == skipped && $rstatus == lock ]] ||
+    fail "last-restore-attempt is not a lock skip: $(cat "$root/last-restore-attempt")"
+  [[ $ts =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    fail "the skip timestamp is not UTC: $ts"
   kill "$hold_pid" 2>/dev/null || true
   wait "$hold_pid" 2>/dev/null || true
   hold_pid=
@@ -940,6 +1046,7 @@ reset_install_logs() {
   : >"$install_fake/systemctl.args"
   : >"$install_fake/docker.args"
   : >"$install_fake/analyze.args"
+  : >"$install_fake/env.args"
   rm -f "$install_fake/seen.pass"
 }
 
@@ -1020,8 +1127,17 @@ printf 'systemd-analyze %s\n' "$*" >>"$FAKE_INSTALL_DIR/analyze.args"
 exit "${FAKE_ANALYZE_EXIT:-0}"
 FAKE_ANALYZE
 
+  # A fake env proves restic init receives credentials through the
+  # environment, never through `env VAR=value` argv.
+  cat >"$install_fake/env" <<FAKE_ENV
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "\$*" >>"\${FAKE_INSTALL_DIR}/env.args"
+exec "$(command -v env)" "\$@"
+FAKE_ENV
+
   chmod +x "$install_fake/restic" "$install_fake/systemctl" \
-    "$install_fake/docker" "$install_fake/systemd-analyze"
+    "$install_fake/docker" "$install_fake/systemd-analyze" "$install_fake/env"
   reset_install_logs
 }
 
@@ -1113,9 +1229,15 @@ run_install_tests() {
   grep -q '^OnCalendar=Sun \*-\*-\* 03:30:00 UTC$' \
     "$install_unit_dir/o1-backup-prune.timer" ||
     fail "the prune timer is not Sunday 03:30 UTC"
-  grep -q '^OnCalendar=\*-\*-01 04:00:00 UTC$' \
+  grep -q '^RandomizedDelaySec=10m$' \
+    "$install_unit_dir/o1-backup-prune.timer" ||
+    fail "the prune timer has no 10 minute randomized delay"
+  grep -q '^OnCalendar=\*-\*-01 06:00:00 UTC$' \
     "$install_unit_dir/o1-restore-verify.timer" ||
-    fail "the restore timer is not the first at 04:00 UTC"
+    fail "the restore timer is not the first at 06:00 UTC"
+  grep -q '^RandomizedDelaySec=15m$' \
+    "$install_unit_dir/o1-restore-verify.timer" ||
+    fail "the restore timer has no 15 minute randomized delay"
   for u in o1-backup.timer o1-backup-prune.timer \
     o1-restore-verify.timer; do
     grep -q '^Persistent=true$' "$install_unit_dir/$u" ||
@@ -1134,6 +1256,9 @@ run_install_tests() {
   [[ -s $pass_file ]] || fail "restic.pass is empty"
   grep -q 'args: init' "$install_fake/restic.args" ||
     fail "the installer did not call restic init"
+  if [[ -s $install_fake/env.args ]]; then
+    fail "the installer passed environment assignments through env argv"
+  fi
   pass_value=$(cat "$pass_file")
   if grep -qF -- "$pass_value" "$tmp/last.out"; then
     fail "the installer printed the restic password"
@@ -1395,7 +1520,46 @@ run_install_tests() {
     fail "the installer did not verify the units before enabling"
   pass "install-backup.sh enables all three timers with a complete config"
 
-  # 9. Missing source files and commands fail before touching the install root.
+  # 9. Email-only --enable needs usable Resend credentials in O1_ENV_FILE;
+  #    a failure URL makes email optional.
+  root="$tmp/install-root-enable-email"
+  mkdir -p "$root/backup"
+  printf 'existing-password\n' >"$root/backup/restic.pass"
+  chmod 600 "$root/backup/restic.pass"
+  write_install_env "$root/backup/backup.env" "$root" \
+    "$tmp/install-repo-email" "https://ping.example/success" "" \
+    "ops@example.com"
+  printf 'O1_OTHER_SETTING=value\n' >"$root/.env"
+  chmod 600 "$root/.env"
+  reset_install_unit_dir
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" --enable \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "--enable accepted email-only without Resend credentials"
+  if grep -q 'enable' "$install_fake/systemctl.args"; then
+    fail "--enable enabled timers without Resend credentials"
+  fi
+  grep -qE 'O1_RESEND_API_KEY|O1_EMAIL_FROM' "$tmp/last.out" ||
+    fail "the email-only refusal does not name the Resend variables"
+
+  printf 'O1_RESEND_API_KEY=resend-for-tests\n' >"$root/.env"
+  printf 'O1_EMAIL_FROM=o1 <noreply@example.com>\n' >>"$root/.env"
+  chmod 600 "$root/.env"
+  reset_install_logs
+  status=0
+  run_install --source "$install_source" --root "$root" --enable \
+    >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -eq 0 ]] || fail "--enable rejected email-only with Resend credentials"
+  grep -q 'enable --now o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer' \
+    "$install_fake/systemctl.args" ||
+    fail "the email-only install did not enable all three timers"
+  if grep -qF 'resend-for-tests' "$tmp/last.out"; then
+    fail "the installer printed the Resend API key"
+  fi
+  pass "install-backup.sh validates email-only delivery credentials before enabling"
+
+  # 10. Missing source files and commands fail before touching the install root.
   bad_source="$tmp/install-source-missing"
   rm -rf "$bad_source"
   cp -R "$install_source" "$bad_source"

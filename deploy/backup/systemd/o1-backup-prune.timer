@@ -3,6 +3,7 @@ Description=Weekly o1 backup repository prune
 
 [Timer]
 OnCalendar=Sun *-*-* 03:30:00 UTC
+RandomizedDelaySec=10m
 Persistent=true
 Unit=o1-backup-prune.service
 
