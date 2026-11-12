@@ -673,11 +673,13 @@ managed database is accepted. See
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |
 
-## 12. Optional metrics with Grafana Alloy
+## 12. Optional observability with Grafana Alloy
 
 Alloy is behind the `observability` profile and is not started by a normal
-`up`. Set `GRAFANA_REMOTE_WRITE_URL`, `GRAFANA_REMOTE_WRITE_USER`, and
-`GRAFANA_REMOTE_WRITE_TOKEN` in `deploy/production/.env`, then run:
+`up`. Set all six Grafana values in `deploy/production/.env`:
+`GRAFANA_REMOTE_WRITE_URL`, `GRAFANA_REMOTE_WRITE_USER`,
+`GRAFANA_REMOTE_WRITE_TOKEN`, `GRAFANA_LOKI_URL`, `GRAFANA_LOKI_USER`, and
+`GRAFANA_LOKI_TOKEN`, then run:
 
 ```sh
 docker compose --env-file deploy/production/.env \
@@ -685,8 +687,11 @@ docker compose --env-file deploy/production/.env \
 ```
 
 Alloy scrapes the internal listeners (`api:8083`, `scheduler:8081`,
-`worker:8082`) and remote-writes to Grafana Cloud. It exits with a clear error
-when credentials are missing instead of silently dropping metrics. See
+`worker:8082`), remote-writes metrics to Grafana Cloud, and ships the logs of
+`api`, `scheduler`, `worker`, and `web` to Grafana Cloud Loki. It reads the
+Docker socket read-only and only collects containers in this Compose project.
+It exits with a clear error when any Grafana variable is missing instead of
+silently dropping data. See
 [../observability/README.md](../observability/README.md) for Grafana Cloud
 setup, dashboards, alert rules, and Sentry configuration. Point an external
 dead-man's switch at `https://o1.example.com/healthz`, never at `/metrics`.

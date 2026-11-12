@@ -88,6 +88,51 @@ To stop Alloy without stopping the application stack:
 docker compose --profile observability stop alloy
 ```
 
+## Logs
+
+Alloy ships the stdout/stderr of `api`, `scheduler`, `worker`, and `web` to
+Grafana Cloud Loki. It reads the Docker socket read-only and only collects
+containers in the configured Compose project.
+
+1. In Grafana Cloud open **Connections → Loki** and copy the push endpoint
+   (`https://logs-prod-XX.grafana.net/loki/api/v1/push`) and the numeric user,
+   then create an access policy token with `logs:write`.
+2. Set the values next to the metrics credentials:
+
+   ```sh
+   export GRAFANA_LOKI_URL="https://logs-prod-XX.grafana.net/loki/api/v1/push"
+   export GRAFANA_LOKI_USER="<numeric-user-id>"
+   export GRAFANA_LOKI_TOKEN="<access-policy-token>"
+   ```
+
+3. Start or restart the profile:
+
+   ```sh
+   docker compose --profile observability up -d alloy
+   ```
+
+   All six Grafana values are required (three remote-write, three Loki).
+   Alloy exits and names the missing variable instead of running degraded.
+
+Labels are bounded to `env`, `service`, `container`, and `level`; application
+JSON fields stay in the log body. Query in Grafana **Explore → Loki**:
+
+```logql
+{service="api"}
+{service="api"} |= "ERROR"
+{env="production"} | json
+```
+
+Logs survive a deploy because they live in Loki, not in a container that the
+deploy replaces. The Compose deployment does not restart Alloy by itself:
+re-run the profile command after a release that changes `alloy.alloy` or these
+variables.
+
+**Security:** `/var/run/docker.sock` is mounted read-only, but read access to
+the Docker socket is effectively root-equivalent on the host. Alloy exposes no
+port and runs no application code; keep the socket mount read-only and keep the
+Compose-project filter.
+
 ## Validate the artifacts locally
 
 Caddy (the Docker image is the fallback when `caddy` is not installed):
@@ -289,10 +334,15 @@ There is no log shipping or self-hosted observability stack in this bundle.
 ## Troubleshooting
 
 - **Alloy exits immediately:** read the printed missing variable; the Compose
-  profile requires all three `GRAFANA_REMOTE_WRITE_*` values.
+  profile requires all three `GRAFANA_REMOTE_WRITE_*` values and all three
+  `GRAFANA_LOKI_*` values.
 - **Alloy runs but no series arrive:** inspect `docker compose logs alloy` for
   remote-write 401/403 errors, confirm the token has `metrics:write`, and query
   `up{job=~"o1-.*"}` in Grafana Explore.
+- **Alloy runs but no logs arrive:** confirm the Loki token has `logs:write`,
+  the endpoint ends in `/loki/api/v1/push`, the Docker socket is mounted, and
+  `O1_COMPOSE_PROJECT` matches the running Compose project name. Query
+  `{env="production"}` in Grafana Explore → Loki.
 - **Only some jobs are missing:** check which container is running. API metrics
   are on `:8083`; scheduler and worker metrics are on `:8081` and `:8082`.
 - **`/metrics` returns 404 publicly:** expected. Query the internal listeners

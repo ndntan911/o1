@@ -511,8 +511,13 @@ containers.
 ## 9. Observability
 
 Alloy is behind the `observability` Compose profile and is not part of the
-default service set. Deploys run `up -d --remove-orphans` for the base
-services and leave a running Alloy container untouched, with its old config.
+default service set. It scrapes metrics and ships container logs to Grafana
+Cloud Loki, reading the Docker socket read-only and only collecting this
+Compose project. All six `GRAFANA_REMOTE_WRITE_*` and `GRAFANA_LOKI_*` values
+are required when the profile runs: the log variables are
+`GRAFANA_LOKI_URL`, `GRAFANA_LOKI_USER`, and `GRAFANA_LOKI_TOKEN`. Deploys run
+`up -d --remove-orphans` for the base services and leave a running Alloy
+container untouched, with its old config.
 
 If a release changes `deploy/observability/alloy.alloy`, restart Alloy
 explicitly after the deploy so it picks up the new file from the active
