@@ -110,3 +110,15 @@ func newBoundary(bodies ...string) string {
 		}
 	}
 }
+
+// envelopeAddress returns the bare addr-spec for an SMTP envelope command.
+// Display names are only valid in message headers; MAIL FROM and RCPT TO carry
+// the address alone.
+func envelopeAddress(value string) string {
+	trimmed := strings.TrimSpace(value)
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil || addr.Address == "" {
+		return trimmed
+	}
+	return addr.Address
+}

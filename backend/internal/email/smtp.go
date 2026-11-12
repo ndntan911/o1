@@ -91,13 +91,13 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) (err error) {
 	dialer := net.Dialer{Timeout: smtpDialTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
-		return err
+		return smtpDeliveryError(err)
 	}
 	defer func() {
 		_ = conn.Close()
 	}()
 	if err := conn.SetDeadline(deadline); err != nil {
-		return err
+		return smtpDeliveryError(err)
 	}
 
 	// Interrupt blocked SMTP reads/writes if the caller cancels after dialing.
@@ -114,14 +114,14 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) (err error) {
 	if s.tlsMode == "implicit" {
 		tlsConn := tls.Client(conn, s.tlsConfig)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return classifySMTPError(err)
+			return smtpDeliveryError(err)
 		}
 		conn = tlsConn
 	}
 
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
-		return classifySMTPError(err)
+		return smtpDeliveryError(err)
 	}
 	defer func() {
 		_ = client.Close()
@@ -129,49 +129,58 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) (err error) {
 
 	if s.tlsMode == "starttls" {
 		if err := client.StartTLS(s.tlsConfig); err != nil {
-			return classifySMTPError(err)
+			return smtpDeliveryError(err)
 		}
 	}
 
 	if s.username != "" {
 		if err := client.Auth(smtp.PlainAuth("", s.username, s.password, host)); err != nil {
-			return classifySMTPError(err)
+			return smtpDeliveryError(err)
 		}
 	}
 
-	if err := client.Mail(s.from); err != nil {
-		return classifySMTPError(err)
+	if err := client.Mail(envelopeAddress(s.from)); err != nil {
+		return smtpDeliveryError(err)
 	}
-	if err := client.Rcpt(msg.To); err != nil {
-		return classifySMTPError(err)
+	if err := client.Rcpt(envelopeAddress(msg.To)); err != nil {
+		return smtpDeliveryError(err)
 	}
 	writer, err := client.Data()
 	if err != nil {
-		return classifySMTPError(err)
+		return smtpDeliveryError(err)
 	}
 	if _, err := writer.Write(renderMessage(s.from, s.replyTo, msg)); err != nil {
 		_ = writer.Close()
-		return classifySMTPError(err)
+		return smtpDeliveryError(err)
 	}
 	if err := writer.Close(); err != nil {
-		return classifySMTPError(err)
+		return smtpDeliveryError(err)
 	}
-	if err := client.Quit(); err != nil {
-		return classifySMTPError(err)
-	}
+	// The relay accepted the message when the DATA writer closed successfully.
+	// A failed QUIT must not trigger a retry and duplicate the delivery.
+	_ = client.Quit()
 	return nil
 }
 
-// classifySMTPError turns a 5xx relay response into a permanent delivery
-// failure. The relay's response text is never included because it can echo the
-// recipient address or credentials.
-func classifySMTPError(err error) error {
+// smtpDeliveryError sanitizes every SMTP failure. Relay response text, host
+// names, and addresses are never included because relays can echo the
+// recipient or credentials. A 5xx response is permanent; everything else stays
+// transient so the retry wrapper tries again.
+func smtpDeliveryError(err error) error {
+	if err == nil {
+		return nil
+	}
 	var protoErr *textproto.Error
-	if errors.As(err, &protoErr) && protoErr.Code >= 500 {
+	if errors.As(err, &protoErr) {
 		return &DeliveryError{
 			Message:   fmt.Sprintf("smtp: relay rejected the message (%d)", protoErr.Code),
-			Permanent: true,
+			Permanent: protoErr.Code >= 500,
+			Cause:     err,
 		}
 	}
-	return err
+	return &DeliveryError{
+		Message:   "smtp: relay connection failed",
+		Permanent: false,
+		Cause:     err,
+	}
 }

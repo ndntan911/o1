@@ -87,10 +87,10 @@ func (s *MailpitSender) Send(ctx context.Context, msg Message) (err error) {
 		_ = client.Close()
 	}()
 
-	if err := client.Mail(s.from); err != nil {
+	if err := client.Mail(envelopeAddress(s.from)); err != nil {
 		return err
 	}
-	if err := client.Rcpt(msg.To); err != nil {
+	if err := client.Rcpt(envelopeAddress(msg.To)); err != nil {
 		return err
 	}
 	writer, err := client.Data()
