@@ -138,3 +138,14 @@ jobs:
       - run: bash deploy/scripts/test-deploy.sh
       - run: bash deploy/scripts/test-bootstrap.sh
       - run: bash deploy/scripts/test-workflows.sh
+
+      # The runner provides Docker for the disposable Postgres and a local
+      # restic repository created by test-backup.sh; S3 is never contacted.
+      - name: Install restic
+        run: |
+          curl -fsSL https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2 -o /tmp/restic.bz2
+          bunzip2 /tmp/restic.bz2
+          sudo install -m 0755 /tmp/restic /usr/local/bin/restic
+          restic version
+      - name: Backup and restore tests
+        run: bash deploy/scripts/test-backup.sh

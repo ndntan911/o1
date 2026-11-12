@@ -43,14 +43,14 @@ they exercise the same compose file the deploy script uses.
 - **Plan 11** added CI/CD and is implemented. Deploys normally run from the
   Deploy workflow with digest-pinned registry images; the manual commands here
   remain for first-run, offline, and recovery use. See [../CICD.md](../CICD.md).
-- **Backups are not implemented; Plan 12 is skipped.** There is no backup job,
-  WAL archiving, or restore procedure in this stack, and this release adds
-  retention: once enabled, the scheduler can delete raw probe partitions older
-  than 90+ days and prune hourly rollups and audit events past their windows.
-  Rollups are aggregates, not a backup. Until an external backup exists, take
-  and store a `pg_dump` yourself if the data matters, and note that the Caddy
-  volumes hold the TLS certificates, not application data. See
-  [Retention](#retention).
+- **Plan 12** adds encrypted offsite backups and restore drills. The host runs a
+  daily `pg_dump` through restic to S3-compatible storage, keeps 30 daily and 12
+  monthly snapshots, prunes weekly, and runs a restore drill monthly. The RPO is
+  up to 24 hours and there is no point-in-time recovery. Backups are host
+  tooling installed separately from the app release bundle; see
+  [Backups and restore](#8-backups-and-restore) and
+  [../backup/README.md](../backup/README.md). Retention remains a dry run until
+  `O1_RETENTION_DRY_RUN=false`.
 - `/metrics` is private. Caddy answers `404` and the metrics listeners are never
   published.
 - The Resend free tier has daily and monthly send caps. Verification mail,
@@ -421,11 +421,15 @@ SELECT count(*) FROM monitor_hourly_stats;
 SELECT relname FROM pg_class WHERE relname LIKE 'probe_results_%' AND relkind = 'r';
 ```
 
-Deletion is irreversible. **Plan 12 (backups) is skipped:** there is no backup,
-WAL archive, or restore path. Once a raw partition drops, the individual probe
-rows, status codes, error text, and exact check timestamps are gone. The hourly
-rollups preserve up/down counts and avg/min/max/p95 latency for the status page
-and long-window aggregates, but they are not a backup of the raw data.
+Deletion by the application is irreversible from the app's own history, but
+Plan 12 backs the database up: a restore can bring back data that retention has
+since deleted. Restic retention (30 daily plus 12 monthly snapshots) is
+independent of the retention windows above, and a snapshot may be up to 24
+hours old. Once a raw partition drops, the live database loses those individual
+probe rows, status codes, error text, and exact check timestamps; they exist
+again only if an older backup is restored. Hourly rollups preserve up/down
+counts and avg/min/max/p95 latency for the status page and long-window
+aggregates. See [Backups and restore](#8-backups-and-restore).
 
 ### Retention rollout
 
@@ -456,7 +460,64 @@ and long-window aggregates, but they are not a backup of the raw data.
    immediately, not on the next daily run. Expect at most one partition drop per
    startup pass and per daily run, so a backlog clears one month at a time.
 
-## 8. Update and restart
+## 8. Backups and restore
+
+Production backups are host tooling, not part of the app release bundle, and
+deploys and rollbacks never take or restore a database backup. The daily timer
+runs `pg_dump` streamed through restic to an encrypted S3-compatible repository;
+the RPO is up to 24 hours and there is no PITR. The host keeps 30 daily and 12
+monthly snapshots, prunes weekly, and runs an automated restore drill monthly.
+
+The backup tree is delivered with `scp` of `deploy/` and installed with
+`install-backup.sh --source <dir>`, where `<dir>` contains `backup/` and
+`scripts/`. Do not expect it in a release bundle. The full setup, configuration,
+password handling, manual commands, restore drill behavior, and disaster
+recovery runbook are in [../backup/README.md](../backup/README.md).
+
+Two independent copies of secrets are required, stored off the host:
+
+- `/opt/o1/.env`, including `O1_ENCRYPTION_KEY`, `O1_SECRET_KEY`,
+  `POSTGRES_PASSWORD`, and the Resend API key. Without `O1_ENCRYPTION_KEY`, a
+  restored database cannot decrypt monitor headers or request bodies.
+- `/opt/o1/backup/restic.pass` plus `/opt/o1/backup/backup.env` (S3
+  credentials). Without the restic password, the backups are unreadable.
+
+Backups run at 02:30 UTC daily, prune Sunday 03:30 UTC, and drill on the first
+of the month at 04:00 UTC. Check the timers and the last successful runs:
+
+```sh
+systemctl list-timers 'o1-*'
+cat /opt/o1/backup/last-success
+cat /opt/o1/backup/last-restore-verify
+sudo journalctl -u o1-backup.service -n 100 --no-pager
+```
+
+### Post-restore checklist
+
+Use the full runbook in [../backup/README.md](../backup/README.md) for a new
+host. After any restore, before declaring recovery:
+
+- [ ] `/healthz` and `/readyz` succeed, and the API/scheduler/worker logs show no
+      migration or decryption errors.
+- [ ] `goose_db_version` is at or ahead of the deployed release's latest
+      migration.
+- [ ] An administrator can log in.
+- [ ] A monitor with encrypted headers or a request body opens and a probe
+      succeeds; this proves `O1_ENCRYPTION_KEY` matches the data.
+- [ ] Public status pages and the expected monitors load.
+- [ ] Alert email delivery works.
+- [ ] Caddy has a valid certificate and redirects HTTP to HTTPS.
+- [ ] A manual backup succeeds, updates `last-success`, and pings the external
+      success URL.
+- [ ] The snapshot ID, restore times, and data-loss window (up to 24 hours, more
+      if an older snapshot was chosen) are recorded.
+
+A restore can reintroduce data that retention deleted. Restic retention is
+independent of `O1_RAW_RETENTION_DAYS`, `O1_ROLLUP_RETENTION_MONTHS`, and
+`O1_AUDIT_RETENTION_MONTHS`; review restored data and expected retention
+behavior before re-enabling deletion.
+
+## 9. Update and restart
 
 Manual update from a checkout, with the local build override:
 
@@ -489,7 +550,7 @@ local image names consistent with the manual build.)
 Frontend `VITE_*` values are baked into the static bundle at build time. Changing
 `VITE_SENTRY_DSN` or `VITE_RELEASE` requires rebuilding the `web` image.
 
-## 9. Rollback
+## 10. Rollback
 
 Each successful registry deploy stores an immutable bundle under
 `/opt/o1/releases/<version>-<sha>-<run_id>-<run_attempt>/`. The bundle holds the
@@ -529,7 +590,7 @@ schema; see [../CICD.md](../CICD.md#8-migrations). A manual rebuild from a
 checkout bypasses the release symlinks entirely and is replaced by the next
 deploy or rollback.
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
@@ -541,7 +602,7 @@ deploy or rollback.
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |
 
-## 11. Optional metrics with Grafana Alloy
+## 12. Optional metrics with Grafana Alloy
 
 Alloy is behind the `observability` profile and is not started by a normal
 `up`. Set `GRAFANA_REMOTE_WRITE_URL`, `GRAFANA_REMOTE_WRITE_USER`, and
@@ -562,7 +623,7 @@ dead-man's switch at `https://o1.example.com/healthz`, never at `/metrics`.
 Alloy's own UI on port `12345` is not published; use its logs for scrape and
 remote-write errors.
 
-## 12. Security notes
+## 13. Security notes
 
 - Only `80` and `443` are published. PostgreSQL, the API, the scheduler, the
   worker, and every health/metrics listener stay on the private Compose
@@ -574,7 +635,12 @@ remote-write errors.
   rejects the development email provider.
 - Keep Caddy's `caddy_data` volume; it holds the certificates and ACME account
   material. Application data lives in `postgres-data`.
-- There are no backups (Plan 12 is skipped). Once enabled, retention can delete
-  expired raw probes; it is a dry run until `O1_RETENTION_DRY_RUN=false`. See
-  [Retention](#retention). CI/CD deploys and the release/rollback process are
-  documented in [../CICD.md](../CICD.md).
+- Plan 12 backups are encrypted and offsite: restic encrypts the repository, and
+  the S3 credentials and restic password live only in `/opt/o1/backup/backup.env`
+  and `/opt/o1/backup/restic.pass` (both `0600`, root-owned). `.env` and
+  `O1_ENCRYPTION_KEY` are not uploaded and must be stored separately. Retention
+  can delete expired raw probes; it is a dry run until
+  `O1_RETENTION_DRY_RUN=false`, and a restore can reintroduce data deleted by
+  retention. See [Retention](#retention) and
+  [Backups and restore](#8-backups-and-restore). CI/CD deploys and the
+  release/rollback process are documented in [../CICD.md](../CICD.md).

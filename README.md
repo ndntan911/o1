@@ -232,11 +232,16 @@ either:
   run. A mismatch is re-rolled once per run; a partition that still mismatches
   is retained for a later run.
 
-**Plan 12 (backups) is skipped.** There is no backup, WAL archive, or restore
-procedure, so retention deletes the only copy of expired raw probes. Rollups are
-aggregates, not a backup: they preserve up/down counts and latency summaries,
-not individual status codes, error text, or exact probe rows. Treat raw deletion
-as irreversible.
+**Backups are implemented (Plan 12).** The production host runs a daily
+`pg_dump` streamed through restic to encrypted S3-compatible storage, giving an
+RPO of up to 24 hours and no point-in-time recovery. Retention is 30 daily plus
+12 monthly snapshots, with a weekly repository prune and a monthly automated
+restore drill. Restic retention is independent of the application retention
+above: restoring a snapshot can reintroduce raw probe rows, rollups, or audit
+events that retention has already deleted. `.env` and `O1_ENCRYPTION_KEY` are
+not part of the database backup; store them separately, or a restored database's
+encrypted headers and bodies cannot be decrypted. See
+[deploy/backup/README.md](deploy/backup/README.md).
 
 The scheduler catches up rollups every `O1_ROLLUP_INTERVAL` and runs retention
 once per day behind a PostgreSQL advisory lock. Deploy pipelines do not invoke
@@ -531,10 +536,14 @@ checks, administrator bootstrap, email smoke tests, logs, updates, and
 troubleshooting: [deploy/production/README.md](deploy/production/README.md).
 
 Production email is Resend only. `O1_ENV=production` requires
-`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. Backups were
-planned as Plan 12 but are skipped: there is no backup or restore path, and
-retention can delete expired raw probes once enabled. See
-[Data lifecycle](#data-lifecycle).
+`O1_ENCRYPTION_KEY` and rejects `O1_EMAIL_PROVIDER=mailpit`. Backups run on the
+host from a systemd timer, not in the deploy pipeline: a daily encrypted
+`pg_dump` through restic to S3-compatible storage, keeping 30 daily and 12
+monthly snapshots. The RPO is up to 24 hours and there is no point-in-time
+recovery. `.env` (including `O1_ENCRYPTION_KEY`) and the restic password are
+stored separately from the backup; restoring is a manual procedure documented in
+[deploy/backup/README.md](deploy/backup/README.md). See
+[Data lifecycle](#data-lifecycle) for how restores interact with retention.
 
 ### CI/CD
 
@@ -545,9 +554,10 @@ dispatched deliberately, not run from a laptop.
   and `ghcr.io/<owner>/o1-web` for `linux/amd64`, scans both with Trivy, and
   pushes only if the scans pass. Each image gets the release tag,
   `sha-<12-char-commit>`, and `X.Y`; deploys pin the `@sha256` digest.
-- CI also runs actionlint, shellcheck, and the Compose/deploy script suites in
-  a `pipeline` job. `govulncheck` is advisory until the Plan 14 security pass;
-  Trivy scans and the test suites remain blocking.
+- CI also runs actionlint, shellcheck, the Compose/deploy script suites, and the
+  backup/restore suite (with restic 0.19.1 installed) in a `pipeline` job.
+  `govulncheck` is advisory until the Plan 14 security pass; Trivy scans and the
+  test suites remain blocking.
 - Deploys run from **Actions → Deploy** with an `environment` (`staging` or
   `production`) and a `version`. The job resolves the digests, uploads a release
   bundle to `/opt/o1/incoming/<version>-<sha>-<run_id>-<run_attempt>`, and runs

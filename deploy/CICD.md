@@ -43,7 +43,8 @@ pull request ──► CI checks ──► merge to main
 - `.github/workflows/ci.yml` runs on every branch push and pull request. Its
   five jobs are the required status checks: `backend`, `integration`,
   `frontend`, `e2e`, `pipeline`. The `pipeline` job runs actionlint,
-  shellcheck, and the Compose and deploy script suites locally in CI.
+  shellcheck, the Compose, deploy, bootstrap, and workflow script suites, and
+  the backup/restore suite with restic 0.19.1 installed.
   `govulncheck` runs in `backend` as an advisory step (`continue-on-error`)
   until the Plan 14 security pass; Trivy image scans and every test suite
   remain blocking. `release.yml` reuses the workflow through `workflow_call:`,
@@ -184,7 +185,9 @@ Each environment needs its own host: staging and production both bind `80` and
 `443`. Prepare the host once.
 
 1. Install Docker Engine 24+ with the Compose v2 plugin, plus `git`, `curl`,
-   `flock` (util-linux), and `openssl`. Confirm:
+   `flock` (util-linux), and `openssl`. If the host also runs the backup timers,
+   install `restic` 0.19.1, `jq`, and `timeout` (util-linux) as well; see
+   [backup/README.md](backup/README.md). Confirm:
 
    ```sh
    docker version
@@ -379,6 +382,31 @@ Manual access is for recovery, not for routine releases. `deploy.sh` and
 `rollback.sh` share `/opt/o1/state/deploy.lock`: a second concurrent deploy or
 rollback exits with code `3` and changes nothing.
 
+### Database backups and restores
+
+Deploys and rollbacks never back up or restore the database. They replace
+images, configuration, and the release bundle only. Backups are host tooling on
+independent systemd timers: a daily encrypted `pg_dump` through restic to
+S3-compatible storage, 30 daily and 12 monthly snapshots, a weekly prune, and a
+monthly restore drill. The RPO is up to 24 hours and there is no PITR.
+
+Restoring is a separate manual procedure and is never triggered by a failed
+deploy or a rollback. The backup scripts are not in the release bundle; install
+them with `scp` and `install-backup.sh --source <deploy-tree>`. See
+[backup/README.md](backup/README.md) for setup, password safety, the manual
+commands, and the disaster-recovery runbook.
+
+Before a risky migration, take and verify a manual backup:
+
+```sh
+sudo systemctl start o1-backup.service
+cat /opt/o1/backup/last-success
+```
+
+A release rollback is not a data rollback: it leaves the migrated database in
+place. A database restore can also reintroduce data that application retention
+has already deleted.
+
 ### Roll back to the previous release
 
 ```sh
@@ -485,6 +513,9 @@ containers.
   `/readyz` fail, which triggers the automatic restore, but the schema may
   already be partway ahead. Read the API logs and fix forward; do not assume a
   rollback undoes it.
+- Deploys and rollbacks do not touch the database backup. The host timer keeps
+  taking daily snapshots, and recovering data is a manual restore (§7), not a
+  redeploy. Take a fresh backup before a migration you expect to be risky.
 
 ## 9. Observability
 
