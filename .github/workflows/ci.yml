@@ -37,7 +37,7 @@ jobs:
         run: go test -short ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           # Pinned to a release built with a Go toolchain new enough for this
           # module's `go 1.26.0` directive; older versions (e.g. v2.1.6) fail
