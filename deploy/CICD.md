@@ -400,7 +400,7 @@ Before a risky migration, take and verify a manual backup:
 
 ```sh
 sudo systemctl start o1-backup.service
-cat /opt/o1/backup/last-success
+sudo cat /opt/o1/backup/last-success
 ```
 
 A release rollback is not a data rollback: it leaves the migrated database in
@@ -609,6 +609,8 @@ bash deploy/scripts/test-compose-config.sh
 bash deploy/scripts/test-deploy.sh
 bash deploy/scripts/test-bootstrap.sh
 bash deploy/scripts/test-workflows.sh
+# Requires restic 0.19.1 and Docker; the suite starts a disposable Postgres.
+bash deploy/scripts/test-backup.sh
 docker run --rm -v "$PWD:/repo" -w /repo aquasec/trivy:0.76.2 fs --scanners secret,misconfig --severity HIGH,CRITICAL --exit-code 1 .
 cd backend && go test -short ./...
 cd ../web && npm test -- --run
@@ -626,8 +628,11 @@ the CI step uses `continue-on-error: true`. The script tests use fake `docker`,
 prove activation, readiness polling, rollback on failed login/pull/up/health,
 first-deploy behavior, lock exclusion, and dry-run. The Compose tests prove the
 fixture digests propagate into the rendered config and the build override still
-validates. Digest enforcement is not a Compose check: `deploy.sh` and
-`rollback.sh` reject non-digest refs, and `test-deploy.sh` covers that.
+validates. The backup suite needs real `restic` 0.19.1 and Docker, starts a
+disposable Postgres, and uses a local restic repository rather than S3; see
+[backup/README.md](backup/README.md). Digest enforcement is not a Compose
+check: `deploy.sh` and `rollback.sh` reject non-digest refs, and
+`test-deploy.sh` covers that.
 
 ### Live acceptance checklist
 

@@ -487,8 +487,8 @@ of the month at 04:00 UTC. Check the timers and the last successful runs:
 
 ```sh
 systemctl list-timers 'o1-*'
-cat /opt/o1/backup/last-success
-cat /opt/o1/backup/last-restore-verify
+sudo cat /opt/o1/backup/last-success
+sudo cat /opt/o1/backup/last-restore-verify
 sudo journalctl -u o1-backup.service -n 100 --no-pager
 ```
 

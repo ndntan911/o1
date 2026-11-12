@@ -107,9 +107,19 @@ sudo /tmp/o1-deploy/scripts/install-backup.sh \
 `--init-new-repo` is the only path that generates a password. If the repository
 already exists, the installer removes the candidate password and aborts; it
 never overwrites an existing `restic.pass`. If the provider needs extra
-environment for `restic init`, export it in the install shell first, because the
-installer only passes `RESTIC_REPOSITORY`, `RESTIC_PASSWORD_FILE`,
-`RESTIC_CACHE_DIR`, and the two AWS credential variables.
+environment for `restic init`, pass it through sudo explicitly, because sudo
+resets the environment and an exported variable in your shell will not reach
+the installer:
+
+```sh
+sudo AWS_DEFAULT_REGION=us-east-1 /tmp/o1-deploy/scripts/install-backup.sh \
+  --source /tmp/o1-deploy --init-new-repo
+```
+
+`sudo -E` also preserves the caller's environment when the sudo policy allows
+it. The installer passes `RESTIC_REPOSITORY`, `RESTIC_PASSWORD_FILE`,
+`RESTIC_CACHE_DIR`, and the two AWS credential variables in addition to
+whatever it inherits.
 
 ## 5. Restic password safety and offsite storage
 
@@ -178,7 +188,14 @@ copied into `/opt/o1/bin`.
 Production requires `O1_BACKUP_PING_URL` and at least one failure path
 (`O1_BACKUP_ALERT_EMAIL` or `O1_BACKUP_FAILURE_URL`). `--enable` enforces that,
 and also requires `RESTIC_REPOSITORY` and `RESTIC_PASSWORD_FILE`. Without
-`--enable` the units are installed but no timer fires.
+`--enable`, a fresh install enables no timers; on an upgrade re-run, previously
+enabled timers keep firing because the installer does not disable them. Turn
+all three off explicitly when you need a quiet host:
+
+```sh
+sudo systemctl disable --now o1-backup.timer o1-backup-prune.timer \
+  o1-restore-verify.timer
+```
 
 ## 7. Configuration and retention
 
@@ -193,6 +210,7 @@ and also requires `RESTIC_REPOSITORY` and `RESTIC_PASSWORD_FILE`. Without
 | `AWS_SECRET_ACCESS_KEY` | yes | Scoped S3 secret. |
 | `O1_COMPOSE_FILE` | yes | `/opt/o1/current/deploy/production/compose.yaml`. |
 | `O1_ENV_FILE` | yes | `/opt/o1/.env`; used for Compose and Resend alert credentials. |
+| `O1_BACKUP_PG_CONTAINER` | no | Backup only: dump with `docker exec <container> pg_dump` instead of resolving Compose. |
 | `O1_BACKUP_KEEP_DAILY` | no | Daily snapshots to keep; default `30`. |
 | `O1_BACKUP_KEEP_MONTHLY` | no | Monthly snapshots to keep; default `12`. |
 | `O1_BACKUP_TIMEOUT` | no | Backup timeout; default `2h`. Rewrites the unit on install. |
@@ -241,8 +259,8 @@ Inspect state and list snapshots. `backup.env` is shell-compatible for
 interactive use; do not modify it to add shell constructs:
 
 ```sh
-cat /opt/o1/backup/last-success
-cat /opt/o1/backup/last-restore-verify
+sudo cat /opt/o1/backup/last-success
+sudo cat /opt/o1/backup/last-restore-verify
 sudo bash -c '
   set -a; . /opt/o1/backup/backup.env; set +a
   restic snapshots --tag o1-db --latest 5
@@ -256,7 +274,7 @@ as an argument) and:
 
 1. Preflights free disk under `RESTIC_CACHE_DIR` for at least twice
    `pg_database_size` and aborts before creating anything if it does not fit.
-2. Starts a scratch `postgres:16-alpine` container with a random name, a random
+2. Starts a scratch `postgres:16-alpine` container with a unique name, a random
    password, and no published host port.
 3. Restores with `restic dump <snapshot> o1.dump | docker exec -i <scratch>
    pg_restore -U o1 -d o1_restore --no-owner --no-privileges`.
@@ -272,7 +290,8 @@ as an argument) and:
 The drill proves that the repository password works, the snapshot decrypts,
 `pg_restore` succeeds, and the schema is present. It does **not** prove that
 `O1_ENCRYPTION_KEY` decrypts application columns; the host has no application
-decryptor. The post-restore smoke test in §8.4 covers that after the app starts.
+decryptor. The encrypted-header smoke test in §8.1 (step 9) covers that after
+the app starts.
 
 ### 8.1 Full disaster recovery: new host
 
@@ -309,13 +328,18 @@ repository:
    Do **not** pass `--init-new-repo` against the existing repository, and do
    not run `restic init`. If the installer reports a missing password, the copy
    failed; restore it before continuing.
-4. **Start Postgres only.** The application has not run, so the database is
-   empty and ready for `pg_restore`:
+4. **Start Postgres only.** On a registry-deployed host the digest-pinned image
+   refs live in `/opt/o1/current/images.env`; every Compose command below passes
+   it, or Compose would fall back to the local `o1-backend:local` and
+   `o1-web:local` names. The application has not run, so the database is empty
+   and ready for `pg_restore`:
 
    ```sh
    sudo docker compose --env-file /opt/o1/.env \
+     --env-file /opt/o1/current/images.env \
      -f /opt/o1/current/deploy/production/compose.yaml up -d postgres
    sudo docker compose --env-file /opt/o1/.env \
+     --env-file /opt/o1/current/images.env \
      -f /opt/o1/current/deploy/production/compose.yaml \
      exec -T postgres pg_isready -U o1 -d o1
    ```
@@ -340,6 +364,7 @@ repository:
      set -a; . /opt/o1/backup/backup.env; set +a
      restic dump <snapshot-id> o1.dump | \
        docker compose --env-file /opt/o1/.env \
+         --env-file /opt/o1/current/images.env \
          -f /opt/o1/current/deploy/production/compose.yaml \
          exec -T postgres pg_restore -U o1 -d o1 --no-owner --no-privileges
    '
@@ -354,6 +379,7 @@ repository:
 
    ```sh
    sudo docker compose --env-file /opt/o1/.env \
+     --env-file /opt/o1/current/images.env \
      -f /opt/o1/current/deploy/production/compose.yaml up -d
    ```
 
@@ -378,7 +404,7 @@ repository:
     ```sh
     sudo /tmp/o1-deploy/scripts/install-backup.sh --source /tmp/o1-deploy --enable
     sudo systemctl start o1-backup.service
-    cat /opt/o1/backup/last-success
+    sudo cat /opt/o1/backup/last-success
     ```
 
 12. **Record the recovery.** Note the restore start and finish times, the
@@ -428,10 +454,16 @@ Never point the application at the scratch database.
 On success, `backup.sh` pings `O1_BACKUP_PING_URL`. On failure it sends email
 through Resend (when `O1_BACKUP_ALERT_EMAIL`, `O1_RESEND_API_KEY`, and
 `O1_EMAIL_FROM` are configured) and pings `O1_BACKUP_FAILURE_URL`. The failure
-message names the host, job, UTC time, failing stage (`lock`, `verify`, `dump`,
-`upload`, `retention`, `state`, or `ping`), and a bounded log tail. It never
-includes secrets or row contents. A failure of the alert itself is logged and
-does not mask the original error.
+message names the host, job, UTC time, failing stage, and a bounded log tail. It
+never includes secrets or row contents. A failure of the alert itself is logged
+and does not mask the original error.
+
+- Backup stages: `startup`, `lock`, `verify`, `dump`, `upload`, `retention`,
+  `prune`, `state`, `ping`. `upload` is reported when a `pg_dump`/restic
+  pipeline fails after the dump itself succeeded, and `prune` applies to the
+  weekly `--prune-only` run.
+- Restore drill stages: `startup`, `lock`, `snapshot`, `preflight`, `scratch`,
+  `ready`, `restore`, `validate`, `join`, `check`, `state`.
 
 Use two different URLs. Point the success URL at an external dead-man's switch
 that alerts when the daily ping is missing; that is the only way to detect a

@@ -70,11 +70,15 @@ grep -Fq 'bash deploy/scripts/test-backup.sh' "$ci_file" ||
   fail "$ci_file does not run test-backup.sh"
 awk '
   /^  [a-z]+:/ { job = $1 }
-  /restic_0\.19\.1_linux_amd64\.bz2/ { restic_job = job }
-  /bash deploy\/scripts\/test-backup\.sh/ { backup_job = job }
-  END { exit !(restic_job == "pipeline:" && backup_job == "pipeline:") }
-' "$ci_file" || fail "restic and test-backup.sh are not both in the pipeline job"
-check "$ci_file installs restic 0.19.1 and runs the backup suite in pipeline"
+  /restic_0\.19\.1_linux_amd64\.bz2/ { restic_job = job; restic_line = NR }
+  /bash deploy\/scripts\/test-backup\.sh/ { backup_job = job; backup_line = NR }
+  END {
+    exit !(restic_job == "pipeline:" && backup_job == "pipeline:" &&
+      restic_line < backup_line)
+  }
+' "$ci_file" ||
+  fail "restic must be installed before test-backup.sh in the pipeline job"
+check "$ci_file installs restic 0.19.1 before running the backup suite in pipeline"
 
 # govulncheck belongs to the backend job, after go vet.
 awk '
