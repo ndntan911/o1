@@ -1,0 +1,13 @@
+# o1 serves the dashboard as a single-page app, so every unknown path returns
+# the shell. Keep crawlers on the public pages and out of the API and the
+# authenticated app surfaces.
+User-agent: *
+Allow: /$
+Allow: /status/
+Disallow: /api/
+Disallow: /account/
+Disallow: /login
+Disallow: /register
+Disallow: /verify-email
+Disallow: /forgot-password
+Disallow: /reset-password

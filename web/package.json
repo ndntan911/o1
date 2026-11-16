@@ -11,6 +11,7 @@
     "test": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "og:image": "node scripts/make-og-image.mjs",
     "e2e": "playwright test",
     "preview": "vite preview"
   },

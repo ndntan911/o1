@@ -2,6 +2,17 @@
 	root * /srv
 	encode gzip zstd
 
+	# Browser baseline for the SPA and every proxied API response. HSTS is
+	# ignored on the plain-HTTP development origin and enforced in production,
+	# where Caddy terminates TLS. No includeSubDomains or preload: the domain
+	# may host other services.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
 	# Public health checks are served by the API, not the SPA, so load balancers
 	# and the external dead-man's switch see real process/database readiness.
 	handle /healthz {
