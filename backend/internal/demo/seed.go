@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -421,16 +422,14 @@ func seedTodayProbes(ctx context.Context, tx pgx.Tx, wsID uuid.UUID, now time.Ti
 		}
 
 		var rows [][]any
-		row := 0
 		for minute := start; minute.Before(end); minute = minute.Add(time.Minute) {
 			checked := minute.Add(30 * time.Second)
-			latency := syntheticLatency(i, 0, minute.Hour()) + row%7
+			latency := todayLatency(i, minute)
 			rows = append(rows, []any{
 				uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s|%d", monitorID, minute.Unix()))),
 				monitorID, wsID, minute, checked,
 				"up", 200, latency, nil, now,
 			})
-			row++
 			if len(rows) == 200 {
 				inserted, err := insertProbeRows(ctx, tx, rows)
 				if err != nil {
@@ -599,6 +598,16 @@ func dayStart(t time.Time) time.Time {
 func syntheticLatency(monitor, day, hour int) int {
 	n := (monitor*7919 + day*104729 + hour*1299709) % 240
 	return 90 + monitor*35 + n
+}
+
+// todayLatency is syntheticLatency's minute-resolution sibling: a slow wave
+// plus deterministic jitter, so the raw-probe latency chart looks measured
+// instead of stepping once per hour.
+func todayLatency(monitor int, minute time.Time) int {
+	minutes := minute.Hour()*60 + minute.Minute()
+	wave := int(16 * math.Sin(float64(minutes)/11))
+	jitter := (monitor*7919 + minutes*104729) % 11
+	return 120 + monitor*18 + wave + jitter
 }
 
 func generatePassword() (string, error) {
