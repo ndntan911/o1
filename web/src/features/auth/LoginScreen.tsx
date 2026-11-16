@@ -243,6 +243,9 @@ export function LoginScreen({ redirectTo }: LoginScreenProps) {
 					</Button>
 
 					<div className="flex flex-col gap-2 text-sm text-muted-foreground">
+						<a href="/status/demo" className="underline underline-offset-4">
+							See the live demo status page
+						</a>
 						<Link to="/register" className="underline underline-offset-4">
 							Create an account
 						</Link>

@@ -80,6 +80,13 @@ describe('LoginScreen', () => {
 		expect(calls).toBe(0);
 	});
 
+	test('links to the public demo status page', () => {
+		renderWithProviders(<LoginScreen />);
+
+		const link = screen.getByRole('link', { name: /live demo/i });
+		expect(link).toHaveAttribute('href', '/status/demo');
+	});
+
 	test('posts credentials and navigates to the redirect target', async () => {
 		const bodies: unknown[] = [];
 		server.use(

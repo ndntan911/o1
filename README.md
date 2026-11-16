@@ -98,6 +98,29 @@ pages, are available in the dashboard. See [Public status pages](#public-status-
 The dashboard supports Light, Dark, and System appearance. The choice is stored
 in the browser, and System follows the operating system preference.
 
+## Demo workspace
+
+A fresh deployment starts empty. The `seed` command creates a labelled demo
+workspace: a verified account, five public monitors, synthetic 90-day hourly
+history, resolved incidents, and a published status page at
+`/status/{slug}` (default `/status/demo`).
+
+```sh
+docker compose run --rm --entrypoint /seed api -email demo@o1.work.gd
+```
+
+The first run prints a generated password once; pass `-password` to choose one.
+The status page names the history as synthetic, while the monitors themselves
+are real and the scheduler keeps probing them. Sign-in links to that page, so
+visitors can see the product without an account. Running the command again
+refreshes the history, reuses the account and monitors, and only adds incidents
+when the workspace has none.
+
+Run `seed` on a demo deployment: it moves the rollup watermark to the start of
+the current UTC day so the synthetic history is trusted, which would skip a
+rollup pass for real probe rows written earlier that day. Production runs the
+same command with the production env file and Compose file.
+
 ## Incidents and alerts
 
 The probe worker opens an incident when a monitor crosses its confirmation
