@@ -5,6 +5,9 @@ React dashboard. This repository ships authentication, workspaces and RBAC,
 monitor CRUD, SSRF-guarded probing, scheduling, and administrator controls
 behind the dashboard.
 
+For a guided tour with screenshots and the design decisions behind the
+harder parts, see [PORTFOLIO.md](PORTFOLIO.md).
+
 ## Architecture
 
 Three binaries share one image and one database:
