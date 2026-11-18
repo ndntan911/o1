@@ -65,6 +65,13 @@ type Config struct {
 	AuthRatePerMinute int
 	AuthRateBurst     int
 
+	// BillingProvider selects the payment provider. Plan 15 ships sandbox
+	// only; other values fail startup until an adapter lands.
+	BillingProvider string
+	// BillingWebhookSecret signs sandbox webhook payloads. Production requires
+	// it explicitly; development derives one from the secret key.
+	BillingWebhookSecret string
+
 	// PublicRatePerMinute and PublicRateBurst configure the per-IP token
 	// bucket on the public status page. Defaults keep 1 rps with a burst of 20.
 	PublicRatePerMinute int
@@ -350,6 +357,12 @@ func Load() (Config, error) {
 	if cfg.AuthRateBurst, err = envInt("O1_AUTH_RATE_BURST", 10); err != nil {
 		return cfg, err
 	}
+	cfg.BillingProvider = strings.ToLower(strings.TrimSpace(env("O1_BILLING_PROVIDER", "sandbox")))
+	cfg.BillingWebhookSecret = strings.TrimSpace(env("O1_BILLING_WEBHOOK_SECRET", ""))
+	if cfg.BillingWebhookSecret == "" && cfg.Env != "production" {
+		sum := sha256.Sum256(append([]byte("o1-billing:"), cfg.SecretKey...))
+		cfg.BillingWebhookSecret = base64.RawURLEncoding.EncodeToString(sum[:])
+	}
 	if cfg.PublicRatePerMinute, err = envInt("O1_PUBLIC_RATE_PER_MINUTE", 60); err != nil {
 		return cfg, err
 	}
@@ -463,6 +476,12 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.AuthRateBurst < 1 {
 		return fmt.Errorf("invalid O1_AUTH_RATE_BURST: must be at least 1, got %d", cfg.AuthRateBurst)
+	}
+	if cfg.BillingProvider != "sandbox" {
+		return fmt.Errorf("invalid O1_BILLING_PROVIDER: %q is not implemented yet", cfg.BillingProvider)
+	}
+	if cfg.BillingWebhookSecret == "" {
+		return fmt.Errorf("invalid O1_BILLING_WEBHOOK_SECRET: required in production")
 	}
 	if cfg.PublicRatePerMinute < 1 || cfg.PublicRateBurst < 1 {
 		return fmt.Errorf("invalid O1_PUBLIC_RATE_PER_MINUTE/O1_PUBLIC_RATE_BURST: must be at least 1")

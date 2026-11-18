@@ -844,3 +844,31 @@ func TestLoad_SMTPTLSDefaultsToStartTLS(t *testing.T) {
 		t.Fatalf("SMTPTLS = %q, want starttls", cfg.SMTPTLS)
 	}
 }
+
+func TestLoad_BillingProviderDefaultsToSandbox(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_BILLING_PROVIDER", "")
+	t.Setenv("O1_BILLING_WEBHOOK_SECRET", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BillingProvider != "sandbox" {
+		t.Fatalf("provider = %q, want sandbox", cfg.BillingProvider)
+	}
+	if cfg.BillingWebhookSecret == "" {
+		t.Fatal("development should derive a webhook secret")
+	}
+}
+
+func TestLoad_RejectsUnimplementedBillingProvider(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_BILLING_PROVIDER", "lemonsqueezy")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("lemonsqueezy should fail until the adapter exists")
+	}
+}

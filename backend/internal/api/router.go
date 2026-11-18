@@ -17,6 +17,7 @@ import (
 	"o1/internal/alerts"
 	"o1/internal/apikeys"
 	"o1/internal/auth"
+	"o1/internal/billing"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
@@ -47,6 +48,7 @@ type Dependencies struct {
 	AdminService      *admin.Service
 	StatusPageService *statuspage.Service
 	APIKeyService     *apikeys.Service
+	BillingService    *billing.Service
 	Metrics           *observability.Metrics
 	Tracer            *observability.Tracer
 }
@@ -290,6 +292,14 @@ func NewRouter(deps Dependencies) http.Handler {
 			)
 		}
 	}
+	billingSvc := deps.BillingService
+	if billingSvc == nil && deps.Pool != nil {
+		billingSvc = billing.NewService(
+			deps.Pool,
+			sqlc.New(deps.Pool),
+			billing.NewSandbox([]byte(deps.Config.BillingWebhookSecret)),
+		)
+	}
 	statusPageSvc := deps.StatusPageService
 	if statusPageSvc == nil && deps.Pool != nil {
 		statusPageSvc = statuspage.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
@@ -342,6 +352,11 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.GetConfigHandler(statusPageSvc))))
 	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.UpdateConfigHandler(statusPageSvc))))
+
+	if billingSvc != nil {
+		mux.Handle("POST /api/v1/billing/webhook/{provider}",
+			httpx.RateLimit(2, 20, true)(http.HandlerFunc(billingSvc.Webhook)))
+	}
 
 	mux.Handle("GET /api/v1/public/status/{slug}", httpx.RateLimit(publicRPS(deps.Config), publicBurst(deps.Config), true)(http.HandlerFunc(statuspage.PublicHandler(statusPageSvc))))
 
