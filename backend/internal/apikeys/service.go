@@ -33,8 +33,6 @@ const (
 	secretBytes = 32
 	// maxPrefixRetries is how many fresh prefixes are tried after a collision.
 	maxPrefixRetries = 5
-	// maxActiveKeys caps active keys per workspace.
-	maxActiveKeys = 20
 	// maxNameLen is the maximum key name length in characters.
 	maxNameLen = 60
 

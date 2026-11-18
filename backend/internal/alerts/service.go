@@ -25,8 +25,6 @@ import (
 const (
 	// maxChannelsPerKind caps active channels of one kind per workspace.
 	maxChannelsPerKind = 10
-	// maxChannelsTotal caps all active channels per workspace.
-	maxChannelsTotal = 30
 )
 
 // Service owns alert channel CRUD. Incident enqueue and delivery stay in the
