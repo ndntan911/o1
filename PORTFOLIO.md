@@ -1,6 +1,7 @@
 # o1 — uptime and incident monitoring
 
-**Live:** <https://o1.work.gd> · **Public status page:** <https://o1.work.gd/status/demo>
+**Live:** <https://o1.work.gd> · **Public status page:** <https://o1.work.gd/status/demo> ·
+**30-second tour:** [demo.mp4](docs/portfolio/demo.mp4)
 
 **Demo viewer:** `demo-viewer@o1.work.gd` / `o1-demo-viewer-2026` — read-only,
 so the dashboard can be opened without creating an account (the demo command in

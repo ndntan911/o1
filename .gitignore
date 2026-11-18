@@ -7,3 +7,4 @@ node_modules/
 !.env.example
 # Real host image refs are written per deploy; never commit them.
 deploy/production/images.env
+docs/portfolio/demo.webm

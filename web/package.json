@@ -12,6 +12,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "og:image": "node scripts/make-og-image.mjs",
+    "demo:video": "node scripts/record-demo.mjs",
     "e2e": "playwright test",
     "preview": "vite preview"
   },

@@ -6,7 +6,8 @@ monitor CRUD, SSRF-guarded probing, scheduling, and administrator controls
 behind the dashboard.
 
 **Live:** <https://o1.work.gd> · **Public status page:**
-<https://o1.work.gd/status/demo> · **Demo viewer:**
+<https://o1.work.gd/status/demo> · **30-second tour:**
+[demo.mp4](docs/portfolio/demo.mp4) · **Demo viewer:**
 `demo-viewer@o1.work.gd` / `o1-demo-viewer-2026` (read-only; created by
 `seed` below)
 
