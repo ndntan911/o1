@@ -157,6 +157,9 @@ action it was recording.
 - **The system is observable.** Prometheus metrics on private listeners, OTLP
   tracing, Sentry with request data stripped, and a Grafana Alloy bundle that
   ships metrics and logs to Grafana Cloud.
+- **The security work is measured, not asserted.** A blocking dependency gate,
+  a written threat model, and a k6 baseline with committed results
+  ([`docs/security/load-test.md`](docs/security/load-test.md)).
 - **The demo data says it is demo data.** A `seed` command builds a labelled
   workspace with synthetic 90-day history and real public monitors; the status
   page description states the history is generated.
@@ -170,12 +173,16 @@ docker compose up --build            # dashboard :5173, API :8080, Mailpit :8025
 Production runbook: [`deploy/production/README.md`](deploy/production/README.md).
 Release and deploy guide: [`deploy/CICD.md`](deploy/CICD.md).
 
-## What is next
+## Security and capacity
 
-The honest gap is a formal security pass: `govulncheck` still runs as an
-advisory CI step, two Trivy exceptions have review dates, and there has been no
-penetration test or load test. That is Plan 14, tracked in the repo alongside
-the other plans under `docs/superpowers/`.
+The security pass shipped. `govulncheck` blocks on the shipping packages
+(`./cmd/...`) and reports zero reachable vulnerabilities on Go 1.26.11; a
+full-module advisory scan stays visible. The threat model names the trust
+boundaries, the access-control matrix, and nine residual risks; the review
+checklist turns it into repeatable checks. Caddy runs unprivileged with a
+hashed-script CSP, and the load baseline records p95/p99, the dataset, and the
+first bottleneck (the database connection pool). See
+[`docs/security/`](docs/security/).
 
 ## Screenshots
 

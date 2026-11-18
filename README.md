@@ -776,3 +776,7 @@ Integration tests start disposable PostgreSQL 16 containers and are skipped in
   proxying to the API, so a client cannot spoof the source IP used for auth rate
   limits and audit events. The API trusts forwarded headers only from loopback
   or private peers.
+- Caddy runs as uid 1000 with only `NET_BIND_SERVICE`, sends HSTS and a
+  hash-pinned Content-Security-Policy, and serves a real `robots.txt`.
+- The threat model, access-control matrix, review checklist, container review,
+  and load baseline live in [docs/security/](docs/security/).

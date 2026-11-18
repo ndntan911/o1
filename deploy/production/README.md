@@ -294,6 +294,11 @@ Fill in at minimum:
 - SMTP alternative to Resend: `O1_SMTP_ADDR`, `O1_SMTP_USERNAME`,
   `O1_SMTP_PASSWORD`, and `O1_SMTP_TLS` (see [Email provider](#2-email-provider)).
 
+`O1_CSP_EXTRA_CONNECT` is optional. It appends origins to the CSP's
+`connect-src`; set it to the Sentry ingest origin when a frontend DSN is baked
+into the build, for example `https://o1.ingest.sentry.io`. Leave the rate
+variables (`O1_PUBLIC_RATE_*`, `O1_APIKEY_RATE_*`) unset in production.
+
 `O1_DB_MAX_CONNS` is optional. Leave it unset for the default of `10` unless
 the provider tier cannot handle 30 connections from the three processes.
 
