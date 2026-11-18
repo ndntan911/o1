@@ -354,8 +354,15 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.UpdateConfigHandler(statusPageSvc))))
 
 	if billingSvc != nil {
+		billingAPI := billing.NewAPI(billingSvc, wsSvc)
 		mux.Handle("POST /api/v1/billing/webhook/{provider}",
 			httpx.RateLimit(2, 20, true)(http.HandlerFunc(billingSvc.Webhook)))
+		mux.Handle("GET /api/v1/plans", http.HandlerFunc(billingAPI.Plans))
+		mux.Handle("GET /api/v1/workspaces/{workspaceID}/billing", requireSession(http.HandlerFunc(billingAPI.Get)))
+		mux.Handle("POST /api/v1/workspaces/{workspaceID}/billing/checkout", requireSession(http.HandlerFunc(billingAPI.Checkout)))
+		mux.Handle("POST /api/v1/workspaces/{workspaceID}/billing/cancel", requireSession(http.HandlerFunc(billingAPI.Cancel)))
+		mux.Handle("POST /api/v1/workspaces/{workspaceID}/billing/sandbox/complete", requireSession(http.HandlerFunc(billingAPI.SandboxComplete)))
+		mux.Handle("PUT /api/v1/admin/workspaces/{workspaceID}/plan", requireSession(auth.RequireAdmin(http.HandlerFunc(billingAPI.AdminSetPlan))))
 	}
 
 	mux.Handle("GET /api/v1/public/status/{slug}", httpx.RateLimit(publicRPS(deps.Config), publicBurst(deps.Config), true)(http.HandlerFunc(statuspage.PublicHandler(statusPageSvc))))
