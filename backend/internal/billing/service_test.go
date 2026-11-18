@@ -164,3 +164,57 @@ func TestSandboxWebhookSignature(t *testing.T) {
 		t.Fatal("bad signature accepted")
 	}
 }
+
+func TestFailureAndCancelBeforeCheckoutDoNotGrantThePlan(t *testing.T) {
+	svc, q, wsID, _ := newBillingEnv(t)
+	ctx := context.Background()
+
+	for _, kind := range []string{"subscription.payment_failed", "subscription.canceled"} {
+		ev := Event{
+			ID: uuid.NewString(), Kind: kind, WorkspaceID: wsID.String(),
+			PlanKey: "pro", ProviderSubscriptionID: "never_created_" + kind,
+		}
+		if err := svc.ApplyEvent(ctx, "sandbox", ev); err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+	}
+	sub, err := q.GetSubscription(ctx, wsID)
+	if err != nil {
+		t.Fatalf("get subscription: %v", err)
+	}
+	if sub.PlanKey != "free" || sub.Status != "active" {
+		t.Fatalf("unchecked failure granted %s/%s", sub.PlanKey, sub.Status)
+	}
+	if limit := monitorLimit(t, svc, wsID); limit != 5 {
+		t.Fatalf("limit = %d, want 5", limit)
+	}
+}
+
+func TestTrialIsGrantedOncePerWorkspace(t *testing.T) {
+	svc, q, wsID, now := newBillingEnv(t)
+	ctx := context.Background()
+
+	first := startedEvent(wsID, "pro")
+	if err := svc.ApplyEvent(ctx, "sandbox", first); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	sub, _ := q.GetSubscription(ctx, wsID)
+	if sub.Status != "trialing" || sub.TrialStartedAt == nil {
+		t.Fatalf("first start = %s", sub.Status)
+	}
+
+	// A new subscription id (cancel then re-checkout) must not restart the
+	// trial; it becomes an active subscription without a trial.
+	second := Event{
+		ID: uuid.NewString(), Kind: "subscription.started", WorkspaceID: wsID.String(),
+		PlanKey: "pro", ProviderSubscriptionID: "sub_second", ProviderCustomerID: "cus_1",
+	}
+	if err := svc.ApplyEvent(ctx, "sandbox", second); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	sub, _ = q.GetSubscription(ctx, wsID)
+	if sub.Status != "active" || sub.TrialEnd != nil {
+		t.Fatalf("second start = %s/%v, want active/no trial", sub.Status, sub.TrialEnd)
+	}
+	_ = now
+}

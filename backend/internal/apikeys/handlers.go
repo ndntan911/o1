@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"o1/internal/auth"
+	"o1/internal/billing"
 	"o1/internal/httpx"
 )
 
@@ -137,8 +138,10 @@ func keyServiceError(w http.ResponseWriter, err error) {
 		keyProblem(w, http.StatusBadRequest, httpx.CodeValidationError, "Validation Error", "", validation.Fields)
 	case errors.Is(err, ErrNameTaken):
 		keyProblem(w, http.StatusConflict, "api_key_name_taken", "API Key Name Taken", "", nil)
+	case errors.Is(err, billing.ErrPaymentRequired):
+		keyProblem(w, http.StatusPaymentRequired, "payment_required", "Plan limit reached", "", nil)
 	case errors.Is(err, ErrLimit):
-		keyProblem(w, http.StatusUnprocessableEntity, "api_key_limit", "API Key Limit Reached", "", nil)
+		keyProblem(w, http.StatusPaymentRequired, "payment_required", "Plan limit reached", "", nil)
 	case errors.Is(err, ErrSuspended):
 		keyProblem(w, http.StatusForbidden, httpx.CodeWorkspaceSuspended, "Workspace Suspended", "", nil)
 	case errors.Is(err, ErrNotFound):

@@ -131,7 +131,15 @@ func (a *API) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.svc.Cancel(r.Context(), principal.UserID, workspaceID); err != nil {
-		writeProblem(w, http.StatusBadRequest, "Could not cancel", "billing_cancel_failed")
+		if errors.Is(err, ErrAlreadyCanceled) {
+			writeProblem(w, http.StatusConflict, "Cancellation already scheduled", "billing_already_canceled")
+			return
+		}
+		if errors.Is(err, ErrInvalidPlan) {
+			writeProblem(w, http.StatusBadRequest, "Nothing to cancel", "billing_plan_invalid")
+			return
+		}
+		writeProblem(w, http.StatusInternalServerError, "Could not cancel", "billing_cancel_failed")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

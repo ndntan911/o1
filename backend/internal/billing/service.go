@@ -80,22 +80,48 @@ func (s *Service) Checkout(ctx context.Context, workspaceID uuid.UUID, planKey s
 
 // Cancel marks the subscription to end at the current period.
 func (s *Service) Cancel(ctx context.Context, actorID, workspaceID uuid.UUID) error {
-	sub, err := s.q.GetSubscription(ctx, workspaceID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+
+	sub, err := qtx.GetSubscription(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	if sub.PlanKey == "free" {
+		return ErrInvalidPlan
+	}
 	if sub.Status == "expired" || sub.Status == "canceled" {
-		return fmt.Errorf("%w: already ending", ErrInvalidPlan)
+		return ErrAlreadyCanceled
 	}
 	sub.CancelAtPeriodEnd = true
 	sub.Status = "canceled"
+	if sub.TrialEnd != nil && !sub.TrialEnd.Before(s.now()) {
+		sub.CurrentPeriodEnd = sub.TrialEnd
+	}
 	sub.UpdatedAt = s.now()
-	if err := s.q.UpsertSubscription(ctx, subscriptionParams(sub)); err != nil {
+	if err := qtx.UpsertSubscription(ctx, subscriptionParams(sub)); err != nil {
 		return err
 	}
-	return s.audit(ctx, s.q, workspaceID, actorID, "subscription_canceled", map[string]any{
-		"plan": sub.PlanKey,
-	})
+	if err := s.audit(ctx, qtx, workspaceID, actorID, "subscription_canceled", map[string]any{
+		"plan": sub.PlanKey, "source": "sandbox",
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func laterPeriod(current, next *time.Time) *time.Time {
+	if next == nil {
+		return current
+	}
+	if current == nil || next.After(*current) {
+		return next
+	}
+	return current
 }
 
 // AdminSetPlan is the audited support override.
@@ -168,22 +194,7 @@ func (s *Service) ApplyEvent(ctx context.Context, provider string, ev Event) err
 
 	var sub sqlc.Subscription
 	existing := true
-	if ev.ProviderSubscriptionID != "" {
-		sub, err = qtx.GetSubscriptionByProviderID(ctx, &ev.ProviderSubscriptionID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			existing = false
-			if ev.WorkspaceID == "" {
-				return fmt.Errorf("billing: new provider subscription without a workspace")
-			}
-			workspaceID, parseErr := uuid.Parse(ev.WorkspaceID)
-			if parseErr != nil {
-				return fmt.Errorf("billing: bad workspace id: %w", parseErr)
-			}
-			sub = sqlc.Subscription{WorkspaceID: workspaceID}
-		} else if err != nil {
-			return err
-		}
-	} else if ev.WorkspaceID != "" {
+	if ev.WorkspaceID != "" {
 		workspaceID, parseErr := uuid.Parse(ev.WorkspaceID)
 		if parseErr != nil {
 			return fmt.Errorf("billing: bad workspace id: %w", parseErr)
@@ -192,6 +203,13 @@ func (s *Service) ApplyEvent(ctx context.Context, provider string, ev Event) err
 		if errors.Is(err, pgx.ErrNoRows) {
 			existing = false
 			sub = sqlc.Subscription{WorkspaceID: workspaceID}
+		} else if err != nil {
+			return err
+		}
+	} else if ev.ProviderSubscriptionID != "" {
+		sub, err = qtx.GetSubscriptionByProviderID(ctx, &ev.ProviderSubscriptionID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("billing: event for an unknown subscription")
 		} else if err != nil {
 			return err
 		}
@@ -220,15 +238,31 @@ func (s *Service) ApplyEvent(ctx context.Context, provider string, ev Event) err
 		return fmt.Errorf("billing: unknown plan %q: %w", planKey, err)
 	}
 
+	// A failure or cancellation only applies to an existing paid provider
+	// subscription. Otherwise an abandoned checkout would grant the plan.
+	if ev.Kind == "subscription.payment_failed" || ev.Kind == "subscription.canceled" {
+		if !existing || sub.Provider == "internal" || sub.ProviderSubscriptionID == nil || sub.PlanKey == "free" {
+			if err := qtx.MarkBillingEventProcessed(ctx, sqlc.MarkBillingEventProcessedParams{
+				Provider: provider, ProviderEventID: ev.ID,
+			}); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}
+	}
+
 	now := s.now()
 	switch ev.Kind {
 	case "subscription.started":
 		sub.Status = "active"
 		sub.TrialEnd = nil
-		if plan.TrialDays > 0 {
+		// The trial is granted once per workspace; trial_started_at survives
+		// downgrades so a cancelled subscription cannot start a new one.
+		if plan.TrialDays > 0 && sub.TrialStartedAt == nil {
 			sub.Status = "trialing"
 			trialEnd := now.AddDate(0, 0, int(plan.TrialDays))
 			sub.TrialEnd = &trialEnd
+			sub.TrialStartedAt = &now
 		}
 		end := now.AddDate(0, 0, 30)
 		if ev.CurrentPeriodEnd != nil {
@@ -240,9 +274,7 @@ func (s *Service) ApplyEvent(ctx context.Context, provider string, ev Event) err
 		sub.Status = "active"
 		sub.TrialEnd = nil
 		sub.PastDueSince = nil
-		if ev.CurrentPeriodEnd != nil {
-			sub.CurrentPeriodEnd = ev.CurrentPeriodEnd
-		}
+		sub.CurrentPeriodEnd = laterPeriod(sub.CurrentPeriodEnd, ev.CurrentPeriodEnd)
 	case "subscription.payment_failed":
 		sub.Status = "past_due"
 		if sub.PastDueSince == nil {
@@ -251,9 +283,7 @@ func (s *Service) ApplyEvent(ctx context.Context, provider string, ev Event) err
 	case "subscription.canceled":
 		sub.Status = "canceled"
 		sub.CancelAtPeriodEnd = true
-		if ev.CurrentPeriodEnd != nil {
-			sub.CurrentPeriodEnd = ev.CurrentPeriodEnd
-		}
+		sub.CurrentPeriodEnd = laterPeriod(sub.CurrentPeriodEnd, ev.CurrentPeriodEnd)
 	default:
 		return fmt.Errorf("billing: unknown event kind %q", ev.Kind)
 	}
@@ -304,7 +334,27 @@ func subscriptionParams(sub sqlc.Subscription) sqlc.UpsertSubscriptionParams {
 		TrialEnd:               sub.TrialEnd,
 		PastDueSince:           sub.PastDueSince,
 		CancelAtPeriodEnd:      sub.CancelAtPeriodEnd,
+		TrialStartedAt:         sub.TrialStartedAt,
 	}
+}
+
+// CheckCreate returns ErrPaymentRequired when the workspace is expired or has
+// been past due for more than seven days. Reads and edits stay available.
+func CheckCreate(ctx context.Context, q *sqlc.Queries, workspaceID uuid.UUID, now time.Time) error {
+	sub, err := q.GetSubscription(ctx, workspaceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sub.Status == "expired" {
+		return ErrPaymentRequired
+	}
+	if sub.Status == "past_due" && sub.PastDueSince != nil && now.Sub(*sub.PastDueSince) > 7*24*time.Hour {
+		return ErrPaymentRequired
+	}
+	return nil
 }
 
 func optionalUUID(id uuid.UUID) pgtype.UUID {

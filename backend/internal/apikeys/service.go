@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -107,6 +108,9 @@ func (s *Service) Create(ctx context.Context, actorID, workspaceID uuid.UUID, in
 	}
 	if locked.SuspendedAt != nil {
 		return CreatedKey{}, ErrSuspended
+	}
+	if err := billing.CheckCreate(ctx, qtx, workspaceID, time.Now()); err != nil {
+		return CreatedKey{}, err
 	}
 
 	limits, err := billing.LoadLimits(ctx, qtx, workspaceID)

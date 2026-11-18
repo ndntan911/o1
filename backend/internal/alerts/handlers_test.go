@@ -394,10 +394,10 @@ func TestAlertChannelHandlers_ValidationAndConflict(t *testing.T) {
 	resp, body = env.do(admin, http.MethodPost, env.channelsPath(""), map[string]any{
 		"kind": "webhook", "name": "Overflow", "url": "https://example.com/o1",
 	})
-	if resp.StatusCode != http.StatusUnprocessableEntity {
+	if resp.StatusCode != http.StatusPaymentRequired {
 		t.Fatalf("limit = %d: %s", resp.StatusCode, body)
 	}
-	if problem := decodeProblem(t, body); problem.Code != "channel_limit" {
+	if problem := decodeProblem(t, body); problem.Code != "payment_required" {
 		t.Fatalf("limit code = %q", problem.Code)
 	}
 }

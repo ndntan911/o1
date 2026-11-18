@@ -14,6 +14,7 @@ import (
 
 	"o1/internal/audit"
 	"o1/internal/auth"
+	"o1/internal/billing"
 	"o1/internal/config"
 	"o1/internal/db/sqlc"
 	"o1/internal/probe"
@@ -189,6 +190,9 @@ func (s *Service) create(ctx context.Context, workspaceID, actorID uuid.UUID, in
 	}
 	if locked.SuspendedAt != nil {
 		return uuid.Nil, ErrSuspended
+	}
+	if err := billing.CheckCreate(ctx, qtx, workspaceID, time.Now().UTC()); err != nil {
+		return uuid.Nil, err
 	}
 
 	count, err := qtx.CountMonitors(ctx, workspaceID)

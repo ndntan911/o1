@@ -41,6 +41,7 @@ import { statusLabel, statusVariant } from './status';
 
 const PAGE_PROBLEM_CODES = new Set([
 	'quota_exceeded',
+	'payment_required',
 	'monitor_rate_limited',
 	'workspace_suspended',
 ]);

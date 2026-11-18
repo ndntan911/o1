@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"o1/internal/auth"
+	"o1/internal/billing"
 	"o1/internal/httpx"
 )
 
@@ -294,12 +295,12 @@ func writeServiceError(w http.ResponseWriter, err error) {
 			Detail: "This workspace is suspended. Reads remain available.",
 			Code:   httpx.CodeWorkspaceSuspended,
 		})
-	case errors.Is(err, ErrQuotaExceeded):
+	case errors.Is(err, billing.ErrPaymentRequired), errors.Is(err, ErrQuotaExceeded):
 		httpx.WriteProblem(w, httpx.Problem{
 			Type:   "about:blank",
-			Title:  "Quota Exceeded",
-			Status: http.StatusConflict,
-			Code:   httpx.CodeQuotaExceeded,
+			Title:  "Plan limit reached",
+			Status: http.StatusPaymentRequired,
+			Code:   "payment_required",
 		})
 	case errors.Is(err, ErrNotFound):
 		writeProblem(w, http.StatusNotFound, httpx.CodeNotFound, "Not Found")

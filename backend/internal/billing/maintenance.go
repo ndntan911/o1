@@ -44,10 +44,13 @@ func (s *Service) RunMaintenance(ctx context.Context) (MaintenanceResult, error)
 		return res, err
 	}
 	for _, sub := range trials {
-		if err := s.downgrade(ctx, sub, "active", "trial_ended"); err != nil {
+		changed, err := s.downgrade(ctx, sub, "active", "trial_ended")
+		if err != nil {
 			return res, err
 		}
-		res.TrialsEnded++
+		if changed {
+			res.TrialsEnded++
+		}
 	}
 
 	pastDueCutoff := now.AddDate(0, 0, -7)
@@ -56,10 +59,13 @@ func (s *Service) RunMaintenance(ctx context.Context) (MaintenanceResult, error)
 		return res, err
 	}
 	for _, sub := range pastDue {
-		if err := s.downgrade(ctx, sub, "expired", "subscription_expired"); err != nil {
+		changed, err := s.downgrade(ctx, sub, "expired", "subscription_expired")
+		if err != nil {
 			return res, err
 		}
-		res.PastDueExpired++
+		if changed {
+			res.PastDueExpired++
+		}
 	}
 
 	canceled, err := s.q.ListCanceledToExpire(ctx, &now)
@@ -67,47 +73,50 @@ func (s *Service) RunMaintenance(ctx context.Context) (MaintenanceResult, error)
 		return res, err
 	}
 	for _, sub := range canceled {
-		if err := s.downgrade(ctx, sub, "expired", "subscription_expired"); err != nil {
+		changed, err := s.downgrade(ctx, sub, "expired", "subscription_expired")
+		if err != nil {
 			return res, err
 		}
-		res.CanceledExpired++
+		if changed {
+			res.CanceledExpired++
+		}
 	}
 	return res, nil
 }
 
-func (s *Service) downgrade(ctx context.Context, sub sqlc.Subscription, status, auditKind string) error {
+func (s *Service) downgrade(ctx context.Context, sub sqlc.Subscription, status, auditKind string) (bool, error) {
 	free, err := s.q.GetPlan(ctx, "free")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := s.q.WithTx(tx)
 
-	sub.PlanKey = free.Key
-	sub.Status = status
-	sub.TrialEnd = nil
-	sub.PastDueSince = nil
-	sub.CancelAtPeriodEnd = false
-	sub.Provider = "internal"
-	sub.ProviderSubscriptionID = nil
-	sub.ProviderCustomerID = nil
-	sub.UpdatedAt = s.now()
-	if err := qtx.UpsertSubscription(ctx, subscriptionParams(sub)); err != nil {
-		return err
+	changed, err := qtx.DowngradeSubscription(ctx, sqlc.DowngradeSubscriptionParams{
+		WorkspaceID: sub.WorkspaceID,
+		PlanKey:     free.Key,
+		Status:      status,
+		Status_2:    sub.Status,
+	})
+	if err != nil {
+		return false, err
+	}
+	if changed == 0 {
+		return false, tx.Commit(ctx)
 	}
 	if err := qtx.UpdateWorkspaceMonitorLimit(ctx, sqlc.UpdateWorkspaceMonitorLimitParams{
 		ID: sub.WorkspaceID, MonitorLimit: free.MonitorLimit,
 	}); err != nil {
-		return err
+		return false, err
 	}
 	if err := s.audit(ctx, qtx, sub.WorkspaceID, uuid.Nil, auditKind, map[string]any{
 		"plan": free.Key, "status": status,
 	}); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit(ctx)
+	return true, tx.Commit(ctx)
 }

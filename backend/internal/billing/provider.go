@@ -19,6 +19,10 @@ var (
 	ErrNoSubscription = errors.New("billing: subscription not found")
 	// ErrInvalidSignature is returned when a webhook cannot be authenticated.
 	ErrInvalidSignature = errors.New("billing: invalid signature")
+	// ErrPaymentRequired means new resources are blocked by billing state.
+	ErrPaymentRequired = errors.New("billing: payment required")
+	// ErrAlreadyCanceled means cancellation was requested twice.
+	ErrAlreadyCanceled = errors.New("billing: already ending")
 )
 
 // CheckoutInput describes one checkout request.

@@ -268,8 +268,8 @@ func TestAPI_MonitorQuota(t *testing.T) {
 		requireStatus(t, resp, http.StatusCreated)
 	}
 	resp, raw := alice.do(http.MethodPost, "/api/v1/workspaces/"+ws+"/monitors", validMonitorBody(5))
-	requireStatus(t, resp, http.StatusConflict)
-	if p := decodeJSON[problemJSON](t, raw); p.Code != "quota_exceeded" {
+	requireStatus(t, resp, http.StatusPaymentRequired)
+	if p := decodeJSON[problemJSON](t, raw); p.Code != "payment_required" {
 		t.Fatalf("problem = %+v", p)
 	}
 }

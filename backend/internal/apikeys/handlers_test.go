@@ -482,9 +482,9 @@ func TestAPIKeyHandlers_Validation(t *testing.T) {
 		env.createKey(fmt.Sprintf("fill-%d", i), "viewer")
 	}
 	resp, raw = owner.do(http.MethodPost, base, map[string]string{"name": "key-21", "role": "viewer"})
-	requireStatus(t, resp, http.StatusUnprocessableEntity)
-	if problem := decodeBody[problemJSON](t, raw); problem.Code != "api_key_limit" {
-		t.Fatalf("code = %q, want api_key_limit", problem.Code)
+	requireStatus(t, resp, http.StatusPaymentRequired)
+	if problem := decodeBody[problemJSON](t, raw); problem.Code != "payment_required" {
+		t.Fatalf("code = %q, want payment_required", problem.Code)
 	}
 }
 

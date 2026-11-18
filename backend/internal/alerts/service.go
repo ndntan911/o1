@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -110,6 +111,9 @@ func (s *Service) Create(ctx context.Context, actorID, workspaceID uuid.UUID, in
 	if locked.SuspendedAt != nil {
 		return Channel{}, ErrSuspended
 	}
+	if err := billing.CheckCreate(ctx, qtx, workspaceID, time.Now()); err != nil {
+		return Channel{}, err
+	}
 
 	if _, err := qtx.GetActiveAlertChannelByName(ctx, sqlc.GetActiveAlertChannelByNameParams{
 		WorkspaceID: workspaceID, Kind: in.Kind, Name: name,
@@ -210,6 +214,9 @@ func (s *Service) Update(ctx context.Context, actorID, workspaceID, channelID uu
 	}
 	if locked.SuspendedAt != nil {
 		return Channel{}, ErrSuspended
+	}
+	if err := billing.CheckCreate(ctx, qtx, workspaceID, time.Now()); err != nil {
+		return Channel{}, err
 	}
 
 	existing, err := qtx.GetAlertChannelByID(ctx, sqlc.GetAlertChannelByIDParams{

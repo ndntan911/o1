@@ -249,6 +249,7 @@ type Subscription struct {
 	CancelAtPeriodEnd      bool
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
+	TrialStartedAt         *time.Time
 }
 
 type User struct {

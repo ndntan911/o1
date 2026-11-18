@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"o1/internal/auth"
+	"o1/internal/billing"
 	"o1/internal/httpx"
 )
 
@@ -287,8 +288,10 @@ func alertServiceError(w http.ResponseWriter, err error) {
 		alertProblem(w, http.StatusBadRequest, httpx.CodeValidationError, "Validation Error", "", validation.Fields)
 	case errors.Is(err, ErrNameTaken):
 		alertProblem(w, http.StatusConflict, "channel_name_taken", "Channel Name Taken", "", nil)
+	case errors.Is(err, billing.ErrPaymentRequired):
+		alertProblem(w, http.StatusPaymentRequired, "payment_required", "Plan limit reached", "", nil)
 	case errors.Is(err, ErrLimit):
-		alertProblem(w, http.StatusUnprocessableEntity, "channel_limit", "Channel Limit Reached", "", nil)
+		alertProblem(w, http.StatusPaymentRequired, "payment_required", "Plan limit reached", "", nil)
 	case errors.Is(err, ErrEmailChannel):
 		alertProblem(w, http.StatusUnprocessableEntity, "email_channel_managed_elsewhere", "Email Channel Managed Elsewhere", "", nil)
 	case errors.Is(err, ErrInvalidChannelConfig):

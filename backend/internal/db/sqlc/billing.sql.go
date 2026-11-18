@@ -24,6 +24,41 @@ func (q *Queries) CountAlertChannels(ctx context.Context, workspaceID uuid.UUID)
 	return column_1, err
 }
 
+const downgradeSubscription = `-- name: DowngradeSubscription :execrows
+UPDATE subscriptions SET
+  provider = 'internal',
+  provider_customer_id = NULL,
+  provider_subscription_id = NULL,
+  plan_key = $2,
+  status = $3,
+  trial_end = NULL,
+  past_due_since = NULL,
+  cancel_at_period_end = false,
+  current_period_end = NULL,
+  updated_at = now()
+WHERE workspace_id = $1 AND status = $4
+`
+
+type DowngradeSubscriptionParams struct {
+	WorkspaceID uuid.UUID
+	PlanKey     string
+	Status      string
+	Status_2    string
+}
+
+func (q *Queries) DowngradeSubscription(ctx context.Context, arg DowngradeSubscriptionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, downgradeSubscription,
+		arg.WorkspaceID,
+		arg.PlanKey,
+		arg.Status,
+		arg.Status_2,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getBillingEvent = `-- name: GetBillingEvent :one
 SELECT id, provider, provider_event_id, kind, payload, processed_at, created_at FROM billing_events WHERE provider = $1 AND provider_event_id = $2
 `
@@ -69,7 +104,7 @@ func (q *Queries) GetPlan(ctx context.Context, key string) (Plan, error) {
 }
 
 const getSubscription = `-- name: GetSubscription :one
-SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at FROM subscriptions WHERE workspace_id = $1
+SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at, trial_started_at FROM subscriptions WHERE workspace_id = $1
 `
 
 func (q *Queries) GetSubscription(ctx context.Context, workspaceID uuid.UUID) (Subscription, error) {
@@ -88,12 +123,13 @@ func (q *Queries) GetSubscription(ctx context.Context, workspaceID uuid.UUID) (S
 		&i.CancelAtPeriodEnd,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrialStartedAt,
 	)
 	return i, err
 }
 
 const getSubscriptionByProviderID = `-- name: GetSubscriptionByProviderID :one
-SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at FROM subscriptions WHERE provider_subscription_id = $1
+SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at, trial_started_at FROM subscriptions WHERE provider_subscription_id = $1
 `
 
 func (q *Queries) GetSubscriptionByProviderID(ctx context.Context, providerSubscriptionID *string) (Subscription, error) {
@@ -112,6 +148,7 @@ func (q *Queries) GetSubscriptionByProviderID(ctx context.Context, providerSubsc
 		&i.CancelAtPeriodEnd,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrialStartedAt,
 	)
 	return i, err
 }
@@ -145,7 +182,7 @@ func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEvent
 }
 
 const listCanceledToExpire = `-- name: ListCanceledToExpire :many
-SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at FROM subscriptions
+SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at, trial_started_at FROM subscriptions
 WHERE status = 'canceled' AND current_period_end IS NOT NULL AND current_period_end <= $1
 `
 
@@ -171,6 +208,7 @@ func (q *Queries) ListCanceledToExpire(ctx context.Context, currentPeriodEnd *ti
 			&i.CancelAtPeriodEnd,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TrialStartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -183,7 +221,7 @@ func (q *Queries) ListCanceledToExpire(ctx context.Context, currentPeriodEnd *ti
 }
 
 const listPastDueToExpire = `-- name: ListPastDueToExpire :many
-SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at FROM subscriptions
+SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at, trial_started_at FROM subscriptions
 WHERE status = 'past_due' AND past_due_since IS NOT NULL AND past_due_since <= $1
 `
 
@@ -209,6 +247,7 @@ func (q *Queries) ListPastDueToExpire(ctx context.Context, pastDueSince *time.Ti
 			&i.CancelAtPeriodEnd,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TrialStartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -254,7 +293,7 @@ func (q *Queries) ListPlans(ctx context.Context) ([]Plan, error) {
 }
 
 const listTrialsToEnd = `-- name: ListTrialsToEnd :many
-SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at FROM subscriptions
+SELECT workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_end, trial_end, past_due_since, cancel_at_period_end, created_at, updated_at, trial_started_at FROM subscriptions
 WHERE status = 'trialing' AND trial_end IS NOT NULL AND trial_end <= $1
 `
 
@@ -280,6 +319,7 @@ func (q *Queries) ListTrialsToEnd(ctx context.Context, trialEnd *time.Time) ([]S
 			&i.CancelAtPeriodEnd,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TrialStartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -324,8 +364,8 @@ const upsertSubscription = `-- name: UpsertSubscription :exec
 INSERT INTO subscriptions (
   workspace_id, provider, provider_customer_id, provider_subscription_id,
   plan_key, status, current_period_end, trial_end, past_due_since,
-  cancel_at_period_end, updated_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())
+  cancel_at_period_end, trial_started_at, updated_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())
 ON CONFLICT (workspace_id) DO UPDATE SET
   provider = EXCLUDED.provider,
   provider_customer_id = EXCLUDED.provider_customer_id,
@@ -336,6 +376,7 @@ ON CONFLICT (workspace_id) DO UPDATE SET
   trial_end = EXCLUDED.trial_end,
   past_due_since = EXCLUDED.past_due_since,
   cancel_at_period_end = EXCLUDED.cancel_at_period_end,
+  trial_started_at = EXCLUDED.trial_started_at,
   updated_at = now()
 `
 
@@ -350,6 +391,7 @@ type UpsertSubscriptionParams struct {
 	TrialEnd               *time.Time
 	PastDueSince           *time.Time
 	CancelAtPeriodEnd      bool
+	TrialStartedAt         *time.Time
 }
 
 func (q *Queries) UpsertSubscription(ctx context.Context, arg UpsertSubscriptionParams) error {
@@ -364,6 +406,7 @@ func (q *Queries) UpsertSubscription(ctx context.Context, arg UpsertSubscription
 		arg.TrialEnd,
 		arg.PastDueSince,
 		arg.CancelAtPeriodEnd,
+		arg.TrialStartedAt,
 	)
 	return err
 }
