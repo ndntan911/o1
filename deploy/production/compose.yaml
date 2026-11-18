@@ -97,6 +97,8 @@ services:
       # Caddy obtains and renews a TLS certificate for this hostname and
       # redirects HTTP to HTTPS automatically.
       O1_SITE_ADDRESS: ${O1_DOMAIN:?set O1_DOMAIN in .env}
+      # Extra connect-src origins for the CSP; empty keeps it to 'self'.
+      O1_CSP_EXTRA_CONNECT: ${O1_CSP_EXTRA_CONNECT:-}
     ports:
       - "80:80"
       - "443:443"

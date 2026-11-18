@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
@@ -54,6 +55,22 @@ describe('web shell metadata', () => {
 });
 
 describe('caddy hardening', () => {
+	test('the CSP allows the inline theme script by hash', async () => {
+		const html = await readProjectFile('../index.html');
+		const inline = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+		expect(inline).toBeTruthy();
+
+		const hash = createHash('sha256')
+			.update(inline as string, 'utf8')
+			.digest('base64');
+		const caddyfile = await readProjectFile('../Caddyfile');
+
+		expect(caddyfile).toContain('Content-Security-Policy');
+		expect(caddyfile).toContain(`'sha256-${hash}'`);
+		expect(caddyfile).toContain('{$O1_CSP_EXTRA_CONNECT}');
+		expect(caddyfile).toContain("frame-ancestors 'none'");
+	});
+
 	test('sends a long-lived HSTS header and browser protections', async () => {
 		const caddyfile = await readProjectFile('../Caddyfile');
 

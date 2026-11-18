@@ -11,6 +11,7 @@
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-czNEBGPtlYNZHvYaRai+OZ5jiHUGyBTSIKWPBEGk6sM='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' {$O1_CSP_EXTRA_CONNECT}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
 	}
 
 	# Public health checks are served by the API, not the SPA, so load balancers
