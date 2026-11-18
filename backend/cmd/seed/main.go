@@ -26,6 +26,8 @@ func run() error {
 	flag.StringVar(&opts.Password, "password", "", "demo account password (random when omitted and the account is new)")
 	flag.StringVar(&opts.WorkspaceName, "workspace", demo.DefaultWorkspaceName, "demo workspace name")
 	flag.StringVar(&opts.Slug, "slug", demo.DefaultSlug, "workspace slug, also the status page path")
+	flag.StringVar(&opts.ViewerEmail, "viewer-email", "", "optional read-only demo account email")
+	flag.StringVar(&opts.ViewerPassword, "viewer-password", "", "password for the read-only demo account")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -59,5 +61,8 @@ func run() error {
 	fmt.Printf("  history      %d hourly buckets\n", res.HourlyRows)
 	fmt.Printf("  today        %d probe results\n", res.RawRows)
 	fmt.Printf("  incidents    %d\n", res.Incidents)
+	if opts.ViewerEmail != "" {
+		fmt.Printf("  viewer       %s / %s (read-only)\n", opts.ViewerEmail, opts.ViewerPassword)
+	}
 	return nil
 }

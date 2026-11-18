@@ -5,7 +5,14 @@ React dashboard. This repository ships authentication, workspaces and RBAC,
 monitor CRUD, SSRF-guarded probing, scheduling, and administrator controls
 behind the dashboard.
 
-For a guided tour with screenshots and the design decisions behind the
+**Live:** <https://o1.work.gd> · **Public status page:**
+<https://o1.work.gd/status/demo> · **Demo viewer:**
+`demo-viewer@o1.work.gd` / `o1-demo-viewer-2026` (read-only; created by
+`seed` below)
+
+![o1 dashboard](docs/portfolio/screenshots/monitors-dark.png)
+
+For a guided tour with more screenshots and the design decisions behind the
 harder parts, see [PORTFOLIO.md](PORTFOLIO.md).
 
 ## Architecture
@@ -109,7 +116,8 @@ history, resolved incidents, and a published status page at
 `/status/{slug}` (default `/status/demo`).
 
 ```sh
-docker compose run --rm --entrypoint /seed api -email demo@o1.work.gd
+docker compose run --rm --entrypoint /seed api -email demo@o1.work.gd \
+  -viewer-email demo-viewer@o1.work.gd -viewer-password o1-demo-viewer-2026
 ```
 
 The first run prints a generated password once; pass `-password` to choose one.

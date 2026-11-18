@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"o1/internal/auth"
 	"o1/internal/testutil"
 )
@@ -233,5 +235,56 @@ func TestSeedResetsExistingPassword(t *testing.T) {
 	ok, err := auth.VerifyPassword(hash, replacement)
 	if err != nil || !ok {
 		t.Fatalf("replacement password does not verify (ok=%v, err=%v)", ok, err)
+	}
+}
+
+func TestSeedCreatesReadOnlyViewer(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	ctx := context.Background()
+
+	const viewerPassword = "o1-demo-viewer-2026" //nolint:gosec // public demo fixture
+	opts := Options{
+		Now:            time.Now(),
+		ViewerEmail:    "demo-viewer@o1.work.gd",
+		ViewerPassword: viewerPassword,
+	}
+	first, err := Seed(ctx, pool, opts)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var viewerID uuid.UUID
+	var role string
+	var totpEnabled *time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT u.id, m.role, u.totp_enabled_at
+		FROM users u
+		JOIN workspace_members m ON m.user_id = u.id
+		WHERE u.email = 'demo-viewer@o1.work.gd' AND m.workspace_id = $1`,
+		first.WorkspaceID).Scan(&viewerID, &role, &totpEnabled); err != nil {
+		t.Fatalf("read demo viewer: %v", err)
+	}
+	if role != "viewer" {
+		t.Fatalf("viewer role = %q", role)
+	}
+	if totpEnabled != nil {
+		t.Fatal("viewer has TOTP enabled")
+	}
+
+	var hash string
+	if err := pool.QueryRow(ctx, `SELECT password_hash FROM users WHERE id = $1`, viewerID).Scan(&hash); err != nil {
+		t.Fatalf("read viewer password hash: %v", err)
+	}
+	ok, err := auth.VerifyPassword(hash, viewerPassword)
+	if err != nil || !ok {
+		t.Fatalf("viewer password does not verify (ok=%v, err=%v)", ok, err)
+	}
+
+	second, err := Seed(ctx, pool, opts)
+	if err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+	if second.WorkspaceID != first.WorkspaceID {
+		t.Fatal("reseed changed the workspace")
 	}
 }

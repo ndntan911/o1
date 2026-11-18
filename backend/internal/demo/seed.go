@@ -48,6 +48,12 @@ type Options struct {
 	Slug          string
 	// Now anchors the generated history. Defaults to time.Now.
 	Now time.Time
+
+	// ViewerEmail and ViewerPassword optionally create a read-only account in
+	// the demo workspaces, for sharing a dashboard without write access. Leave
+	// both empty to skip.
+	ViewerEmail    string
+	ViewerPassword string
 }
 
 // Result describes what Seed created or refreshed.
@@ -157,6 +163,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error)
 	}
 	res.RawRows = rawRows
 
+	if opts.ViewerEmail != "" {
+		if err := ensureViewer(ctx, tx, opts, wsID); err != nil {
+			return Result{}, err
+		}
+	}
+
 	incidents, err := seedIncidents(ctx, tx, wsID, userID, opts.Now, monitorIDs)
 	if err != nil {
 		return Result{}, err
@@ -190,6 +202,7 @@ func normalizeSlug(slug string) (string, error) {
 
 func withDefaults(opts Options) Options {
 	opts.Email = auth.NormalizeEmail(opts.Email)
+	opts.ViewerEmail = auth.NormalizeEmail(opts.ViewerEmail)
 	if opts.Email == "" {
 		opts.Email = DefaultEmail
 	}
@@ -256,6 +269,68 @@ func ensureUser(ctx context.Context, tx pgx.Tx, opts Options) (uuid.UUID, bool, 
 		}
 	}
 	return userID, false, "", nil
+}
+
+// ensureViewer creates or resets a read-only demo account and adds it to every
+// seeded workspace. It also clears TOTP and sessions on reset so a shared demo
+// account cannot lock out the next visitor with a second factor.
+func ensureViewer(ctx context.Context, tx pgx.Tx, opts Options, wsID uuid.UUID) error {
+	if opts.ViewerEmail == opts.Email {
+		return fmt.Errorf("viewer email must differ from the demo owner email")
+	}
+	if opts.ViewerPassword == "" {
+		return fmt.Errorf("viewer password is required when viewer email is set")
+	}
+	hash, err := auth.HashPassword(opts.ViewerPassword)
+	if err != nil {
+		return fmt.Errorf("hash viewer password: %w", err)
+	}
+
+	var viewerID uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM users WHERE email = $1`, opts.ViewerEmail).Scan(&viewerID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		viewerID = uuid.New()
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO users (id, email, password_hash, email_verified_at)
+			VALUES ($1, $2, $3, now())`, viewerID, opts.ViewerEmail, hash); err != nil {
+			return fmt.Errorf("create demo viewer: %w", err)
+		}
+	case err != nil:
+		return fmt.Errorf("look up demo viewer: %w", err)
+	default:
+		if _, err := tx.Exec(ctx, `
+			UPDATE users SET
+				password_hash = $2,
+				email_verified_at = now(),
+				totp_secret_enc = NULL,
+				totp_pending_enc = NULL,
+				totp_pending_expires_at = NULL,
+				totp_enabled_at = NULL,
+				totp_last_used_step = NULL,
+				updated_at = now()
+			WHERE id = $1`, viewerID, hash); err != nil {
+			return fmt.Errorf("reset demo viewer: %w", err)
+		}
+		for _, stmt := range []string{
+			`DELETE FROM user_recovery_codes WHERE user_id = $1`,
+			`DELETE FROM mfa_challenges WHERE user_id = $1`,
+			`DELETE FROM sessions WHERE user_id = $1`,
+		} {
+			if _, err := tx.Exec(ctx, stmt, viewerID); err != nil {
+				return fmt.Errorf("clear demo viewer state: %w", err)
+			}
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO workspace_members (workspace_id, user_id, role)
+		VALUES ($1, $2, 'viewer')
+		ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = 'viewer'`,
+		wsID, viewerID); err != nil {
+		return fmt.Errorf("add demo viewer: %w", err)
+	}
+	return nil
 }
 
 func ensureWorkspace(ctx context.Context, tx pgx.Tx, opts Options, userID uuid.UUID) (uuid.UUID, error) {

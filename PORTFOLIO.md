@@ -2,6 +2,10 @@
 
 **Live:** <https://o1.work.gd> · **Public status page:** <https://o1.work.gd/status/demo>
 
+**Demo viewer:** `demo-viewer@o1.work.gd` / `o1-demo-viewer-2026` — read-only,
+so the dashboard can be opened without creating an account (the demo command in
+the README seeds it). The status page needs no login at all.
+
 o1 watches HTTP endpoints for small teams: it probes on a schedule, opens and
 resolves incidents, notifies people, and publishes a public status page. It is
 a full product, not a demo of one — authentication, workspaces and roles,
