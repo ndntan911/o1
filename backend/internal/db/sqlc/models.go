@@ -51,6 +51,16 @@ type AlertDelivery struct {
 	UpdatedAt  time.Time
 }
 
+type BillingEvent struct {
+	ID              uuid.UUID
+	Provider        string
+	ProviderEventID string
+	Kind            string
+	Payload         []byte
+	ProcessedAt     *time.Time
+	CreatedAt       time.Time
+}
+
 type EmailVerificationToken struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -160,6 +170,17 @@ type PasswordResetToken struct {
 	CreatedAt time.Time
 }
 
+type Plan struct {
+	Key          string
+	Name         string
+	MonitorLimit int32
+	ChannelLimit int32
+	APIKeyLimit  int32
+	PriceCents   int32
+	Currency     string
+	TrialDays    int32
+}
+
 type ProbeResult struct {
 	ID           uuid.UUID
 	MonitorID    uuid.UUID
@@ -213,6 +234,21 @@ type StatusPageMonitor struct {
 	StatusPageID uuid.UUID
 	MonitorID    uuid.UUID
 	CreatedAt    time.Time
+}
+
+type Subscription struct {
+	WorkspaceID            uuid.UUID
+	Provider               string
+	ProviderCustomerID     *string
+	ProviderSubscriptionID *string
+	PlanKey                string
+	Status                 string
+	CurrentPeriodEnd       *time.Time
+	TrialEnd               *time.Time
+	PastDueSince           *time.Time
+	CancelAtPeriodEnd      bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type User struct {
