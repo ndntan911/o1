@@ -10,6 +10,11 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const base = process.env.DEMO_BASE_URL || 'https://o1.work.gd';
+const demoEmail = process.env.DEMO_EMAIL || 'demo@o1.work.gd';
+const demoPassword = process.env.DEMO_PASSWORD;
+if (!demoPassword) {
+	throw new Error('DEMO_PASSWORD is required (the demo owner account)');
+}
 const outDir = resolve(import.meta.dirname, '../../docs/portfolio');
 const videoDir = resolve(import.meta.dirname, '../../.video-tmp');
 await mkdir(outDir, { recursive: true });
@@ -103,11 +108,12 @@ await pause(1200);
 await smoothScroll(-320, 12);
 await pause(800);
 
-// 2. Sign in with the seeded read-only demo account.
+// 2. Sign in with the demo owner account (billing needs an admin).
 await page.goto(`${base}/login`, { waitUntil: 'networkidle' });
 await pause(1500);
-await moveAndClick(page.getByRole('button', { name: /use demo account/i }));
-await pause(900);
+await page.getByLabel('Email').fill(demoEmail);
+await page.getByLabel('Password').fill(demoPassword);
+await pause(500);
 await moveAndClick(page.getByRole('button', { name: 'Sign in' }));
 await page.waitForURL(/\/w\//, { timeout: 20000 });
 await pause(2500);
@@ -130,7 +136,15 @@ await page.getByText('GitHub API', { exact: true }).first().waitFor();
 await page.mouse.move(520, 320, { steps: 15 });
 await pause(2200);
 
-// 5. Back to the public status page.
+// 5. Billing and plan limits.
+await page.goto(`${base}/w/demo/settings/billing`, {
+	waitUntil: 'networkidle',
+});
+await page.getByText('Team').waitFor();
+await page.mouse.move(360, 260, { steps: 12 });
+await pause(3000);
+
+// 6. Back to the public status page.
 await page.goto(`${base}/status/demo`, { waitUntil: 'networkidle' });
 await pause(1800);
 
