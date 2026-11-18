@@ -594,6 +594,23 @@ the published digests, writes `images.env`, and runs
 `/opt/o1/bin/deploy.sh`; there is no local build. See
 [../CICD.md](../CICD.md).
 
+### Unprivileged Caddy volumes
+
+This release runs `web` as uid 1000 instead of root. Volumes created by an
+earlier release are root-owned, so chown them once before the first deploy of
+this release. The old stack can keep running while you do it:
+
+```sh
+docker run --rm \
+  -v o1-production_caddy_data:/data \
+  -v o1-production_caddy_config:/config \
+  alpine chown -R 1000:1000 /data /config
+```
+
+Adjust the volume prefix if `O1_COMPOSE_PROJECT` changes the Compose project
+name. Without this step Caddy cannot read the existing certificates and tries
+to re-issue them, which risks ACME rate limits.
+
 Migrations run automatically at startup. This release builds a new index on
 `probe_results`; schedule the first deploy off-peak and expect probe writes to
 pause while it builds. To apply only environment changes, recreate the affected

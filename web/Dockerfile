@@ -15,4 +15,7 @@ RUN npm run build
 FROM caddy:2-alpine
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /app/dist /srv
+# Caddy runs unprivileged; Compose grants NET_BIND_SERVICE so it can still bind
+# 80/443. /data and /config are world-writable in the base image.
+USER 1000:1000
 EXPOSE 80 443

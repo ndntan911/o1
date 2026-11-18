@@ -581,16 +581,16 @@ Grafana Cloud setup. Point the external dead-man's switch at
   before any push. `govulncheck` blocks in `backend` on `./cmd/...`, which is
   exactly what the images ship; a full-module scan stays advisory because
   reachable findings there are confined to no-fix testcontainers and container
-  tooling. The test suites and Trivy image scans remain blocking. The current
-  `.trivyignore` exceptions are `DS-0002` (`web/Dockerfile` builds on the
-  official Caddy image, which runs as root to bind 80/443; TLS terminates
-  there and no application code runs as root in that container; re-review
-  2027-05-10) and `CVE-2026-78661` (upstream Caddy v2.11.9 still links
-  `golang.org/x/net` v0.60.0, and the image does not enable templates or parse
-  request bodies as HTML, so the `/html` denial of service is not reachable;
-  re-review 2026-12-12 and remove once Caddy ships x/net >= v0.62.0). Any new
+  tooling. The test suites and Trivy image scans remain blocking. `web` runs as
+  uid 1000 with `NET_BIND_SERVICE`, so the former `DS-0002` exception is gone.
+  The only remaining exception is `CVE-2026-78661` (upstream Caddy v2.11.9
+  still links `golang.org/x/net` v0.60.0, and the image does not enable
+  templates or parse request bodies as HTML, so the `/html` denial of service
+  is not reachable; re-review 2027-01-12 and remove once Caddy ships x/net >=
+  v0.62.0). Any new
   exception must carry a comment naming the check/CVE, the reason, and a
-  review date; review exceptions whenever the file changes.
+  review date; review exceptions whenever the file changes. The full rationale
+  is in [docs/security/container-review.md](../docs/security/container-review.md).
 - **Repository controls.** Required checks, linear history, no force pushes,
   restricted `v*` tags, and a reviewed production Environment. Together they
   prevent untested or unreviewed code from reaching a host.
