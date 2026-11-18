@@ -93,10 +93,9 @@ func (s *Service) Cancel(ctx context.Context, actorID, workspaceID uuid.UUID) er
 	if err := s.q.UpsertSubscription(ctx, subscriptionParams(sub)); err != nil {
 		return err
 	}
-	s.audit(ctx, s.q, workspaceID, actorID, "subscription_canceled", map[string]any{
+	return s.audit(ctx, s.q, workspaceID, actorID, "subscription_canceled", map[string]any{
 		"plan": sub.PlanKey,
 	})
-	return nil
 }
 
 // AdminSetPlan is the audited support override.
