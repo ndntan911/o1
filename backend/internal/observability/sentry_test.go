@@ -127,6 +127,7 @@ func TestSentryBeforeSendRedactsSensitiveFields(t *testing.T) {
 	got := BeforeSend(event, nil)
 	if got == nil {
 		t.Fatal("BeforeSend dropped the event")
+		return
 	}
 	if got.Request == nil {
 		t.Fatal("BeforeSend removed the request")

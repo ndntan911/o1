@@ -123,6 +123,7 @@ func TestRiverErrorHandlerCapturesErrorOnce(t *testing.T) {
 	result := handler.HandleError(context.Background(), job, wantErr)
 	if result == nil {
 		t.Fatal("HandleError returned a nil ErrorHandlerResult")
+		return
 	}
 	if result.SetCancelled {
 		t.Fatal("HandleError cancelled retries for a normal error")
@@ -147,6 +148,7 @@ func TestRiverErrorHandlerCapturesPanicOnce(t *testing.T) {
 	result := handler.HandlePanic(context.Background(), job, "boom", "goroutine stack")
 	if result == nil {
 		t.Fatal("HandlePanic returned a nil ErrorHandlerResult")
+		return
 	}
 	if result.SetCancelled {
 		t.Fatal("HandlePanic cancelled retries")
@@ -199,6 +201,7 @@ func TestRiverErrorHandlerDropsCanceledError(t *testing.T) {
 	result := handler.HandleError(context.Background(), job, fmt.Errorf("shutdown: %w", context.Canceled))
 	if result == nil {
 		t.Fatal("HandleError returned a nil ErrorHandlerResult")
+		return
 	}
 	if got := rec.count(); got != 0 {
 		t.Fatalf("captured %d canceled errors, want 0", got)
