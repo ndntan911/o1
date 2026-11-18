@@ -582,8 +582,10 @@ dispatched deliberately, not run from a laptop.
   pushes only if the scans pass. Each image gets the release tag,
   `sha-<12-char-commit>`, and `X.Y`; deploys pin the `@sha256` digest.
 - CI also runs actionlint, shellcheck, and the Compose/deploy script suites in
-  a `pipeline` job. `govulncheck` is advisory until the Plan 14 security pass;
-  Trivy scans and the test suites remain blocking.
+  a `pipeline` job. `govulncheck` blocks on the shipping packages
+  (`./cmd/...`); a full-module scan runs advisory because testcontainers and
+  container tooling ship no fixes. Trivy scans and the test suites remain
+  blocking.
 - Deploys run from **Actions → Deploy** with an `environment` (`staging` or
   `production`) and a `version`. The job resolves the digests, uploads a release
   bundle to `/opt/o1/incoming/<version>-<sha>-<run_id>-<run_attempt>`, and runs

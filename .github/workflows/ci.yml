@@ -26,10 +26,15 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      # Advisory until the Plan 14 security pass: reachable findings include
-      # the Go standard library and no-fix testcontainers/container modules.
-      # Trivy image scans and the test suites remain blocking.
-      - name: govulncheck (advisory)
+      # Blocking on what ships: the Go standard library and every module the
+      # command binaries actually link.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./cmd/...
+
+      # Advisory: testcontainers and container tooling ship no fixes, so the
+      # full-module scan reports without blocking. The gate above covers what
+      # is actually built into the images.
+      - name: govulncheck (full module, advisory)
         continue-on-error: true
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 

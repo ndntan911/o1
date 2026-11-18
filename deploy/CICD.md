@@ -44,9 +44,10 @@ pull request ──► CI checks ──► merge to main
   five jobs are the required status checks: `backend`, `integration`,
   `frontend`, `e2e`, `pipeline`. The `pipeline` job runs actionlint,
   shellcheck, and the Compose and deploy script suites locally in CI.
-  `govulncheck` runs in `backend` as an advisory step (`continue-on-error`)
-  until the Plan 14 security pass; Trivy image scans and every test suite
-  remain blocking. `release.yml` does **not** re-run CI on the tag, to keep
+  `govulncheck` blocks on the shipping packages (`./cmd/...`); a second
+  full-module scan is advisory because testcontainers and container tooling
+  ship no fixes. Trivy image scans and every test suite remain blocking.
+  `release.yml` does **not** re-run CI on the tag, to keep
   releases short: the gate is the CI run on `main` before tagging, so only tag
   commits whose CI is green.
 - `.github/workflows/release.yml` triggers on `v*` tags. It rejects a tag that
@@ -577,10 +578,10 @@ Grafana Cloud setup. Point the external dead-man's switch at
   Tags are convenience; digests are the deployed artifact.
 - **Scans before push.** Trivy runs on the filesystem (`secret,misconfig`,
   `HIGH,CRITICAL`) and on both images (`HIGH,CRITICAL`, unfixed ignored)
-  before any push. `govulncheck` runs in `backend` as an advisory step until
-  the Plan 14 security pass: reachable findings include the Go standard library
-  and no-fix testcontainers/container modules, so it reports without blocking.
-  The test suites and Trivy image scans remain blocking. The current
+  before any push. `govulncheck` blocks in `backend` on `./cmd/...`, which is
+  exactly what the images ship; a full-module scan stays advisory because
+  reachable findings there are confined to no-fix testcontainers and container
+  tooling. The test suites and Trivy image scans remain blocking. The current
   `.trivyignore` exceptions are `DS-0002` (`web/Dockerfile` builds on the
   official Caddy image, which runs as root to bind 80/443; TLS terminates
   there and no application code runs as root in that container; re-review
@@ -615,14 +616,15 @@ cd backend && go test -short ./...
 cd ../web && npm test -- --run
 ```
 
-`govulncheck` is advisory, not part of the blocking gate:
+`govulncheck` gates the shipping packages, not the whole module:
 
 ```sh
-cd backend && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+cd backend && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./cmd/...
 ```
 
-It is expected to report reachable findings until the Plan 14 security pass;
-the CI step uses `continue-on-error: true`. The script tests use fake `docker`,
+This is blocking in CI. A second full-module run (`./...`) is advisory: its
+reachable findings are confined to no-fix testcontainers and container tooling
+that are not linked into the images. The script tests use fake `docker`,
 `curl`, and `flock` binaries on `PATH` to
 prove activation, readiness polling, rollback on failed login/pull/up/health,
 first-deploy behavior, lock exclusion, and dry-run. The Compose tests prove the

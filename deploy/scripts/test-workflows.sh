@@ -40,14 +40,22 @@ for job in backend integration frontend e2e pipeline; do
 done
 check "$ci_file keeps the backend, integration, frontend, e2e and pipeline jobs"
 
-grep -Eq 'govulncheck@v1\.9\.0 \./\.\.\.' "$ci_file" ||
-  fail "$ci_file does not run govulncheck"
-grep -Fq 'name: govulncheck (advisory)' "$ci_file" ||
-  fail "$ci_file does not mark govulncheck advisory"
-grep -A1 -F 'name: govulncheck (advisory)' "$ci_file" |
+grep -Eq 'govulncheck@v1\.9\.0 \./cmd/\.\.\.' "$ci_file" ||
+  fail "$ci_file does not gate the shipping packages"
+grep -Fq 'name: govulncheck' "$ci_file" ||
+  fail "$ci_file has no blocking govulncheck step"
+awk '
+  /name: govulncheck$/ { inblock = 1; next }
+  inblock && /continue-on-error: true/ { bad = 1 }
+  inblock && /run:/ { inblock = 0 }
+  END { exit bad }
+' "$ci_file" || fail "$ci_file still marks the blocking govulncheck advisory"
+grep -Fq 'name: govulncheck (full module, advisory)' "$ci_file" ||
+  fail "$ci_file does not keep the full-module advisory scan"
+grep -A1 -F 'name: govulncheck (full module, advisory)' "$ci_file" |
   grep -Fq 'continue-on-error: true' ||
-  fail "$ci_file does not let advisory govulncheck continue on error"
-check "$ci_file runs govulncheck as an advisory gate"
+  fail "$ci_file does not let the full-module scan continue on error"
+check "$ci_file blocks on shipping-package vulnerabilities and advises on the full module"
 
 # The local lint and script suites are a required CI job, not just docs.
 grep -Fq 'rhysd/actionlint:1.7.12' "$ci_file" ||
