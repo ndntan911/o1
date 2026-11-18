@@ -32,6 +32,7 @@ import { queryClient as appQueryClient } from '@/lib/query/client';
 import { meQueryOptions, useMe } from '@/lib/query/me';
 import {
 	canManageAlertChannels,
+	canManageBilling,
 	canManageAPIKeys,
 	canManageMonitors,
 	canManageStatusPage,
@@ -80,6 +81,11 @@ const IncidentDetailScreen = lazy(async () => {
 const AlertSettingsScreen = lazy(async () => {
 	const module = await import('@/features/alerts/AlertSettingsScreen');
 	return { default: module.AlertSettingsScreen };
+});
+
+const BillingScreen = lazy(async () => {
+	const module = await import('@/features/billing/BillingScreen');
+	return { default: module.BillingScreen };
 });
 
 const StatusPageSettingsScreen = lazy(async () => {
@@ -376,6 +382,26 @@ function AlertSettingsRoute() {
 	return <AlertSettingsScreen workspace={workspace} />;
 }
 
+function BillingRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+
+	return <BillingScreen workspace={workspace} />;
+}
+
+const billingRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/settings/billing',
+	beforeLoad: ({ context }) => {
+		if (!canManageBilling(context.workspace.role)) {
+			throw redirect({
+				to: '/w/$workspaceSlug/monitors',
+				params: { workspaceSlug: context.workspace.slug },
+			});
+		}
+	},
+	component: BillingRoute,
+});
+
 const alertSettingsRoute = createRoute({
 	getParentRoute: () => workspaceRoute,
 	path: '/settings/alerts',
@@ -508,6 +534,7 @@ export const routeTree = rootRoute.addChildren([
 			incidentsRoute,
 			incidentDetailRoute,
 			alertSettingsRoute,
+			billingRoute,
 			statusPageSettingsRoute,
 			apiKeysRoute,
 			membersRoute,
