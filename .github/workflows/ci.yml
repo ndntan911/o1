@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.26.11"
           cache-dependency-path: backend/go.sum
 
       - name: go vet
@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version: "1.26.11"
           cache-dependency-path: backend/go.sum
 
       # The GitHub-hosted runner provides Docker, so testcontainers can start
