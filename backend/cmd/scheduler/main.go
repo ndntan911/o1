@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"o1/internal/app"
+	"o1/internal/billing"
 	"o1/internal/db/sqlc"
 	"o1/internal/observability"
 	"o1/internal/retention"
@@ -79,9 +80,39 @@ func run() error {
 		}
 	}()
 
-	runErr := make(chan error, 1)
 	schedCtx, cancelSched := context.WithCancel(ctx)
 	defer cancelSched()
+
+	// Billing transitions are hourly, independent of the probe tick.
+	billingSvc := billing.NewService(rt.Pool, sqlc.New(rt.Pool), billing.NewSandbox([]byte(rt.Config.BillingWebhookSecret)))
+	go func() {
+		runBilling := func() {
+			res, err := billingSvc.RunMaintenance(schedCtx)
+			if err != nil {
+				rt.Logger.Log(schedCtx, slog.LevelWarn, "billing maintenance failed", "err", err)
+				return
+			}
+			if res.TrialsEnded+res.PastDueExpired+res.CanceledExpired > 0 {
+				rt.Logger.Log(schedCtx, slog.LevelInfo, "billing maintenance",
+					"trials_ended", res.TrialsEnded,
+					"past_due_expired", res.PastDueExpired,
+					"canceled_expired", res.CanceledExpired)
+			}
+		}
+		runBilling()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-schedCtx.Done():
+				return
+			case <-ticker.C:
+				runBilling()
+			}
+		}
+	}()
+
+	runErr := make(chan error, 1)
 	go func() {
 		rt.Logger.Log(ctx, slog.LevelInfo, "scheduler started",
 			"tick", rt.Config.SchedulerTick.String(),
