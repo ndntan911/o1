@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Link } from '@tanstack/react-router';
 import { UserMenu } from './UserMenu';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -11,61 +12,67 @@ export interface SidebarProps {
 }
 
 const linkClass =
-	'flex h-9 items-center rounded-lg px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground [&[aria-current=page]]:text-foreground';
+	'flex h-9 items-center rounded-lg px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground [&[aria-current=page]]:bg-muted [&[aria-current=page]]:font-medium [&[aria-current=page]]:text-foreground';
 const activeClass = 'bg-muted';
+
+function NavGroup({ title, children }: { title: string; children: ReactNode }) {
+	return (
+		<div className="space-y-1 border-t pt-3 first:border-t-0 first:pt-0">
+			<h2 className="px-2 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+				{title}
+			</h2>
+			{children}
+		</div>
+	);
+}
 
 export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 	return (
-		<nav aria-label="Main" className="flex flex-1 flex-col gap-4">
+		<nav aria-label="Main" className="flex flex-1 flex-col gap-3">
 			<WorkspaceSwitcher
 				workspaces={me.workspaces}
 				current={currentWorkspace}
 				onNavigate={onNavigate}
 			/>
 
-			<div className="space-y-1">
-				{currentWorkspace ? (
-					<>
-						<Link
-							to="/w/$workspaceSlug/monitors"
-							params={{ workspaceSlug: currentWorkspace.slug }}
-							className={linkClass}
-							activeProps={{ className: activeClass }}
-							onClick={onNavigate}
-						>
-							Monitors
-						</Link>
-						<Link
-							to="/w/$workspaceSlug/incidents"
-							params={{ workspaceSlug: currentWorkspace.slug }}
-							className={linkClass}
-							activeProps={{ className: activeClass }}
-							onClick={onNavigate}
-						>
-							Incidents
-						</Link>
-						<Link
-							to="/w/$workspaceSlug/members"
-							params={{ workspaceSlug: currentWorkspace.slug }}
-							className={linkClass}
-							activeProps={{ className: activeClass }}
-							onClick={onNavigate}
-						>
-							Members
-						</Link>
-					</>
-				) : (
-					<p className="px-2 text-xs text-muted-foreground">
-						Select a workspace to manage monitors.
-					</p>
-				)}
-			</div>
+			{currentWorkspace ? (
+				<NavGroup title="Workspace">
+					<Link
+						to="/w/$workspaceSlug/monitors"
+						params={{ workspaceSlug: currentWorkspace.slug }}
+						className={linkClass}
+						activeProps={{ className: activeClass }}
+						onClick={onNavigate}
+					>
+						Monitors
+					</Link>
+					<Link
+						to="/w/$workspaceSlug/incidents"
+						params={{ workspaceSlug: currentWorkspace.slug }}
+						className={linkClass}
+						activeProps={{ className: activeClass }}
+						onClick={onNavigate}
+					>
+						Incidents
+					</Link>
+					<Link
+						to="/w/$workspaceSlug/members"
+						params={{ workspaceSlug: currentWorkspace.slug }}
+						className={linkClass}
+						activeProps={{ className: activeClass }}
+						onClick={onNavigate}
+					>
+						Members
+					</Link>
+				</NavGroup>
+			) : (
+				<p className="px-2 text-xs text-muted-foreground">
+					Select a workspace to manage monitors.
+				</p>
+			)}
 
 			{currentWorkspace && canManageAlertChannels(currentWorkspace.role) ? (
-				<div className="space-y-1">
-					<h2 className="px-2 text-xs font-medium text-muted-foreground">
-						Settings
-					</h2>
+				<NavGroup title="Settings">
 					<Link
 						to="/w/$workspaceSlug/settings/alerts"
 						params={{ workspaceSlug: currentWorkspace.slug }}
@@ -102,14 +109,11 @@ export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 					>
 						API keys
 					</Link>
-				</div>
+				</NavGroup>
 			) : null}
 
 			{me.user.is_admin ? (
-				<div className="space-y-1">
-					<h2 className="px-2 text-xs font-medium text-muted-foreground">
-						Admin
-					</h2>
+				<NavGroup title="Admin">
 					<Link
 						to="/admin/workspaces"
 						className={linkClass}
@@ -134,7 +138,7 @@ export function Sidebar({ me, currentWorkspace, onNavigate }: SidebarProps) {
 					>
 						Security events
 					</Link>
-				</div>
+				</NavGroup>
 			) : null}
 
 			<div className="mt-auto border-t pt-4">
