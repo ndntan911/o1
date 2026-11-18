@@ -68,6 +68,7 @@ func TestRetrySender_RetriesTransientThreeTimes(t *testing.T) {
 	err := sender.Send(context.Background(), testMessage())
 	if err == nil {
 		t.Fatal("Send returned nil for a persistently failing sender")
+		return
 	}
 	if got := len(inner.messages()); got != 3 {
 		t.Fatalf("inner sender called %d times, want 3", got)
@@ -85,6 +86,7 @@ func TestRetrySender_DoesNotRetryPermanent(t *testing.T) {
 	err := sender.Send(context.Background(), testMessage())
 	if err == nil {
 		t.Fatal("Send returned nil for a permanent error")
+		return
 	}
 	if !IsPermanent(err) {
 		t.Fatalf("err = %v, want the permanent error", err)
@@ -119,6 +121,7 @@ func TestRetrySender_StopsWhenContextCanceledDuringBackoff(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("Send returned nil after context cancellation")
+		return
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)

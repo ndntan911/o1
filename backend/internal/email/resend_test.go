@@ -187,6 +187,7 @@ func assertResendStatus(t *testing.T, status int, wantPermanent bool) {
 	})
 	if err == nil {
 		t.Fatalf("Send with HTTP %d returned nil", status)
+		return
 	}
 	if got := IsPermanent(err); got != wantPermanent {
 		t.Fatalf("IsPermanent(HTTP %d) = %v, want %v (err %v)", status, got, wantPermanent, err)
@@ -227,6 +228,7 @@ func TestResendSender_DoesNotFollowRedirects(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Send followed a redirect")
+		return
 	}
 	if !IsPermanent(err) {
 		t.Fatalf("redirect error = %v, want permanent", err)
@@ -258,6 +260,7 @@ func TestResendSender_TimeoutIsTransient(t *testing.T) {
 	close(release)
 	if err == nil {
 		t.Fatal("Send succeeded despite the timeout")
+		return
 	}
 	if IsPermanent(err) {
 		t.Fatalf("timeout classified permanent: %v", err)
@@ -320,6 +323,7 @@ func TestResendSender_RejectsInvalidMessagesBeforeIO(t *testing.T) {
 			err := sender.Send(context.Background(), msg)
 			if err == nil {
 				t.Fatalf("Send accepted invalid message %+v", msg)
+				return
 			}
 			if !IsPermanent(err) {
 				t.Errorf("validation error = %v, want permanent", err)
@@ -380,6 +384,7 @@ func TestResendSender_RateLimitHonorsContext(t *testing.T) {
 	err := sender.Send(ctx, msg)
 	if err == nil {
 		t.Fatal("second Send ignored the rate limiter")
+		return
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("second Send took %v, want context-aware wait", elapsed)

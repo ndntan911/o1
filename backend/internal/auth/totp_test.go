@@ -110,6 +110,7 @@ func TestEnableTOTP_ValidCodeAndRecoveryCodes(t *testing.T) {
 	}
 	if enabledAt == nil {
 		t.Fatal("totp_enabled_at not set")
+		return
 	}
 	if secretEnc == nil || !strings.HasPrefix(*secretEnc, "v1:") || *secretEnc == setup.Secret {
 		t.Fatalf("active secret not sealed: %v", secretEnc)
@@ -127,6 +128,7 @@ func TestEnableTOTP_ValidCodeAndRecoveryCodes(t *testing.T) {
 	}
 	if lastUsed == nil {
 		t.Fatal("totp_last_used_step not set")
+		return
 	}
 	if pendingEnc != nil || pendingExpires != nil {
 		t.Fatalf("pending secret not cleared: %v %v", pendingEnc, pendingExpires)
@@ -303,6 +305,7 @@ func TestEnableTOTP_NilEncryptionBoxIsInternalError(t *testing.T) {
 	_, err := svc.EnableTOTP(ctx, userID, testPassword, "000000", uuid.Nil)
 	if err == nil {
 		t.Fatal("EnableTOTP without an encryption box succeeded")
+		return
 	}
 	if errors.Is(err, auth.ErrTOTPNotEnabled) {
 		t.Fatalf("EnableTOTP error = %v, want internal error not ErrTOTPNotEnabled", err)

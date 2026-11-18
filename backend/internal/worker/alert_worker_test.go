@@ -668,6 +668,7 @@ func TestAlertWorker_WebhookTransientFailureRetries(t *testing.T) {
 	err := worker.Work(context.Background(), alertJob(fixture.deliveryID, 1, 5))
 	if err == nil {
 		t.Fatal("Work = nil, want retryable error")
+		return
 	}
 	state := readDeliveryState(t, env, fixture.deliveryID)
 	if state.status != "pending" || state.attempts != 1 {

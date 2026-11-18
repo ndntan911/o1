@@ -346,6 +346,7 @@ func TestNotifier_StatusClassification(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("Send status %d = nil, want error", tc.status)
+				return
 			}
 			if got := IsPermanent(err); got != tc.permanent {
 				t.Fatalf("IsPermanent(%d) = %v, want %v (err %v)", tc.status, got, tc.permanent, err)
@@ -373,6 +374,7 @@ func TestNotifier_TelegramErrorSanitized(t *testing.T) {
 	}, testEvent("opened"))
 	if err == nil {
 		t.Fatal("Send = nil, want error")
+		return
 	}
 	if IsPermanent(err) {
 		t.Fatal("500 classified as permanent")

@@ -148,6 +148,7 @@ func TestIsPublicIP(t *testing.T) {
 		ip := net.ParseIP(tc.ip)
 		if ip == nil {
 			t.Fatalf("ParseIP(%q) = nil", tc.ip)
+			return
 		}
 		if got := IsPublicIP(ip); got != tc.public {
 			t.Errorf("IsPublicIP(%q) = %v, want %v", tc.ip, got, tc.public)

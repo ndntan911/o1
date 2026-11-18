@@ -67,6 +67,7 @@ func TestQueueCollector_CountsAndOldestRunnable(t *testing.T) {
 		FindStringSubmatch(body)
 	if line == nil {
 		t.Fatalf("missing oldest age:\n%s", body)
+		return
 	}
 	age, err := strconv.ParseFloat(line[1], 64)
 	if err != nil {
@@ -100,6 +101,7 @@ func TestQueueCollector_OldestIgnoresFutureScheduled(t *testing.T) {
 		FindStringSubmatch(body)
 	if line == nil {
 		t.Fatalf("missing oldest age:\n%s", body)
+		return
 	}
 	age, err := strconv.ParseFloat(line[1], 64)
 	if err != nil {

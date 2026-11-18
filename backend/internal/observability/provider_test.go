@@ -17,6 +17,7 @@ func TestObservabilityProvider_EmptyConfigIsNoop(t *testing.T) {
 	}
 	if p == nil {
 		t.Fatal("New returned a nil provider")
+		return
 	}
 	if p.Metrics == nil {
 		t.Fatal("Provider.Metrics is nil")

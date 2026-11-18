@@ -145,6 +145,7 @@ func assertWatermark(t *testing.T, e *rollupEnv, want time.Time) {
 	got := e.watermark()
 	if got == nil {
 		t.Fatalf("watermark = nil, want %s", want)
+		return
 	}
 	if !got.Equal(want) {
 		t.Fatalf("watermark = %s, want %s", got.UTC(), want.UTC())
@@ -368,6 +369,7 @@ func TestRun_CatchesUpAndReplaysInTheSamePass(t *testing.T) {
 	}
 	if late == nil {
 		t.Fatalf("rows = %+v, want the target-1h bucket", rows)
+		return
 	}
 	if late.Checks != 2 || late.UpCount != 1 || late.DownCount != 1 {
 		t.Fatalf("target-1h bucket = %+v, want checks=2 up=1 down=1 after replay", *late)
@@ -540,6 +542,7 @@ func TestRun_TransactionFailureDoesNotAdvanceWatermark(t *testing.T) {
 	res, err := e.rolluper.Run(context.Background())
 	if err == nil {
 		t.Fatal("Run succeeded, want the forced watermark failure")
+		return
 	}
 	if res.Hours != 0 || res.Rows != 0 {
 		t.Fatalf("Result = %+v, want no committed work", res)

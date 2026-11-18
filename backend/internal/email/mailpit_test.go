@@ -15,6 +15,7 @@ func extractBoundary(t *testing.T, raw string) string {
 	m := regexp.MustCompile(`(?m)^Content-Type: multipart/alternative; boundary=(\S+)\r?$`).FindStringSubmatch(raw)
 	if m == nil {
 		t.Fatalf("message has no multipart boundary:\n%s", raw)
+		return ""
 	}
 	return m[1]
 }
@@ -65,6 +66,7 @@ func TestMailpitSender_RejectsHeaderInjection(t *testing.T) {
 		err := s.Send(ctx, msg)
 		if err == nil {
 			t.Fatalf("Send accepted header injection: %+v", msg)
+			return
 		}
 		if !strings.Contains(strings.ToLower(err.Error()), "header") {
 			t.Fatalf("Send returned %v, want a header validation error", err)

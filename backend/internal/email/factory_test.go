@@ -97,6 +97,7 @@ func TestNewSender_RejectsMissingConfiguration(t *testing.T) {
 		_, err := email.NewSender(cfg)
 		if err == nil {
 			t.Fatal("NewSender accepted a malformed from address")
+			return
 		}
 		if strings.Contains(err.Error(), "re_super_secret") {
 			t.Fatalf("error leaks the API key: %v", err)

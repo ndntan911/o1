@@ -64,6 +64,7 @@ func TestTracerDisabledWithoutEndpoint(t *testing.T) {
 	}
 	if tr == nil {
 		t.Fatal("NewTracer returned nil")
+		return
 	}
 	if tr.Enabled() {
 		t.Fatal("Enabled() = true with an empty endpoint")

@@ -535,6 +535,7 @@ func TestEmailProvider_RejectsInvalidFrom(t *testing.T) {
 	_, err := config.Load()
 	if err == nil {
 		t.Fatal("Load() accepted a malformed O1_EMAIL_FROM")
+		return
 	}
 	if strings.Contains(err.Error(), "re_super_secret") {
 		t.Fatalf("error leaks the API key: %v", err)

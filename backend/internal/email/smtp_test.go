@@ -87,6 +87,7 @@ func TestSMTPSender_TransportErrorIsSanitized(t *testing.T) {
 	err := s.Send(context.Background(), Message{To: "d@e.f", Subject: "s", Text: "t"})
 	if err == nil {
 		t.Fatal("expected a connection error")
+		return
 	}
 	if IsPermanent(err) {
 		t.Fatalf("transport errors must stay transient: %v", err)
@@ -140,6 +141,7 @@ func TestSMTPSender_CanceledContextReturnsPromptly(t *testing.T) {
 	err := s.Send(ctx, Message{To: "d@e.f", Subject: "s", Text: "t"})
 	if err == nil {
 		t.Fatal("expected an error")
+		return
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("cancel took %v", time.Since(start))
