@@ -68,6 +68,12 @@ func newServiceEnv(t *testing.T) *serviceEnv {
 		t.Fatalf("create workspace B: %v", err)
 	}
 	env.wsB = wsB.ID
+	for _, id := range []uuid.UUID{env.wsA, env.wsB} {
+		if _, err := pool.Exec(context.Background(),
+			`UPDATE subscriptions SET plan_key = 'team' WHERE workspace_id = $1`, id); err != nil {
+			t.Fatalf("set team plan: %v", err)
+		}
+	}
 	return env
 }
 
@@ -225,6 +231,20 @@ func TestService_ListAndRevoke(t *testing.T) {
 	// Revoking an already revoked key is idempotent.
 	if err := env.svc.Revoke(ctx, env.owner, env.wsA, second.Key.ID); err != nil {
 		t.Fatalf("second Revoke = %v, want nil", err)
+	}
+}
+
+func TestService_FreePlanKeyLimit(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	if _, err := env.pool.Exec(ctx,
+		`UPDATE subscriptions SET plan_key = 'free' WHERE workspace_id = $1`, env.wsA); err != nil {
+		t.Fatalf("set free plan: %v", err)
+	}
+	env.createKey("first", "viewer")
+	env.createKey("second", "viewer")
+	if _, err := env.svc.Create(ctx, env.owner, env.wsA, CreateInput{Name: "third", Role: "viewer"}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("third free key = %v, want ErrLimit", err)
 	}
 }
 

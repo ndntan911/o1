@@ -86,6 +86,10 @@ func newServiceEnv(t *testing.T) *serviceEnv {
 	env.admin = env.addMember("alerts-admin@example.com", "admin")
 	env.member = env.addMember("alerts-member@example.com", "member")
 	env.viewer = env.addMember("alerts-viewer@example.com", "viewer")
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE subscriptions SET plan_key = 'team' WHERE workspace_id = $1`, ws.ID); err != nil {
+		t.Fatalf("set team plan: %v", err)
+	}
 	return env
 }
 
@@ -481,6 +485,27 @@ func TestService_NameDuplicateAndLimits(t *testing.T) {
 		Kind: KindSlack, Name: "Slack overflow", URL: slackURL,
 	}); !errors.Is(err, ErrLimit) {
 		t.Fatalf("total limit = %v, want ErrLimit", err)
+	}
+}
+
+func TestService_FreePlanChannelLimit(t *testing.T) {
+	env := newServiceEnv(t)
+	ctx := context.Background()
+	if _, err := env.pool.Exec(ctx,
+		`UPDATE subscriptions SET plan_key = 'free' WHERE workspace_id = $1`, env.wsID); err != nil {
+		t.Fatalf("set free plan: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := env.svc.Create(ctx, env.owner, env.wsID, CreateInput{
+			Kind: KindWebhook, Name: "Free " + string(rune('A'+i)), URL: "https://example.org/hook",
+		}); err != nil {
+			t.Fatalf("create free channel %d: %v", i, err)
+		}
+	}
+	if _, err := env.svc.Create(ctx, env.owner, env.wsID, CreateInput{
+		Kind: KindWebhook, Name: "Free overflow", URL: "https://example.org/hook",
+	}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("fourth free channel = %v, want ErrLimit", err)
 	}
 }
 

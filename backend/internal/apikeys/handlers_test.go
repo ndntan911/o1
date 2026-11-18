@@ -126,6 +126,12 @@ func newKeyAPIEnv(t *testing.T) *keyAPIEnv {
 		t.Fatalf("create workspace B: %v", err)
 	}
 	env.wsB = wsB.ID
+	for _, id := range []uuid.UUID{env.wsA, env.wsB} {
+		if _, err := env.pool.Exec(context.Background(),
+			`UPDATE subscriptions SET plan_key = 'team' WHERE workspace_id = $1`, id); err != nil {
+			t.Fatalf("set team plan: %v", err)
+		}
+	}
 	return env
 }
 

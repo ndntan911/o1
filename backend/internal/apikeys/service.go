@@ -17,6 +17,7 @@ import (
 
 	"o1/internal/audit"
 	"o1/internal/auth"
+	"o1/internal/billing"
 	"o1/internal/db/sqlc"
 	"o1/internal/workspaces"
 )
@@ -110,11 +111,15 @@ func (s *Service) Create(ctx context.Context, actorID, workspaceID uuid.UUID, in
 		return CreatedKey{}, ErrSuspended
 	}
 
+	limits, err := billing.LoadLimits(ctx, qtx, workspaceID)
+	if err != nil {
+		return CreatedKey{}, fmt.Errorf("load plan limits: %w", err)
+	}
 	active, err := qtx.CountActiveAPIKeys(ctx, workspaceID)
 	if err != nil {
 		return CreatedKey{}, fmt.Errorf("count api keys: %w", err)
 	}
-	if active >= maxActiveKeys {
+	if active >= int64(limits.APIKeys) {
 		return CreatedKey{}, ErrLimit
 	}
 

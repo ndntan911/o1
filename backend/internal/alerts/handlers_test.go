@@ -111,6 +111,10 @@ func newAlertsAPIEnv(t *testing.T) *alertsAPIEnv {
 	env.admin = env.addMember("alerts-api-admin@example.com", "admin")
 	env.member = env.addMember("alerts-api-member@example.com", "member")
 	env.viewer = env.addMember("alerts-api-viewer@example.com", "viewer")
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE subscriptions SET plan_key = 'team' WHERE workspace_id = $1`, ws.ID); err != nil {
+		t.Fatalf("set team plan: %v", err)
+	}
 
 	router := api.NewRouter(api.Dependencies{
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),

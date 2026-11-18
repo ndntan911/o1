@@ -14,6 +14,7 @@ import (
 
 	"o1/internal/audit"
 	"o1/internal/auth"
+	"o1/internal/billing"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
 	"o1/internal/probe"
@@ -120,11 +121,15 @@ func (s *Service) Create(ctx context.Context, actorID, workspaceID uuid.UUID, in
 		return Channel{}, fmt.Errorf("check channel name: %w", err)
 	}
 
+	limits, err := billing.LoadLimits(ctx, qtx, workspaceID)
+	if err != nil {
+		return Channel{}, fmt.Errorf("load plan limits: %w", err)
+	}
 	total, err := qtx.CountAllActiveAlertChannels(ctx, workspaceID)
 	if err != nil {
 		return Channel{}, fmt.Errorf("count alert channels: %w", err)
 	}
-	if total >= maxChannelsTotal {
+	if total >= int64(limits.Channels) {
 		return Channel{}, ErrLimit
 	}
 	perKind, err := qtx.CountActiveAlertChannels(ctx, sqlc.CountActiveAlertChannelsParams{
