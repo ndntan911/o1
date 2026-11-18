@@ -133,6 +133,27 @@ the current UTC day so the synthetic history is trusted, which would skip a
 rollup pass for real probe rows written earlier that day. Production runs the
 same command with the production env file and Compose file.
 
+## Billing and plans
+
+Workspace admins manage the plan under **Settings → Billing**. Three plans set
+monitor, alert-channel, and API-key limits: Free (5/3/2), Pro (50/15/10), and
+Team (200/30/20). Changing a plan updates the workspace limit in the same
+transaction as the subscription.
+
+Plan 15 ships a **sandbox provider**: checkout and payment outcomes are
+simulated in-app and clearly labelled, and the same transaction path a real
+webhook would use applies the result. No card data ever reaches the server and
+no real money moves. The `billing.Provider` interface is ready for a
+merchant-of-record adapter (Lemon Squeezy or Paddle) as a follow-up.
+
+Subscriptions move through `trialing → active → past_due → canceled → expired`.
+Reads always work; only new resource creation is blocked when a workspace is
+past due for more than seven days or expired. A scheduler pass advances trial
+ends and expirations hourly.
+
+Variables: `O1_BILLING_PROVIDER` (only `sandbox` in this release) and
+`O1_BILLING_WEBHOOK_SECRET` (optional; derived from `O1_SECRET_KEY` when empty).
+
 ## Incidents and alerts
 
 The probe worker opens an incident when a monitor crosses its confirmation

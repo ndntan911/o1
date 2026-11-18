@@ -113,6 +113,18 @@ func TestSeedCreatesReusableDemoWorkspace(t *testing.T) {
 		t.Fatalf("rollup watermark = %v, want %v", watermark, now.Truncate(24*time.Hour))
 	}
 
+	var plan string
+	var demoLimit int
+	if err := pool.QueryRow(ctx, `
+		SELECT s.plan_key, w.monitor_limit
+		FROM subscriptions s JOIN workspaces w ON w.id = s.workspace_id
+		WHERE s.workspace_id = $1`, first.WorkspaceID).Scan(&plan, &demoLimit); err != nil {
+		t.Fatalf("read demo plan: %v", err)
+	}
+	if plan != "team" || demoLimit != 200 {
+		t.Fatalf("demo plan = %s/%d, want team/200", plan, demoLimit)
+	}
+
 	var resolved int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM incidents WHERE workspace_id = $1 AND status = 'resolved'`,

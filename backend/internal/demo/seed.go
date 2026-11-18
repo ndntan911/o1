@@ -163,6 +163,10 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error)
 	}
 	res.RawRows = rawRows
 
+	if err := ensureTeamPlan(ctx, tx, wsID); err != nil {
+		return Result{}, err
+	}
+
 	if opts.ViewerEmail != "" {
 		if err := ensureViewer(ctx, tx, opts, wsID); err != nil {
 			return Result{}, err
@@ -274,6 +278,24 @@ func ensureUser(ctx context.Context, tx pgx.Tx, opts Options) (uuid.UUID, bool, 
 // ensureViewer creates or resets a read-only demo account and adds it to every
 // seeded workspace. It also clears TOTP and sessions on reset so a shared demo
 // account cannot lock out the next visitor with a second factor.
+// ensureTeamPlan gives the demo workspace headroom so a visitor cannot hit a
+// quota before seeing the product.
+func ensureTeamPlan(ctx context.Context, tx pgx.Tx, wsID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE subscriptions SET
+			provider = 'internal', plan_key = 'team', status = 'active',
+			trial_end = NULL, past_due_since = NULL, cancel_at_period_end = false,
+			updated_at = now()
+		WHERE workspace_id = $1`, wsID); err != nil {
+		return fmt.Errorf("set demo plan: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE workspaces SET monitor_limit = 200 WHERE id = $1`, wsID); err != nil {
+		return fmt.Errorf("set demo monitor limit: %w", err)
+	}
+	return nil
+}
+
 func ensureViewer(ctx context.Context, tx pgx.Tx, opts Options, wsID uuid.UUID) error {
 	if opts.ViewerEmail == opts.Email {
 		return fmt.Errorf("viewer email must differ from the demo owner email")

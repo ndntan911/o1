@@ -162,6 +162,7 @@ action it was recording.
 - **The system is observable.** Prometheus metrics on private listeners, OTLP
   tracing, Sentry with request data stripped, and a Grafana Alloy bundle that
   ships metrics and logs to Grafana Cloud.
+- **Billing is a real state machine.** Plans and quotas, a sandbox checkout, webhook-driven subscriptions with idempotency, trial and past-due transitions run by the scheduler, and audited plan changes — with card data kept off the server and a provider interface ready for a merchant of record.
 - **The security work is measured, not asserted.** A blocking dependency gate,
   a written threat model, and a k6 baseline with committed results
   ([`docs/security/load-test.md`](docs/security/load-test.md)).
