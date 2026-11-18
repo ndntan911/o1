@@ -299,6 +299,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			sqlc.New(deps.Pool),
 			billing.NewSandbox([]byte(deps.Config.BillingWebhookSecret)),
 		)
+		billingSvc.SetEmail(deps.EmailSender, deps.Config.AppBaseURL)
 	}
 	statusPageSvc := deps.StatusPageService
 	if statusPageSvc == nil && deps.Pool != nil {

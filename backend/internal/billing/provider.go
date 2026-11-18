@@ -28,6 +28,7 @@ var (
 // CheckoutInput describes one checkout request.
 type CheckoutInput struct {
 	WorkspaceID uuid.UUID
+	Slug        string
 	PlanKey     string
 	AdminEmail  string
 }

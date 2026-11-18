@@ -48,7 +48,9 @@ func (s *Sandbox) CreateCheckout(_ context.Context, in CheckoutInput) (CheckoutS
 		return CheckoutSession{}, fmt.Errorf("encode sandbox token: %w", err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw) + "." + s.sign(raw)
-	return CheckoutSession{URL: "/billing/sandbox?token=" + token}, nil
+	return CheckoutSession{
+		URL: fmt.Sprintf("/w/%s/settings/billing/sandbox?token=%s", in.Slug, token),
+	}, nil
 }
 
 // ParseToken verifies and decodes a sandbox checkout token.

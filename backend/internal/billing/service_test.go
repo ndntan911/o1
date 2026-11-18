@@ -218,3 +218,39 @@ func TestTrialIsGrantedOncePerWorkspace(t *testing.T) {
 	}
 	_ = now
 }
+
+func TestPaymentFailureNotifiesWorkspaceAdmins(t *testing.T) {
+	svc, _, wsID, _ := newBillingEnv(t)
+	ctx := context.Background()
+	sender := testutil.NewFakeSender()
+	svc.SetEmail(sender, "http://localhost:5173")
+
+	var userID uuid.UUID
+	if err := svc.pool.QueryRow(ctx,
+		`SELECT created_by FROM workspaces WHERE id = $1`, wsID).Scan(&userID); err != nil {
+		t.Fatalf("read owner: %v", err)
+	}
+	if _, err := svc.pool.Exec(ctx,
+		`INSERT INTO workspace_members (workspace_id,user_id,role) VALUES ($1,$2,'owner')`,
+		wsID, userID); err != nil {
+		t.Fatalf("add owner: %v", err)
+	}
+
+	start := startedEvent(wsID, "pro")
+	if err := svc.ApplyEvent(ctx, "sandbox", start); err != nil {
+		t.Fatalf("started: %v", err)
+	}
+	failed := Event{
+		ID: uuid.NewString(), Kind: "subscription.payment_failed", WorkspaceID: wsID.String(),
+		PlanKey: "pro", ProviderSubscriptionID: start.ProviderSubscriptionID,
+	}
+	if err := svc.ApplyEvent(ctx, "sandbox", failed); err != nil {
+		t.Fatalf("payment_failed: %v", err)
+	}
+	if sender.Len() != 1 {
+		t.Fatalf("messages = %d, want 1", sender.Len())
+	}
+	if got := sender.Messages()[0]; got.To != "svc@example.com" {
+		t.Fatalf("recipient = %q", got.To)
+	}
+}

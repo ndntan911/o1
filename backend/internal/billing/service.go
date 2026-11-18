@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"o1/internal/db/sqlc"
+	"o1/internal/email"
 )
 
 // Service owns subscription state and plan transitions.
@@ -20,12 +21,20 @@ type Service struct {
 	pool     *pgxpool.Pool
 	q        *sqlc.Queries
 	provider Provider
+	sender   email.Sender
+	baseURL  string
 	now      func() time.Time
 }
 
 // NewService wires the billing service to a provider.
 func NewService(pool *pgxpool.Pool, q *sqlc.Queries, provider Provider) *Service {
 	return &Service{pool: pool, q: q, provider: provider, now: time.Now}
+}
+
+// SetEmail wires the transactional sender used for payment-failure notices.
+func (s *Service) SetEmail(sender email.Sender, baseURL string) {
+	s.sender = sender
+	s.baseURL = baseURL
 }
 
 // ProviderName reports the configured provider ("sandbox").
@@ -73,8 +82,12 @@ func (s *Service) Checkout(ctx context.Context, workspaceID uuid.UUID, planKey s
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return CheckoutSession{}, err
 	}
+	ws, err := s.q.GetWorkspaceByID(ctx, workspaceID)
+	if err != nil {
+		return CheckoutSession{}, err
+	}
 	return s.provider.CreateCheckout(ctx, CheckoutInput{
-		WorkspaceID: workspaceID, PlanKey: planKey,
+		WorkspaceID: workspaceID, Slug: ws.Slug, PlanKey: planKey,
 	})
 }
 
@@ -319,7 +332,39 @@ func (s *Service) ApplyEvent(ctx context.Context, provider string, ev Event) err
 	}); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if ev.Kind == "subscription.payment_failed" {
+		s.notifyPaymentFailed(ctx, sub.WorkspaceID, plan.Name)
+	}
+	return nil
+}
+
+// notifyPaymentFailed emails workspace admins after the state commits. It is
+// best-effort: a mail failure never rolls back the subscription.
+func (s *Service) notifyPaymentFailed(ctx context.Context, workspaceID uuid.UUID, planName string) {
+	if s.sender == nil {
+		return
+	}
+	members, err := s.q.ListWorkspaceMembers(ctx, workspaceID)
+	if err != nil {
+		return
+	}
+	for _, member := range members {
+		if member.Role != "admin" && member.Role != "owner" {
+			continue
+		}
+		msg := email.Message{
+			To:      member.Email,
+			Subject: "o1 billing: payment failed",
+			Text: fmt.Sprintf(
+				"We could not charge the payment method for the %s plan. Update billing at %s/settings/billing to avoid losing write access.",
+				planName, s.baseURL,
+			),
+		}
+		_ = s.sender.Send(ctx, msg)
+	}
 }
 
 func subscriptionParams(sub sqlc.Subscription) sqlc.UpsertSubscriptionParams {

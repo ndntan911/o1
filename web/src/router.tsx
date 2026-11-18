@@ -88,6 +88,11 @@ const BillingScreen = lazy(async () => {
 	return { default: module.BillingScreen };
 });
 
+const SandboxCheckoutScreen = lazy(async () => {
+	const module = await import('@/features/billing/SandboxCheckoutScreen');
+	return { default: module.SandboxCheckoutScreen };
+});
+
 const StatusPageSettingsScreen = lazy(async () => {
 	const module =
 		await import('@/features/status-pages/StatusPageSettingsScreen');
@@ -402,6 +407,30 @@ const billingRoute = createRoute({
 	component: BillingRoute,
 });
 
+function SandboxCheckoutRoute() {
+	const { workspace } = workspaceRoute.useRouteContext();
+	const { token } = sandboxCheckoutRoute.useSearch();
+
+	return <SandboxCheckoutScreen workspace={workspace} token={token} />;
+}
+
+const sandboxCheckoutRoute = createRoute({
+	getParentRoute: () => workspaceRoute,
+	path: '/settings/billing/sandbox',
+	validateSearch: (search: Record<string, unknown>): { token: string } => ({
+		token: typeof search.token === 'string' ? search.token : '',
+	}),
+	beforeLoad: ({ context }) => {
+		if (!canManageBilling(context.workspace.role)) {
+			throw redirect({
+				to: '/w/$workspaceSlug/monitors',
+				params: { workspaceSlug: context.workspace.slug },
+			});
+		}
+	},
+	component: SandboxCheckoutRoute,
+});
+
 const alertSettingsRoute = createRoute({
 	getParentRoute: () => workspaceRoute,
 	path: '/settings/alerts',
@@ -535,6 +564,7 @@ export const routeTree = rootRoute.addChildren([
 			incidentDetailRoute,
 			alertSettingsRoute,
 			billingRoute,
+			sandboxCheckoutRoute,
 			statusPageSettingsRoute,
 			apiKeysRoute,
 			membersRoute,

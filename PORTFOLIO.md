@@ -196,4 +196,4 @@ first bottleneck (the database connection pool). See
 |---|---|
 | ![Sign in](docs/portfolio/screenshots/login.png) | ![Monitor detail](docs/portfolio/screenshots/monitor-detail.png) |
 | ![Incident detail](docs/portfolio/screenshots/incident-detail.png) | ![Status page, dark](docs/portfolio/screenshots/status-dark.png) |
-| ![Status page, mobile](docs/portfolio/screenshots/status-mobile.png) | |
+| ![Status page, mobile](docs/portfolio/screenshots/status-mobile.png) | ![Billing](docs/portfolio/screenshots/billing.png) |
