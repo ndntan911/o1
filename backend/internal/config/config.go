@@ -65,6 +65,16 @@ type Config struct {
 	AuthRatePerMinute int
 	AuthRateBurst     int
 
+	// PublicRatePerMinute and PublicRateBurst configure the per-IP token
+	// bucket on the public status page. Defaults keep 1 rps with a burst of 20.
+	PublicRatePerMinute int
+	PublicRateBurst     int
+
+	// APIKeyRatePerMinute and APIKeyRateBurst configure the per-key token
+	// bucket on API-key routes. Defaults keep 10 rps with a burst of 60.
+	APIKeyRatePerMinute int
+	APIKeyRateBurst     int
+
 	MonitorMinInterval time.Duration
 	MonitorMaxInterval time.Duration
 	MonitorCreateLimit int
@@ -340,6 +350,18 @@ func Load() (Config, error) {
 	if cfg.AuthRateBurst, err = envInt("O1_AUTH_RATE_BURST", 10); err != nil {
 		return cfg, err
 	}
+	if cfg.PublicRatePerMinute, err = envInt("O1_PUBLIC_RATE_PER_MINUTE", 60); err != nil {
+		return cfg, err
+	}
+	if cfg.PublicRateBurst, err = envInt("O1_PUBLIC_RATE_BURST", 20); err != nil {
+		return cfg, err
+	}
+	if cfg.APIKeyRatePerMinute, err = envInt("O1_APIKEY_RATE_PER_MINUTE", 600); err != nil {
+		return cfg, err
+	}
+	if cfg.APIKeyRateBurst, err = envInt("O1_APIKEY_RATE_BURST", 60); err != nil {
+		return cfg, err
+	}
 	if cfg.ProbeAllowedPorts, err = envPorts("O1_PROBE_ALLOWED_PORTS", []int{80, 443}); err != nil {
 		return cfg, err
 	}
@@ -441,6 +463,12 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.AuthRateBurst < 1 {
 		return fmt.Errorf("invalid O1_AUTH_RATE_BURST: must be at least 1, got %d", cfg.AuthRateBurst)
+	}
+	if cfg.PublicRatePerMinute < 1 || cfg.PublicRateBurst < 1 {
+		return fmt.Errorf("invalid O1_PUBLIC_RATE_PER_MINUTE/O1_PUBLIC_RATE_BURST: must be at least 1")
+	}
+	if cfg.APIKeyRatePerMinute < 1 || cfg.APIKeyRateBurst < 1 {
+		return fmt.Errorf("invalid O1_APIKEY_RATE_PER_MINUTE/O1_APIKEY_RATE_BURST: must be at least 1")
 	}
 	if cfg.ProbeMaxRedirects < 0 || cfg.ProbeMaxRedirects > 10 {
 		return fmt.Errorf("invalid O1_PROBE_MAX_REDIRECTS: must be between 0 and 10")

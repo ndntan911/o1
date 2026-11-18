@@ -656,6 +656,12 @@ Common optional settings:
   reset), default `10` per minute with a burst of `10`. `compose.yaml` sets
   `120`/`60` for development and E2E so the signup and 2FA test flows are not
   throttled; production should leave both unset to keep the defaults.
+- `O1_PUBLIC_RATE_PER_MINUTE` / `O1_PUBLIC_RATE_BURST` — per-IP rate limit for
+  the public status endpoint, default `60` per minute with a burst of `20`.
+- `O1_APIKEY_RATE_PER_MINUTE` / `O1_APIKEY_RATE_BURST` — per-key rate limit for
+  API-key routes, default `600` per minute with a burst of `60`.
+  The two limit pairs above exist so a capacity run can measure the stack
+  instead of the token bucket; leave them unset in production.
 - `O1_PROBE_ALLOWED_PORTS` — comma-separated ports, default `80,443`.
 - `O1_PROBE_GLOBAL_RPS` — global probe rate limit, default `50`.
 - `O1_SCHEDULER_TICK` / `O1_SCHEDULER_BATCH` — default `10s` / `500`.

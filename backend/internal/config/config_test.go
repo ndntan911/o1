@@ -362,6 +362,68 @@ func TestLoad_AuthRateOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_RateLimitDefaults(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	for _, name := range []string{
+		`O1_PUBLIC_RATE_PER_MINUTE`,
+		`O1_PUBLIC_RATE_BURST`,
+		`O1_APIKEY_RATE_PER_MINUTE`,
+		`O1_APIKEY_RATE_BURST`,
+	} {
+		t.Setenv(name, "")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PublicRatePerMinute != 60 || cfg.PublicRateBurst != 20 {
+		t.Errorf("public rate = %d/%d, want 60/20", cfg.PublicRatePerMinute, cfg.PublicRateBurst)
+	}
+	if cfg.APIKeyRatePerMinute != 600 || cfg.APIKeyRateBurst != 60 {
+		t.Errorf("api key rate = %d/%d, want 600/60", cfg.APIKeyRatePerMinute, cfg.APIKeyRateBurst)
+	}
+}
+
+func TestLoad_RateLimitOverrides(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv(`O1_PUBLIC_RATE_PER_MINUTE`, "1200")
+	t.Setenv(`O1_PUBLIC_RATE_BURST`, "200")
+	t.Setenv(`O1_APIKEY_RATE_PER_MINUTE`, "6000")
+	t.Setenv(`O1_APIKEY_RATE_BURST`, "600")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PublicRatePerMinute != 1200 || cfg.PublicRateBurst != 200 {
+		t.Errorf("public rate = %d/%d, want 1200/200", cfg.PublicRatePerMinute, cfg.PublicRateBurst)
+	}
+	if cfg.APIKeyRatePerMinute != 6000 || cfg.APIKeyRateBurst != 600 {
+		t.Errorf("api key rate = %d/%d, want 6000/600", cfg.APIKeyRatePerMinute, cfg.APIKeyRateBurst)
+	}
+}
+
+func TestLoad_RejectsInvalidRateLimits(t *testing.T) {
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	for _, name := range []string{
+		`O1_PUBLIC_RATE_PER_MINUTE`,
+		`O1_PUBLIC_RATE_BURST`,
+		`O1_APIKEY_RATE_PER_MINUTE`,
+		`O1_APIKEY_RATE_BURST`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "0")
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("%s=0 was accepted", name)
+			}
+		})
+	}
+}
+
 // setEmailEnv applies a minimal valid environment for email configuration
 // tests. Individual tests override the variables they exercise.
 func setEmailEnv(t *testing.T, envName string) {

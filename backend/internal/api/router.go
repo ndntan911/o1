@@ -81,6 +81,47 @@ func authBurst(cfg config.Config) int {
 	return cfg.AuthRateBurst
 }
 
+const (
+	defaultPublicRatePerMinute = 60
+	defaultPublicRateBurst     = 20
+	defaultAPIKeyRatePerMinute = 600
+	defaultAPIKeyRateBurst     = 60
+)
+
+// publicRPS returns the public status-page rate in requests per second. The
+// default keeps the endpoint at 1 rps per client IP.
+func publicRPS(cfg config.Config) float64 {
+	perMinute := cfg.PublicRatePerMinute
+	if perMinute < 1 {
+		perMinute = defaultPublicRatePerMinute
+	}
+	return float64(perMinute) / 60.0
+}
+
+func publicBurst(cfg config.Config) int {
+	if cfg.PublicRateBurst < 1 {
+		return defaultPublicRateBurst
+	}
+	return cfg.PublicRateBurst
+}
+
+// apiKeyRPS returns the per-key rate in requests per second. The default keeps
+// API keys at 10 rps with a burst of 60.
+func apiKeyRPS(cfg config.Config) float64 {
+	perMinute := cfg.APIKeyRatePerMinute
+	if perMinute < 1 {
+		perMinute = defaultAPIKeyRatePerMinute
+	}
+	return float64(perMinute) / 60.0
+}
+
+func apiKeyBurst(cfg config.Config) int {
+	if cfg.APIKeyRateBurst < 1 {
+		return defaultAPIKeyRateBurst
+	}
+	return cfg.APIKeyRateBurst
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -267,7 +308,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	// must sit inside it: the limiter reads the key principal that RequireAuth
 	// places in the context.
 	requireAuth := auth.RequireAuth(authSvc)
-	keyLimiter := httpx.KeyedRateLimit(auth.APIKeyRateKey, 10, 60)
+	keyLimiter := httpx.KeyedRateLimit(auth.APIKeyRateKey, apiKeyRPS(deps.Config), apiKeyBurst(deps.Config))
 	withKeyAuth := func(next http.Handler) http.Handler {
 		return requireAuth(keyLimiter(next))
 	}
@@ -302,7 +343,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.GetConfigHandler(statusPageSvc))))
 	mux.Handle("PUT /api/v1/workspaces/{workspaceID}/status-page", requireSession(http.HandlerFunc(statuspage.UpdateConfigHandler(statusPageSvc))))
 
-	mux.Handle("GET /api/v1/public/status/{slug}", httpx.RateLimit(1, 20, true)(http.HandlerFunc(statuspage.PublicHandler(statusPageSvc))))
+	mux.Handle("GET /api/v1/public/status/{slug}", httpx.RateLimit(publicRPS(deps.Config), publicBurst(deps.Config), true)(http.HandlerFunc(statuspage.PublicHandler(statusPageSvc))))
 
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/monitors", withKeyAuth(http.HandlerFunc(monitors.CreateHandler(monitorSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/monitors", withKeyAuth(http.HandlerFunc(monitors.ListHandler(monitorSvc))))
