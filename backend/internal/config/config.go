@@ -359,7 +359,10 @@ func Load() (Config, error) {
 	}
 	cfg.BillingProvider = strings.ToLower(strings.TrimSpace(env("O1_BILLING_PROVIDER", "sandbox")))
 	cfg.BillingWebhookSecret = strings.TrimSpace(env("O1_BILLING_WEBHOOK_SECRET", ""))
-	if cfg.BillingWebhookSecret == "" && cfg.Env != "production" {
+	if cfg.BillingWebhookSecret == "" {
+		// A 32-byte secret key already protects sessions and key derivation;
+		// derive a domain-separated webhook secret from it rather than making
+		// every deployment configure another value.
 		sum := sha256.Sum256(append([]byte("o1-billing:"), cfg.SecretKey...))
 		cfg.BillingWebhookSecret = base64.RawURLEncoding.EncodeToString(sum[:])
 	}
@@ -479,9 +482,6 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.BillingProvider != "sandbox" {
 		return fmt.Errorf("invalid O1_BILLING_PROVIDER: %q is not implemented yet", cfg.BillingProvider)
-	}
-	if cfg.BillingWebhookSecret == "" {
-		return fmt.Errorf("invalid O1_BILLING_WEBHOOK_SECRET: required in production")
 	}
 	if cfg.PublicRatePerMinute < 1 || cfg.PublicRateBurst < 1 {
 		return fmt.Errorf("invalid O1_PUBLIC_RATE_PER_MINUTE/O1_PUBLIC_RATE_BURST: must be at least 1")
