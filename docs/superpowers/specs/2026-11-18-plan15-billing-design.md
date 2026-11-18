@@ -100,14 +100,14 @@ admin override.
 
 **Provider modes.** `O1_BILLING_PROVIDER` is a deployment setting:
 
-- `sandbox` (default when unset): an in-app checkout page simulates success,
-  failure, and cancellation and emits the same internal events. Requires an
-  authenticated workspace admin; visibly labelled. Refuses to run if a provider
-  secret is configured.
-- `paddle` or `lemonsqueezy`: provider-hosted checkout and signed webhooks.
-  Selected explicitly, with `O1_BILLING_API_KEY`, `O1_BILLING_WEBHOOK_SECRET`,
-  and `O1_BILLING_PRICE_*` ids. Startup fails if a mode is selected without its
-  secrets. Sandbox routes return 404 in this mode.
+- `sandbox` (the only mode Plan 15 ships): an in-app checkout page simulates
+  success, failure, and cancellation and emits the same internal events.
+  Requires an authenticated workspace admin; visibly labelled. Refuses to run
+  if a provider secret is configured.
+- `lemonsqueezy` / `paddle`: the interface and config fields exist, but the
+  first real adapter is a follow-up once an account and keys are available.
+  Startup rejects those values in Plan 15 with a clear "not implemented yet"
+  error rather than half-working payments.
 
 `billing.Provider` has `CreateCheckout`, `ParseWebhook`, and `Cancel`. The
 adapter guarantees that the subscription object carries `workspace_id` in
@@ -255,15 +255,18 @@ provider event for a paid subscription wins.
   existing 5 monitors remain valid; downgrade behaviour is tested separately.
 - **Sandbox confusion.** Labelled in the UI, audit, and `PORTFOLIO.md`.
 
-## 11. Open question
+## 11. Resolved decisions
 
-Which merchant-of-record ships first: **Lemon Squeezy** or **Paddle**? Both
-support VN sellers. Lemon Squeezy is simpler (HMAC webhooks, one product per
-price); Paddle has stronger tax/invoice coverage. The interface makes the choice
-reversible, and the sandbox does not depend on it.
+- Plan 15 ships **sandbox only**, behind the `billing.Provider` interface. The
+  first real merchant-of-record adapter (Lemon Squeezy preferred for its
+  simpler HMAC webhooks, Paddle as the alternative) is a follow-up once an
+  account and keys exist. This keeps the live demo honest and avoids shipping
+  untested payment code.
+- Invoices, portal links, and provider reconciliation are follow-ups, not v1.
 
 ## 12. Out of scope, tracked as follow-ups
 
+- The first real merchant-of-record adapter (Lemon Squeezy or Paddle).
 - Paid→paid plan changes with proration.
 - Invoices/portal links and provider API reconciliation.
 - The second provider adapter, annual plans, seats, usage-based pricing.
