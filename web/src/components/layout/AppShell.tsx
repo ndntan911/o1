@@ -56,7 +56,7 @@ export function AppShell() {
 				Skip to content
 			</a>
 
-			<aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r bg-background p-4 md:flex">
+			<aside className="fixed inset-y-0 left-0 hidden w-64 flex-col overflow-y-auto border-r bg-background p-4 md:flex">
 				<Link to="/" className="mb-4 px-2 font-heading text-lg font-medium">
 					o1 uptime
 				</Link>
@@ -78,7 +78,7 @@ export function AppShell() {
 						</SheetTrigger>
 						<SheetContent
 							side="left"
-							className="flex w-72 max-w-[85vw] flex-col gap-4 p-4"
+							className="flex w-72 max-w-[85vw] flex-col gap-4 overflow-y-auto p-4"
 						>
 							<SheetHeader className="p-0">
 								<SheetTitle>Navigation</SheetTitle>
