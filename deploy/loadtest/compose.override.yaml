@@ -1,0 +1,9 @@
+# Raises the limiters so a load run measures the stack, not the token bucket.
+# Never merge this into a production deployment.
+services:
+  api:
+    environment:
+      O1_PUBLIC_RATE_PER_MINUTE: "12000"
+      O1_PUBLIC_RATE_BURST: "2000"
+      O1_APIKEY_RATE_PER_MINUTE: "60000"
+      O1_APIKEY_RATE_BURST: "10000"

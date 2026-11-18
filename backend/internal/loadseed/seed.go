@@ -89,6 +89,10 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error)
 		}
 		res.Monitors += len(monitorIDs)
 
+		if err := ensureStatusPage(ctx, pool, wsID, tenant, monitorIDs); err != nil {
+			return Result{}, err
+		}
+
 		raw, err := seedRaw(ctx, pool, wsID, monitorIDs, rawStart, rawEnd, opts.Now)
 		if err != nil {
 			return Result{}, err
@@ -225,6 +229,32 @@ func ensureMonitors(ctx context.Context, pool *pgxpool.Pool, wsID, userID uuid.U
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+func ensureStatusPage(ctx context.Context, pool *pgxpool.Pool, wsID uuid.UUID, tenant int, monitors []uuid.UUID) error {
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO status_pages (workspace_id, enabled, title, description)
+		VALUES ($1, true, $2, 'Synthetic workspace for the load baseline.')
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			enabled = true,
+			title = EXCLUDED.title,
+			description = EXCLUDED.description,
+			updated_at = now()`,
+		wsID, fmt.Sprintf("Load %02d status", tenant)); err != nil {
+		return fmt.Errorf("publish load status page: %w", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM status_page_monitors WHERE status_page_id = $1`, wsID); err != nil {
+		return fmt.Errorf("reset load status page: %w", err)
+	}
+	for _, id := range monitors {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO status_page_monitors (status_page_id, monitor_id) VALUES ($1, $2)`,
+			wsID, id); err != nil {
+			return fmt.Errorf("add load status monitor: %w", err)
+		}
+	}
+	return nil
 }
 
 func seedRaw(ctx context.Context, pool *pgxpool.Pool, wsID uuid.UUID, monitors []uuid.UUID, start, end, now time.Time) (int64, error) {

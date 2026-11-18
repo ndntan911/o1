@@ -46,4 +46,18 @@ func TestSeedCreatesReferenceDataset(t *testing.T) {
 	if res.APIKey == "" || res.APIPrefix == "" {
 		t.Fatal("seed did not return the load API key")
 	}
+
+	var pages, published int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(sum(spm.n), 0)
+		FROM status_pages sp
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS n FROM status_page_monitors m WHERE m.status_page_id = sp.workspace_id
+		) spm ON true
+		WHERE sp.enabled`).Scan(&pages, &published); err != nil {
+		t.Fatalf("count status pages: %v", err)
+	}
+	if pages != 2 || published != 6 {
+		t.Fatalf("status pages=%d monitors=%d, want 2/6", pages, published)
+	}
 }
