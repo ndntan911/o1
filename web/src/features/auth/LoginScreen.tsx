@@ -28,6 +28,11 @@ export interface LoginScreenProps {
 
 type LoginStep = 'password' | 'totp' | 'recovery';
 
+// Public read-only account seeded by the demo command. The password is
+// intentionally visible; `seed` resets it and clears any TOTP enrolment.
+const DEMO_EMAIL = 'demo-viewer@o1.work.gd';
+const DEMO_PASSWORD = 'o1-demo-viewer-2026';
+
 function unexpectedProblem(): ApiProblem {
 	return {
 		type: 'about:blank',
@@ -66,6 +71,11 @@ export function LoginScreen({ redirectTo }: LoginScreenProps) {
 		clearWorkspaceSuspended();
 		await queryClient.invalidateQueries({ queryKey: queryKeys.me });
 		await navigate({ to: safeRedirect(redirectTo) });
+	}
+
+	function fillDemoAccount() {
+		form.setValue('email', DEMO_EMAIL, { shouldValidate: false });
+		form.setValue('password', DEMO_PASSWORD, { shouldValidate: false });
 	}
 
 	const onSubmit = form.handleSubmit(async (values) => {
@@ -255,6 +265,21 @@ export function LoginScreen({ redirectTo }: LoginScreenProps) {
 						>
 							Forgot your password?
 						</Link>
+					</div>
+
+					<div className="rounded-lg border border-dashed p-3 text-sm">
+						<p className="text-muted-foreground">Demo account (read-only)</p>
+						<p className="mt-1 font-mono break-all">{DEMO_EMAIL}</p>
+						<p className="font-mono break-all">{DEMO_PASSWORD}</p>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							className="mt-2"
+							onClick={fillDemoAccount}
+						>
+							Use demo account
+						</Button>
 					</div>
 				</form>
 			) : (

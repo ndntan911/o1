@@ -87,6 +87,22 @@ describe('LoginScreen', () => {
 		expect(link).toHaveAttribute('href', '/status/demo');
 	});
 
+	test('offers the demo account and fills it in', async () => {
+		const user = userEvent.setup();
+		renderWithProviders(<LoginScreen />);
+
+		expect(screen.getByText('demo-viewer@o1.work.gd')).toBeInTheDocument();
+
+		await user.click(screen.getByRole('button', { name: /use demo account/i }));
+
+		expect(screen.getByLabelText('Email')).toHaveValue(
+			'demo-viewer@o1.work.gd',
+		);
+		expect(screen.getByLabelText('Password')).toHaveValue(
+			'o1-demo-viewer-2026',
+		);
+	});
+
 	test('posts credentials and navigates to the redirect target', async () => {
 		const bodies: unknown[] = [];
 		server.use(
