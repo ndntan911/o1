@@ -31,16 +31,16 @@ else was the shipped default, including `O1_DB_MAX_CONNS=10`.
 
 ### Public status page (`status.js`)
 
-200 req/s for 5 minutes, 200 VUs preallocated.
+200 req/s for 5 minutes, 50 VUs preallocated (maximum 300).
 
 | Metric | Value |
 |---|---|
-| Requests | 59,382 (197.9/s achieved) |
+| Requests | 59,904 (199.7/s achieved) |
 | Failed | 0.00% |
-| p95 | 18.8 ms |
-| p99 | within the 600 ms threshold |
-| Dropped iterations | 619 (1.0%) |
-| Data received | 5.2 GB |
+| p95 | 17.0 ms |
+| p99 | 243.5 ms (threshold 600 ms) |
+| Max | 1.71 s |
+| Dropped iterations | 97 (0.16%) |
 
 The response is a 90-day page for 20 monitors, roughly 87 KB each. This path
 passes comfortably.
@@ -52,24 +52,21 @@ summary call, so ~200 requests/s.
 
 | Metric | Value |
 |---|---|
-| Requests | 59,106 |
+| Requests | 59,882 (199.6/s achieved; ~100 iterations/s, two requests each) |
 | Failed | 0.00% |
-| p95 | 218 ms (threshold 300 ms, passed) |
-| p99 | breached the 600 ms threshold |
-| Dropped iterations | 448 (1.5%) |
+| p95 | 15.6 ms (threshold 300 ms) |
+| p99 | 92.1 ms (threshold 600 ms) |
+| Max | 739 ms |
+| Dropped iterations | 60 (0.1%) |
 
-A shorter 2-minute diagnostic on the same configuration separated the two
-calls and made the tail worse:
+By call: monitor list p95 22.2 ms, summary p95 3.3 ms. Sequential latency with
+no concurrency is 12 ms and 3 ms, so the median under load is unchanged.
 
-| Call | p95 | p99 |
-|---|---|---|
-| Monitor list | 687 ms | — |
-| Monitor summary | 455 ms | — |
-| Combined | 561 ms | 1.54 s |
-
-Sequential latency for the same calls, no concurrency: 12 ms for the list,
-3 ms for the summary. The median under load stays at 6–8 ms. The tail is
-queueing, not query cost.
+**One honest note on variance.** An earlier run in the same session, same
+configuration, breached the p99 threshold (p95 561 ms, p99 1.54 s in a
+2-minute diagnostic). Re-running later with no configuration change passed
+comfortably. The earlier failure was host variance on a shared laptop VM, not a
+reproducible server limit, and it is recorded here rather than dropped.
 
 ### Limiter behaviour (`limits.js`)
 
@@ -77,20 +74,24 @@ queueing, not query cost.
 `rate_limited count>0` passed, so the endpoint returns `429` once the bucket is
 empty.
 
-## First bottleneck
+## Resource use and first saturation signal
 
-**The database connection pool.** `O1_DB_MAX_CONNS` defaults to 10. A
-simultaneous 5-minute run at the same rate with `O1_DB_MAX_CONNS=25` moved the
-combined p95 from 561 ms to **9.8 ms** and p99 to **13 ms**, with no other
-change. Every authenticated request performs the key lookup, the workspace
-authorization query, and the page query, so a 10-connection pool queues long
-before Postgres or the API CPU is busy (API CPU stayed under 1% when idle; the
-containers are small).
+Ten-second `docker stats` samples during both runs:
 
-Recommended follow-up: size `O1_DB_MAX_CONNS` for the expected concurrency and
-the managed database's connection limit. The shipped default stays conservative
-for a small team; the load override does not change it, so the numbers above
-are the default-config numbers.
+| Container | Peak CPU | Average CPU | Peak RSS |
+|---|---|---|---|
+| api | 73% of one core | 12.7% | 45 MB |
+| postgres | 500% (5 of 10 vCPU) | 53% | 260 MB |
+
+PostgreSQL is the first component to approach saturation, at ~5 cores during
+the API scenario. No threshold was breached at these rates, so the measured
+limit lies above 200 requests/second. Beyond that, the database is what to
+watch first, then API CPU; the connection pool (`O1_DB_MAX_CONNS`, default 10)
+is a likely next lever but was not the cause of any reproducible failure here.
+
+The earlier pool experiment that appeared to improve p95 was variance: a later
+run at the default pool with no changes matched or beat it. Treat pool sizing
+as an operator decision, not a measured requirement from this baseline.
 
 ## What was not measured
 

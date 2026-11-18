@@ -14,6 +14,7 @@ if (!WORKSPACE_ID || !API_KEY) {
 const headers = { Authorization: `Bearer ${API_KEY}` };
 
 export const options = {
+	summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
 	scenarios: {
 		api: {
 			executor: 'constant-arrival-rate',

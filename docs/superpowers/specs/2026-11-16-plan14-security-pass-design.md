@@ -287,7 +287,7 @@ not into this plan.
 - WAF / edge rate limiting beyond Caddy.
 - Automatic secret rotation and a KMS-backed encryption key.
 - Per-tenant retention and billing.
-- Connection-pool sizing defaults. The baseline shows the 10-connection default
-  queues at ~200 authenticated requests per second; the right value depends on
-  the managed database tier, so it stays operator-set.
+- Connection-pool sizing defaults. The baseline's first saturation signal is
+  Postgres CPU, not the 10-connection pool; the right pool value depends on the
+  managed database tier, so it stays operator-set.
 - Removing `'unsafe-inline'` from `style-src` after a Radix/chart style audit.

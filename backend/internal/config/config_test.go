@@ -415,12 +415,14 @@ func TestLoad_RejectsInvalidRateLimits(t *testing.T) {
 		`O1_APIKEY_RATE_PER_MINUTE`,
 		`O1_APIKEY_RATE_BURST`,
 	} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv(name, "0")
-			if _, err := config.Load(); err == nil {
-				t.Fatalf("%s=0 was accepted", name)
-			}
-		})
+		for _, value := range []string{"0", "-1", "not-a-number"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				t.Setenv(name, value)
+				if _, err := config.Load(); err == nil {
+					t.Fatalf("%s=%s was accepted", name, value)
+				}
+			})
+		}
 	}
 }
 

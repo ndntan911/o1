@@ -53,3 +53,27 @@ func TestEnsureProbePartitions_CreatesWindowAndIsIdempotent(t *testing.T) {
 		t.Fatalf("partitions = %v, want %v", names, want)
 	}
 }
+
+func TestEnsureProbePartitionsFrom_CoversOlderRawHistory(t *testing.T) {
+	pool, cleanup := testutil.NewPostgres(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	from := now.AddDate(0, 0, -75) // mid September: two months before now
+	if err := db.EnsureProbePartitionsFrom(ctx, pool, from, now); err != nil {
+		t.Fatalf("EnsureProbePartitionsFrom: %v", err)
+	}
+
+	for _, name := range []string{"probe_results_2026_09", "probe_results_2026_10"} {
+		var exists bool
+		if err := pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'r')`,
+			name).Scan(&exists); err != nil {
+			t.Fatalf("check partition %s: %v", name, err)
+		}
+		if !exists {
+			t.Fatalf("partition %s was not created", name)
+		}
+	}
+}

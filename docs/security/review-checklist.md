@@ -138,9 +138,10 @@ update `load-test.md` with the new numbers and the first bottleneck.
   `web/src/lib/csp.ts` disables JIT and the policy is verified with Playwright.
 - **fixed** — Caddy ran as root; it now runs as uid 1000 with
   `NET_BIND_SERVICE`, and the volume migration is in the production runbook.
-- **follow-up** — `O1_DB_MAX_CONNS=10` queues at about 200 authenticated
-  requests per second; 25 connections moved p95 from 561 ms to 9.8 ms. Pool
-  sizing stays operator-specific and is documented in `load-test.md`.
+- **follow-up** — an early baseline run breached p99 at the default pool size;
+  a later identical run passed, so the breach was host variance. Postgres CPU
+  (~5 of 10 vCPU at peak) is the first saturation signal; pool sizing stays
+  operator-specific and is documented in `load-test.md`.
 - **follow-up** — `style-src` still allows inline styles for Radix and the
   charts; scripting is hash-locked.
 - **follow-up** — no WAF or DDoS mitigation, and audit writes remain

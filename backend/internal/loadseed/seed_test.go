@@ -61,3 +61,19 @@ func TestSeedCreatesReferenceDataset(t *testing.T) {
 		t.Fatalf("status pages=%d monitors=%d, want 2/6", pages, published)
 	}
 }
+
+func TestSeedCreatesHistoryBeyondTheStartupWindow(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+
+	// 60 days reaches into a month that startup partition maintenance does not
+	// create (it covers now-1 month through now+2 months).
+	res, err := Seed(ctx, pool, Options{Tenants: 1, MonitorsPerTenant: 1, RawDays: 60, RollupDays: 2, Now: now})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if want := int64(60 * 24 * 60); res.RawRows != want {
+		t.Fatalf("raw rows = %d, want %d", res.RawRows, want)
+	}
+}

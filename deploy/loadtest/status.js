@@ -7,6 +7,7 @@ const BASE = __ENV.BASE_URL || 'http://127.0.0.1:8080';
 const SLUG = __ENV.SLUG || 'load-01';
 
 export const options = {
+	summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
 	scenarios: {
 		status: {
 			executor: 'constant-arrival-rate',

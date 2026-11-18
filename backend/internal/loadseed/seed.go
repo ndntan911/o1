@@ -63,7 +63,9 @@ type Result struct {
 func Seed(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error) {
 	opts = withDefaults(opts)
 
-	if err := db.EnsureProbePartitions(ctx, pool, opts.Now); err != nil {
+	rawStart := opts.Now.Truncate(time.Minute).Add(-time.Duration(opts.RawDays) * 24 * time.Hour)
+	rawEnd := opts.Now.Truncate(time.Minute)
+	if err := db.EnsureProbePartitionsFrom(ctx, pool, rawStart, opts.Now); err != nil {
 		return Result{}, fmt.Errorf("ensure probe partitions: %w", err)
 	}
 
@@ -73,8 +75,6 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, opts Options) (Result, error)
 	}
 
 	res := Result{WorkspaceIDs: make([]uuid.UUID, 0, opts.Tenants)}
-	rawStart := opts.Now.Truncate(time.Minute).Add(-time.Duration(opts.RawDays) * 24 * time.Hour)
-	rawEnd := opts.Now.Truncate(time.Minute)
 
 	for tenant := 1; tenant <= opts.Tenants; tenant++ {
 		wsID, err := ensureWorkspace(ctx, pool, userID, tenant)

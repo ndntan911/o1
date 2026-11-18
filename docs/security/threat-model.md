@@ -71,6 +71,8 @@ for the engineer who will change the system next, not for an auditor.
 ## 5. Access-control matrix
 
 Enforcement is in the service layer (`workspaces.Authorize`) unless noted.
+`/healthz` and `/readyz` are unauthenticated and not tenant-scoped; every other
+route below is.
 "Key" means a bearer API key; keys are capped at viewer or member and never
 carry admin or global rights.
 
@@ -81,16 +83,20 @@ carry admin or global rights.
 | `GET /me` | no | any session | any session | any session | no | `api` integration |
 | `GET/POST /workspaces` | no | list own; create allowed | same | same | no | `api` integration |
 | `GET /workspaces/{id}` | no | viewer | viewer | admin | viewer | `workspaces` handler tests |
-| `GET/POST /workspaces/{id}/members` | no | read denied | read denied | admin | no | `workspaces` handler tests |
+| `GET /workspaces/{id}/members` | no | read | read | read | no | `workspaces` handler tests |
+| `POST /workspaces/{id}/members` | no | denied | denied | admin | no | `workspaces` handler tests |
 | `/workspaces/{id}/api-keys` | no | denied | denied | admin | no | `apikeys` handler tests |
 | `GET/PUT /workspaces/{id}/status-page` | no | read denied | read denied | admin | no | `statuspage` handler tests |
 | `GET /public/status/{slug}` | yes (rate limited) | — | — | — | no | `statuspage` handler tests |
 | `POST/GET/PATCH/DELETE /workspaces/{id}/monitors*` | no | read via key/session | mutate | mutate | viewer read, member mutate | `monitors` service + handler tests |
 | `.../monitors/{id}/results`, `/summary` | no | viewer | viewer | admin | viewer | `monitors` tests |
-| `.../incidents*`, `.../acknowledge`, `.../deliveries` | no | read | acknowledge | acknowledge | viewer read, member acknowledge | `incidents` handler tests |
+| `GET .../incidents*`, `GET .../incidents/{id}` | no | read | read | read | viewer read | `incidents` handler tests |
+| `POST .../incidents/{id}/acknowledge` | no | denied | acknowledge | acknowledge | member acknowledge | `incidents` handler tests |
+| `GET .../incidents/{id}/deliveries` | no | denied | denied | admin | no | `incidents` handler tests |
 | `.../alert-channels*`, `.../alert-channels/email`, `.../test` | no | denied | denied | admin | no | `alerts` handler tests |
-| `.../monitors/{id}/alert-channels*` (per-monitor switches) | no | read | toggle | toggle | viewer read, member toggle | `alerts` handler tests |
+| `.../monitors/{id}/alert-channels*` (per-monitor switches) | no | denied | read and toggle | read and toggle | member | `alerts` handler tests |
 | `/admin/*` | no | denied | denied | **global admin only** (`requireAdmin`) | no | `backend/internal/api/admin_integration_test.go` |
+| `GET /healthz`, `GET /readyz` | yes | — | — | — | no | `httpx` health tests |
 
 ## 6. Residual risks
 

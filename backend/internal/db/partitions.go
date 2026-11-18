@@ -19,6 +19,33 @@ const probePartitionLockID int64 = 0x6f310003
 // advisory lock so concurrent callers (several binaries starting at once)
 // cannot race on CREATE TABLE.
 func EnsureProbePartitions(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
+	now = now.UTC()
+	first := monthStart(now).AddDate(0, -1, 0)
+	last := monthStart(now).AddDate(0, 3, 0)
+	return ensureProbePartitions(ctx, pool, first, last)
+}
+
+// EnsureProbePartitionsFrom creates every monthly partition from the month
+// containing from through now+2 months. It exists for tools that backfill older
+// raw history, such as the load-test seeder; startup uses EnsureProbePartitions.
+func EnsureProbePartitionsFrom(ctx context.Context, pool *pgxpool.Pool, from, now time.Time) error {
+	if from.After(now) {
+		from = now
+	}
+	first := monthStart(from.UTC())
+	last := monthStart(now.UTC()).AddDate(0, 3, 0)
+	if first.After(monthStart(now.UTC())) {
+		first = monthStart(now.UTC())
+	}
+	return ensureProbePartitions(ctx, pool, first, last)
+}
+
+func monthStart(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func ensureProbePartitions(ctx context.Context, pool *pgxpool.Pool, first, last time.Time) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire partition connection: %w", err)
@@ -37,10 +64,6 @@ func EnsureProbePartitions(ctx context.Context, pool *pgxpool.Pool, now time.Tim
 			slog.Warn("release partition advisory lock", "err", err)
 		}
 	}()
-
-	now = now.UTC()
-	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
-	last := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 3, 0)
 
 	for month := first; month.Before(last); month = month.AddDate(0, 1, 0) {
 		next := month.AddDate(0, 1, 0)
