@@ -128,3 +128,20 @@ images are distroless and run as `nonroot`.
 
 Re-run `deploy/loadtest/*.js` when a read path or the host shape changes, and
 update `load-test.md` with the new numbers and the first bottleneck.
+
+## Findings, 2026-11-18
+
+- **fixed** — the demo/load seeder published no status page, so the first k6
+  run 404ed every request; `loadseed` now publishes one page per workspace and
+  the integration test asserts it.
+- **fixed** — the CSP blocked zod 4's compiled parsers and blanked the SPA;
+  `web/src/lib/csp.ts` disables JIT and the policy is verified with Playwright.
+- **fixed** — Caddy ran as root; it now runs as uid 1000 with
+  `NET_BIND_SERVICE`, and the volume migration is in the production runbook.
+- **follow-up** — `O1_DB_MAX_CONNS=10` queues at about 200 authenticated
+  requests per second; 25 connections moved p95 from 561 ms to 9.8 ms. Pool
+  sizing stays operator-specific and is documented in `load-test.md`.
+- **follow-up** — `style-src` still allows inline styles for Radix and the
+  charts; scripting is hash-locked.
+- **follow-up** — no WAF or DDoS mitigation, and audit writes remain
+  best-effort. Both are listed as residual risks in the threat model.

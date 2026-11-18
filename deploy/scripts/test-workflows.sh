@@ -115,11 +115,13 @@ grep -Fq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' "$release_file" ||
 check "$release_file validates the version tag before publishing"
 
 [[ -f .trivyignore ]] || fail ".trivyignore is missing"
-grep -Fq 'DS-0002' .trivyignore ||
-  fail ".trivyignore does not record the DS-0002 exception"
+grep -Fq 'DS-0002' .trivyignore &&
+  fail ".trivyignore still suppresses DS-0002 after the non-root change"
+grep -Fq 'CVE-2026-78661' .trivyignore ||
+  fail ".trivyignore does not record the Caddy CVE exception"
 grep -Fq 'Re-review:' .trivyignore ||
   fail ".trivyignore exception has no review date"
-check ".trivyignore records the DS-0002 exception with a review date"
+check ".trivyignore records the remaining exception with a review date"
 
 first_push="$(grep -n -- '--push' "$release_file" | head -n 1 | cut -d: -f1 || true)"
 [[ -n $first_push ]] || fail "$release_file never pushes an image"

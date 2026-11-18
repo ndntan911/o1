@@ -680,6 +680,10 @@ Common optional settings:
 - `O1_ROLLUP_INTERVAL` — rollup catch-up interval, default `15m` (1m–1h).
 - `O1_ROLLUP_MAX_HOURS_PER_RUN` — maximum hours rolled up per pass, default
   `24` (1–720).
+- `O1_DB_MAX_CONNS` — maximum database connections per process, default `10`
+  (1–100). Each binary opens its own pool. The load baseline in
+  [docs/security/load-test.md](docs/security/load-test.md) explains when to
+  raise it.
 - `O1_BOOTSTRAP_ADMIN_EMAIL` — promotes an existing verified account to
   administrator at startup.
 
