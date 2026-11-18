@@ -23,33 +23,65 @@ const context = await browser.newContext({
 	recordVideo: { dir: videoDir, size: { width: 1280, height: 720 } },
 });
 
-// A visible pointer so the recording shows where the interaction happens.
+// A visible pointer and click ripple so the recording shows the interaction.
 await context.addInitScript(() => {
-	const dot = document.createElement('div');
-	dot.id = '__demo_pointer';
-	Object.assign(dot.style, {
-		position: 'fixed',
-		width: '18px',
-		height: '18px',
-		borderRadius: '50%',
-		background: 'rgba(34,197,94,0.85)',
-		border: '2px solid white',
-		boxShadow: '0 0 0 3px rgba(34,197,94,0.25)',
-		pointerEvents: 'none',
-		zIndex: '2147483647',
-		transform: 'translate(-50%,-50%)',
-		transition: 'transform 120ms ease-out',
-		inset: '0 auto auto 0',
-	});
-	document.documentElement.appendChild(dot);
-	window.addEventListener('mousemove', (event) => {
-		dot.style.transform = `translate(${event.clientX - 9}px, ${event.clientY - 9}px)`;
-	});
+	const install = () => {
+		if (document.getElementById('__demo_pointer')) return;
+		const style = document.createElement('style');
+		style.textContent = `
+			#__demo_pointer { position: fixed; top: 0; left: 0; width: 20px; height: 20px;
+				margin: -10px 0 0 -10px; border-radius: 50%;
+				background: rgba(34,197,94,.92); border: 2px solid #fff;
+				box-shadow: 0 0 0 4px rgba(34,197,94,.28), 0 2px 6px rgba(0,0,0,.3);
+				pointer-events: none; z-index: 2147483647;
+				transition: transform 80ms linear; }
+			#__demo_pointer::after { content: ''; position: absolute; inset: -8px;
+				border-radius: 50%; border: 2px solid rgba(34,197,94,.7); opacity: 0; }
+			#__demo_pointer.click::after { animation: __demo_ripple 420ms ease-out; }
+			@keyframes __demo_ripple { from { transform: scale(.4); opacity: .9; }
+				to { transform: scale(1.7); opacity: 0; } }
+		`;
+		document.head.appendChild(style);
+
+		const dot = document.createElement('div');
+		dot.id = '__demo_pointer';
+		dot.style.transform = 'translate(640px, 360px)';
+		document.documentElement.appendChild(dot);
+
+		window.addEventListener(
+			'mousemove',
+			(event) => {
+				dot.style.transform = `translate(${event.clientX}px, ${event.clientY}px)`;
+			},
+			true,
+		);
+		window.addEventListener(
+			'mousedown',
+			() => {
+				dot.classList.add('click');
+				setTimeout(() => dot.classList.remove('click'), 450);
+			},
+			true,
+		);
+	};
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', install, { once: true });
+	} else {
+		install();
+	}
 });
 
 const page = await context.newPage();
 const video = page.video();
 const pause = (ms) => page.waitForTimeout(ms);
+
+// Wheel in small steps so scrolling reads as motion instead of a jump.
+async function smoothScroll(delta, steps = 10) {
+	for (let i = 0; i < steps; i += 1) {
+		await page.mouse.wheel(0, delta / steps);
+		await page.waitForTimeout(70);
+	}
+}
 
 async function moveAndClick(locator) {
 	const box = await locator.boundingBox();
@@ -65,9 +97,10 @@ async function moveAndClick(locator) {
 // 1. Public status page.
 await page.goto(`${base}/status/demo`, { waitUntil: 'networkidle' });
 await pause(2500);
-await page.mouse.wheel(0, 260);
+await page.mouse.move(640, 360, { steps: 8 });
+await smoothScroll(320, 12);
 await pause(1200);
-await page.mouse.wheel(0, -260);
+await smoothScroll(-320, 12);
 await pause(800);
 
 // 2. Sign in with the seeded read-only demo account.
@@ -93,9 +126,9 @@ await pause(2500);
 await page.goto(`${base}/w/demo/incidents`, { waitUntil: 'networkidle' });
 await pause(1500);
 await page.getByText('All', { exact: true }).click();
-await pause(1800);
+await page.getByText('GitHub API', { exact: true }).first().waitFor();
 await page.mouse.move(520, 320, { steps: 15 });
-await pause(1800);
+await pause(2200);
 
 // 5. Back to the public status page.
 await page.goto(`${base}/status/demo`, { waitUntil: 'networkidle' });
