@@ -70,6 +70,15 @@ services:
       O1_RETENTION_MAX_PARTITION_DROPS: ${O1_RETENTION_MAX_PARTITION_DROPS:-1}
       O1_ROLLUP_INTERVAL: ${O1_ROLLUP_INTERVAL:-15m}
       O1_ROLLUP_MAX_HOURS_PER_RUN: ${O1_ROLLUP_MAX_HOURS_PER_RUN:-24}
+      # Incident insights. Off unless O1_AI_PROVIDER names a provider; the API
+      # answers 501 and the dashboard hides the panel while it is off.
+      O1_AI_PROVIDER: ${O1_AI_PROVIDER:-off}
+      O1_AI_BASE_URL: ${O1_AI_BASE_URL:-}
+      O1_AI_API_KEY: ${O1_AI_API_KEY:-}
+      O1_AI_MODEL: ${O1_AI_MODEL:-}
+      O1_AI_TIMEOUT: ${O1_AI_TIMEOUT:-30s}
+      O1_AI_MAX_TOKENS: ${O1_AI_MAX_TOKENS:-700}
+      O1_AI_EXTRA_HEADERS: ${O1_AI_EXTRA_HEADERS:-}
     # No published port: the web container is the only public entry point.
     restart: unless-stopped
 

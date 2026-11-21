@@ -289,10 +289,19 @@ func NewRouter(deps Dependencies) http.Handler {
 			Timeout:  deps.Config.AITimeout,
 			Headers:  deps.Config.AIExtraHeaders,
 		})
-		if err != nil {
-			// A misconfigured provider must not take the API down; the
-			// feature stays off and the router keeps serving.
+		switch {
+		case err != nil:
+			// A misconfigured provider must not take the API down, but it must
+			// not be silent either: this is the only place that explains a 501
+			// from the insights endpoints.
+			logger.Warn("incident insights disabled: provider misconfigured",
+				"provider", deps.Config.AIProvider, "error", err)
 			provider = nil
+		case provider == nil:
+			logger.Info("incident insights disabled", "provider", deps.Config.AIProvider)
+		default:
+			logger.Info("incident insights enabled",
+				"provider", deps.Config.AIProvider, "model", deps.Config.AIModel)
 		}
 		insightSvc = insights.NewService(insights.Options{
 			Store:     insights.NewPostgresStore(deps.Pool),
