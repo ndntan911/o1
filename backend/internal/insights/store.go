@@ -95,5 +95,6 @@ func (s *PostgresStore) Latest(ctx context.Context, workspaceID, incidentID uuid
 	if err := json.Unmarshal(raw, &insight.Result); err != nil {
 		return nil, fmt.Errorf("insights: decode stored result: %w", err)
 	}
+	insight.Result = normaliseResult(insight.Result)
 	return &insight, nil
 }

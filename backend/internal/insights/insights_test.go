@@ -244,3 +244,24 @@ func TestParse_AlwaysReturnsAnArray(t *testing.T) {
 		}
 	}
 }
+
+func TestNormaliseResult_FixesStoredNulls(t *testing.T) {
+	stored := Result{Sufficient: false, Assessment: "legacy row"}
+	// json.Unmarshal leaves nil slices for a null in the stored document.
+	encoded := []byte(`{"sufficient":false,"assessment":"legacy row","hypotheses":null}`)
+	if err := json.Unmarshal(encoded, &stored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if stored.Hypotheses != nil {
+		t.Fatal("fixture should decode to a nil slice")
+	}
+
+	fixed := normaliseResult(stored)
+	marshalled, err := json.Marshal(fixed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(marshalled), `"hypotheses":[]`) {
+		t.Fatalf("stored nulls must be repaired on read, got %s", marshalled)
+	}
+}

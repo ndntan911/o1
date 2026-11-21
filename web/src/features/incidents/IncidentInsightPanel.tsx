@@ -114,6 +114,10 @@ function InsightBody({
 	insight: IncidentInsight;
 	eventLabel: (eventId?: string) => string | null;
 }) {
+	// The API guarantees an array, but a row stored before that contract
+	// existed, or a proxy that rewrites JSON, must not take the page down.
+	const hypotheses = insight.result.hypotheses ?? [];
+
 	return (
 		<div className="space-y-3">
 			<p className="text-sm">{insight.result.assessment}</p>
@@ -124,9 +128,9 @@ function InsightBody({
 				</p>
 			) : null}
 
-			{insight.result.hypotheses.length > 0 ? (
+			{hypotheses.length > 0 ? (
 				<ol className="space-y-3">
-					{insight.result.hypotheses.map((hypothesis) => (
+					{hypotheses.map((hypothesis) => (
 						<li key={hypothesis.rank} className="rounded-md border px-3 py-2">
 							<div className="flex flex-wrap items-center gap-2">
 								<Badge variant="outline">#{hypothesis.rank}</Badge>
@@ -139,9 +143,9 @@ function InsightBody({
 								) : null}
 							</div>
 
-							{hypothesis.evidence.length > 0 ? (
+							{(hypothesis.evidence ?? []).length > 0 ? (
 								<ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-									{hypothesis.evidence.map((item, index) => (
+									{(hypothesis.evidence ?? []).map((item, index) => (
 										<li key={`${hypothesis.rank}-${index}`}>
 											{item.kind === 'event' && item.event_id
 												? `Timeline: ${eventLabel(item.event_id) ?? 'unknown event'}`

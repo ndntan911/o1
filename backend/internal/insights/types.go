@@ -70,3 +70,17 @@ type Insight struct {
 	CreatedBy     *uuid.UUID `json:"created_by"`
 	CreatedAt     time.Time  `json:"created_at"`
 }
+
+// normaliseResult fixes rows written before the contract guaranteed an array.
+// The UI ranges over hypotheses; a null is a crash, not a detail.
+func normaliseResult(result Result) Result {
+	if result.Hypotheses == nil {
+		result.Hypotheses = []Hypothesis{}
+	}
+	for index, hypothesis := range result.Hypotheses {
+		if hypothesis.Evidence == nil {
+			result.Hypotheses[index].Evidence = []Evidence{}
+		}
+	}
+	return result
+}
