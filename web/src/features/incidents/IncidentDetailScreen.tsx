@@ -220,11 +220,11 @@ function IncidentDetailView({ workspace, detail }: IncidentDetailViewProps) {
 			<div className="space-y-3">
 				<h2 className="font-heading text-lg font-medium">Timeline</h2>
 				<IncidentTimeline events={events} />
-					<IncidentInsightPanel
-						workspaceId={workspace.id}
-						incidentId={incident.id}
-						events={events}
-					/>
+				<IncidentInsightPanel
+					workspaceId={workspace.id}
+					incidentId={incident.id}
+					events={events}
+				/>
 			</div>
 
 			{isAdmin ? (

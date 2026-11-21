@@ -15,7 +15,8 @@ export function useIncidentInsight(
 ): UseQueryResult<IncidentInsight> {
 	return useQuery({
 		queryKey: queryKeys.incidentInsight(workspaceId, incidentId),
-		queryFn: ({ signal }) => getIncidentInsight(workspaceId, incidentId, signal),
+		queryFn: ({ signal }) =>
+			getIncidentInsight(workspaceId, incidentId, signal),
 		// A 404 means no analysis yet, which is a normal empty state.
 		retry: false,
 		staleTime: 60_000,

@@ -44,10 +44,10 @@ func (s *fakeStore) Insert(_ context.Context, insight Insight) (Insight, error) 
 }
 
 type fakeIncidents struct {
-	detail       incidents.IncidentDetail
-	deliveries   []incidents.Delivery
-	err          error
-	deliveryErr  error
+	detail      incidents.IncidentDetail
+	deliveries  []incidents.Delivery
+	err         error
+	deliveryErr error
 }
 
 func (f *fakeIncidents) Get(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (incidents.IncidentDetail, error) {

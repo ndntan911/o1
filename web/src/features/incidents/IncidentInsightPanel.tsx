@@ -44,7 +44,8 @@ export function IncidentInsightPanel({
 		insightQuery.isError &&
 		isApiProblem(insightQuery.error) &&
 		insightQuery.error.problem.status === 501;
-	const unavailable = (insightQuery.isError && !missing && !disabled) || disabled;
+	const unavailable =
+		(insightQuery.isError && !missing && !disabled) || disabled;
 	const busy = generate.isPending;
 	const eventLabel = (eventId?: string) => {
 		if (!eventId) {
@@ -102,7 +103,9 @@ export function IncidentInsightPanel({
 				<p className="text-sm text-muted-foreground">Reading the incident…</p>
 			) : null}
 
-			{insight ? <InsightBody insight={insight} eventLabel={eventLabel} /> : null}
+			{insight ? (
+				<InsightBody insight={insight} eventLabel={eventLabel} />
+			) : null}
 		</div>
 	);
 }

@@ -15,9 +15,9 @@ import (
 // Payload is everything the model is allowed to see. Every field here is
 // copied from the incident's own records; nothing is fetched from the target.
 type Payload struct {
-	Monitor   MonitorView   `json:"monitor"`
-	Incident  IncidentView  `json:"incident"`
-	Timeline  []EventView   `json:"timeline"`
+	Monitor    MonitorView    `json:"monitor"`
+	Incident   IncidentView   `json:"incident"`
+	Timeline   []EventView    `json:"timeline"`
 	Deliveries []DeliveryView `json:"deliveries"`
 }
 

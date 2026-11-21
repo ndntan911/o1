@@ -2,8 +2,8 @@ package ai
 
 import (
 	"context"
-	"io"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,10 +155,10 @@ func TestOpenAIClient_SendsExtraHeadersWithoutOverridingAuth(t *testing.T) {
 
 func TestCompletionURL_AcceptsRootOrFullEndpoint(t *testing.T) {
 	cases := map[string]string{
-		"https://api.openai.com/v1":                              "https://api.openai.com/v1/chat/completions",
-		"https://api.openai.com/v1/":                             "https://api.openai.com/v1/chat/completions",
-		"https://gateway.example/openai/v1/chat/completions":     "https://gateway.example/openai/v1/chat/completions",
-		"https://gateway.example/openai/v1/chat/completions/":     "https://gateway.example/openai/v1/chat/completions",
+		"https://api.openai.com/v1":                           "https://api.openai.com/v1/chat/completions",
+		"https://api.openai.com/v1/":                          "https://api.openai.com/v1/chat/completions",
+		"https://gateway.example/openai/v1/chat/completions":  "https://gateway.example/openai/v1/chat/completions",
+		"https://gateway.example/openai/v1/chat/completions/": "https://gateway.example/openai/v1/chat/completions",
 	}
 	for base, want := range cases {
 		if got := completionURL(base); got != want {

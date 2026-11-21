@@ -16,9 +16,9 @@ const PromptVersion = "2026-11-21.1"
 
 // Insight statuses.
 const (
-	StatusOK          = "ok"
+	StatusOK           = "ok"
 	StatusInsufficient = "insufficient"
-	StatusFailed      = "failed"
+	StatusFailed       = "failed"
 )
 
 // Confidence values the prompt allows.

@@ -95,7 +95,9 @@ describe('IncidentInsightPanel', () => {
 		await waitFor(() =>
 			expect(screen.getByText(/stopped answering/i)).toBeInTheDocument(),
 		);
-		expect(screen.getByText('Timeouts above the 10s limit')).toBeInTheDocument();
+		expect(
+			screen.getByText('Timeouts above the 10s limit'),
+		).toBeInTheDocument();
 		expect(screen.getByText(/high confidence/i)).toBeInTheDocument();
 		expect(screen.getByText(/timeline: opened/i)).toBeInTheDocument();
 		expect(screen.getByText(/would be wrong if/i)).toBeInTheDocument();
@@ -159,38 +161,36 @@ describe('IncidentInsightPanel', () => {
 			/>,
 		);
 
-		expect(
-			await screen.findByText(/not enough evidence/i),
-		).toBeInTheDocument();
+		expect(await screen.findByText(/not enough evidence/i)).toBeInTheDocument();
 	});
 });
 
-	test('survives a stored row whose hypotheses are null', async () => {
-		server.use(
-			http.get(`${base}/latest`, () =>
-				HttpResponse.json({
-					...insight({
-						status: 'failed',
-						result: {
-							sufficient: false,
-							assessment: 'The model call failed. Nothing was analysed.',
-							// A row written before the API guaranteed an array.
-							hypotheses: null,
-						} as unknown as IncidentInsight['result'],
-					}),
+test('survives a stored row whose hypotheses are null', async () => {
+	server.use(
+		http.get(`${base}/latest`, () =>
+			HttpResponse.json({
+				...insight({
+					status: 'failed',
+					result: {
+						sufficient: false,
+						assessment: 'The model call failed. Nothing was analysed.',
+						// A row written before the API guaranteed an array.
+						hypotheses: null,
+					} as unknown as IncidentInsight['result'],
 				}),
-			),
-		);
+			}),
+		),
+	);
 
-		renderWithProviders(
-			<IncidentInsightPanel
-				workspaceId={workspaceId}
-				incidentId={incidentId}
-				events={events}
-			/>,
-		);
+	renderWithProviders(
+		<IncidentInsightPanel
+			workspaceId={workspaceId}
+			incidentId={incidentId}
+			events={events}
+		/>,
+	);
 
-		expect(
-			await screen.findByText('The model call failed. Nothing was analysed.'),
-		).toBeInTheDocument();
-	});
+	expect(
+		await screen.findByText('The model call failed. Nothing was analysed.'),
+	).toBeInTheDocument();
+});
