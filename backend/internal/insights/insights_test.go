@@ -222,3 +222,25 @@ func TestParse_RejectsNonJSON(t *testing.T) {
 		t.Fatal("expected an error for non-JSON output")
 	}
 }
+
+func TestParse_AlwaysReturnsAnArray(t *testing.T) {
+	// The API is consumed by a UI that calls hypotheses.map; null is not an
+	// array, and a missing key must not become null.
+	for _, text := range []string{
+		`{"sufficient":false,"assessment":"thin","hypotheses":[]}`,
+		`{"sufficient":false,"assessment":"thin"}`,
+		`{"sufficient":false,"assessment":"thin","hypotheses":null}`,
+	} {
+		result, err := Parse(text, nil)
+		if err != nil {
+			t.Fatalf("Parse(%s): %v", text, err)
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"hypotheses":[]`) {
+			t.Fatalf("hypotheses must marshal as an array, got %s", encoded)
+		}
+	}
+}

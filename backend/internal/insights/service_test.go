@@ -44,9 +44,10 @@ func (s *fakeStore) Insert(_ context.Context, insight Insight) (Insight, error) 
 }
 
 type fakeIncidents struct {
-	detail     incidents.IncidentDetail
-	deliveries []incidents.Delivery
-	err        error
+	detail       incidents.IncidentDetail
+	deliveries   []incidents.Delivery
+	err          error
+	deliveryErr  error
 }
 
 func (f *fakeIncidents) Get(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (incidents.IncidentDetail, error) {
@@ -54,6 +55,9 @@ func (f *fakeIncidents) Get(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (i
 }
 
 func (f *fakeIncidents) Deliveries(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) ([]incidents.Delivery, error) {
+	if f.deliveryErr != nil {
+		return nil, f.deliveryErr
+	}
 	return f.deliveries, f.err
 }
 
@@ -153,6 +157,9 @@ func TestGenerate_StoresFailureWhenTheModelErrors(t *testing.T) {
 	if insight.Status != StatusFailed {
 		t.Fatalf("status = %q", insight.Status)
 	}
+	if insight.Result.Hypotheses == nil {
+		t.Fatal("failures must still marshal hypotheses as an array")
+	}
 	if store.inserts != 1 {
 		t.Fatalf("a failed generation is still recorded, inserts = %d", store.inserts)
 	}
@@ -200,4 +207,18 @@ func TestGenerate_DisabledWithoutProvider(t *testing.T) {
 func svcState(t *testing.T, svc *Service) incidents.IncidentDetail {
 	t.Helper()
 	return svc.incidents.(*fakeIncidents).detail
+}
+
+func TestGenerate_SurvivesUnreadableDeliveries(t *testing.T) {
+	// A viewer cannot read delivery history; the analysis must still happen.
+	svc, _, source, workspaceID, incidentID := serviceFixture(t, `{"sufficient":false,"assessment":"thin","hypotheses":[]}`)
+	source.deliveryErr = errors.New("forbidden")
+
+	insight, err := svc.Generate(context.Background(), uuid.New(), workspaceID, incidentID, false)
+	if err != nil {
+		t.Fatalf("Generate must not fail when deliveries are unavailable: %v", err)
+	}
+	if insight.Status != StatusInsufficient {
+		t.Fatalf("status = %q", insight.Status)
+	}
 }

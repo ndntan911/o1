@@ -116,9 +116,12 @@ func (s *Service) Generate(
 	if err != nil {
 		return Insight{}, err
 	}
+	// Deliveries are context, not the incident itself. A viewer cannot read
+	// them (they name recipients) and a delivery table can be empty; neither is
+	// a reason to refuse an analysis.
 	deliveries, err := s.incidents.Deliveries(ctx, actorID, workspaceID, incidentID)
 	if err != nil {
-		return Insight{}, err
+		deliveries = nil
 	}
 
 	var monitor *monitors.Monitor
@@ -181,13 +184,13 @@ func (s *Service) Generate(
 
 	if err != nil {
 		insight.Status = StatusFailed
-		insight.Result = Result{Assessment: "The model call failed. Nothing was analysed."}
+		insight.Result = emptyResult("The model call failed. Nothing was analysed.")
 	} else {
 		result, parseErr := Parse(response.Text, EventIDs(detail))
 		switch {
 		case parseErr != nil:
 			insight.Status = StatusFailed
-			insight.Result = Result{Assessment: "The model returned an answer that could not be read, so it is not shown."}
+			insight.Result = emptyResult("The model returned an answer that could not be read, so it is not shown.")
 		case !result.Sufficient || len(result.Hypotheses) == 0:
 			insight.Status = StatusInsufficient
 			insight.Result = result
@@ -239,4 +242,10 @@ func (s *Service) recordAudit(
 		Kind:        "incident.insight_generated",
 		Detail:      detail,
 	})
+}
+
+// emptyResult keeps the response shape stable: consumers range over
+// hypotheses, and a nil slice marshals to null.
+func emptyResult(assessment string) Result {
+	return Result{Assessment: assessment, Hypotheses: []Hypothesis{}}
 }

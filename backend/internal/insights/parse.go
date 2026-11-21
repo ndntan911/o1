@@ -23,7 +23,13 @@ func Parse(text string, knownEvents map[uuid.UUID]struct{}) (Result, error) {
 		return Result{}, fmt.Errorf("insights: model returned invalid JSON: %w", err)
 	}
 
-	result := Result{Sufficient: raw.Sufficient, Assessment: strings.TrimSpace(raw.Assessment)}
+	result := Result{
+		Sufficient: raw.Sufficient,
+		Assessment: strings.TrimSpace(raw.Assessment),
+		// A JSON null here crashes every consumer that calls .length or
+		// ranges over it; the contract is an array, always.
+		Hypotheses: []Hypothesis{},
+	}
 	if result.Sufficient && len(raw.Hypotheses) == 0 {
 		// A confident answer with nothing behind it is not an answer.
 		result.Sufficient = false
