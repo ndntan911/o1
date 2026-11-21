@@ -1,4 +1,4 @@
--- 00012_incident_insights.sql
+-- +goose Up
 -- Incident insights: a stored, cited analysis of one incident.
 --
 -- Rows are append-only. The API reads the latest row per incident, so a rerun
@@ -24,3 +24,6 @@ CREATE INDEX IF NOT EXISTS incident_insights_incident_created_idx
 
 CREATE INDEX IF NOT EXISTS incident_insights_workspace_idx
     ON incident_insights (workspace_id);
+
+-- +goose Down
+DROP TABLE IF EXISTS incident_insights;
