@@ -20,6 +20,9 @@ type OpenAIClient struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// Headers are added to every request. Authorization and Content-Type are
+	// set by the client and cannot be overridden here.
+	Headers map[string]string
 }
 
 type openAIRequest struct {
@@ -85,6 +88,14 @@ func (c *OpenAIClient) Complete(ctx context.Context, req Request) (Response, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	for name, value := range c.Headers {
+		switch strings.ToLower(name) {
+		case "authorization", "content-type":
+			// Reserved: the client owns these.
+			continue
+		}
+		httpReq.Header.Set(name, value)
+	}
 
 	httpClient := c.HTTP
 	if httpClient == nil {

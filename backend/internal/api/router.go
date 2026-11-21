@@ -287,6 +287,7 @@ func NewRouter(deps Dependencies) http.Handler {
 			APIKey:   deps.Config.AIAPIKey,
 			Model:    deps.Config.AIModel,
 			Timeout:  deps.Config.AITimeout,
+			Headers:  deps.Config.AIExtraHeaders,
 		})
 		if err != nil {
 			// A misconfigured provider must not take the API down; the

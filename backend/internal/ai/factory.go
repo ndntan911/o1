@@ -14,6 +14,7 @@ type Settings struct {
 	APIKey   string
 	Model    string
 	Timeout  time.Duration
+	Headers  map[string]string
 }
 
 // New builds the provider named by settings. A nil Provider means the feature
@@ -41,6 +42,7 @@ func New(settings Settings) (Provider, error) {
 			BaseURL: base,
 			APIKey:  settings.APIKey,
 			Model:   settings.Model,
+			Headers: settings.Headers,
 		}, nil
 	default:
 		return nil, ErrNotConfigured

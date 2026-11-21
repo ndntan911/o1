@@ -81,6 +81,10 @@ type Config struct {
 	AIModel     string
 	AITimeout   time.Duration
 	AIMaxTokens int
+	// AIExtraHeaders are sent with every completion. Some gateways need a
+	// routing header or an attribution header; they never override the
+	// authentication headers the client sets itself.
+	AIExtraHeaders map[string]string
 
 	// PublicRatePerMinute and PublicRateBurst configure the per-IP token
 	// bucket on the public status page. Defaults keep 1 rps with a burst of 20.
@@ -377,6 +381,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.AIMaxTokens, err = envInt("O1_AI_MAX_TOKENS", 700); err != nil {
+		return Config{}, err
+	}
+	if cfg.AIExtraHeaders, err = envHeaders("O1_AI_EXTRA_HEADERS"); err != nil {
 		return Config{}, err
 	}
 	if cfg.BillingWebhookSecret == "" {

@@ -118,3 +118,37 @@ func TestStub_RecordsRequests(t *testing.T) {
 		t.Fatalf("last request = %q", stub.LastRequest().User)
 	}
 }
+
+func TestOpenAIClient_SendsExtraHeadersWithoutOverridingAuth(t *testing.T) {
+	var gotSession, gotAuth, gotContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("X-Session")
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	}))
+	defer server.Close()
+
+	client := &OpenAIClient{
+		HTTP:    server.Client(),
+		BaseURL: server.URL,
+		APIKey:  "real-key",
+		Headers: map[string]string{
+			"x-session":     "route-123",
+			"Authorization": "Bearer forged",
+			"Content-Type":  "text/plain",
+		},
+	}
+	if _, err := client.Complete(context.Background(), Request{User: "x"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotSession != "route-123" {
+		t.Fatalf("extra header missing, got %q", gotSession)
+	}
+	if gotAuth != "Bearer real-key" {
+		t.Fatalf("Authorization must not be overridden, got %q", gotAuth)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("Content-Type must not be overridden, got %q", gotContentType)
+	}
+}

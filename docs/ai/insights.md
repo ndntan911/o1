@@ -44,6 +44,10 @@ O1_AI_TIMEOUT=15s
 O1_AI_MAX_TOKENS=700
 ```
 
+If a gateway needs a routing or attribution header, `O1_AI_EXTRA_HEADERS` takes a
+comma-separated `name=value` list; `Authorization` and `Content-Type` are reserved and
+cannot be overridden that way.
+
 `O1_AI_PROVIDER=stub` answers deterministically without a network call; that is how the
 feature is demonstrated locally and how the unit tests exercise the pipeline. `off` hides
 the panel; both endpoints answer 501 with `not_implemented`, which the UI treats as "this
