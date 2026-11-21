@@ -81,7 +81,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req Request) (Response, err
 		return Response{}, fmt.Errorf("ai: marshal request: %w", err)
 	}
 
-	url := strings.TrimRight(c.BaseURL, "/") + "/chat/completions"
+	url := completionURL(c.BaseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return Response{}, fmt.Errorf("ai: build request: %w", err)
@@ -129,4 +129,15 @@ func (c *OpenAIClient) Complete(ctx context.Context, req Request) (Response, err
 		InputTokens:  decoded.Usage.PromptTokens,
 		OutputTokens: decoded.Usage.CompletionTokens,
 	}, nil
+}
+
+// completionURL accepts either the API root (…/v1) or the full completions
+// endpoint. A base URL copied from a working curl command usually includes the
+// path already, and appending it twice is a 404 that looks like a broken key.
+func completionURL(base string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
+	if strings.HasSuffix(trimmed, "/chat/completions") {
+		return trimmed
+	}
+	return trimmed + "/chat/completions"
 }

@@ -152,3 +152,17 @@ func TestOpenAIClient_SendsExtraHeadersWithoutOverridingAuth(t *testing.T) {
 		t.Fatalf("Content-Type must not be overridden, got %q", gotContentType)
 	}
 }
+
+func TestCompletionURL_AcceptsRootOrFullEndpoint(t *testing.T) {
+	cases := map[string]string{
+		"https://api.openai.com/v1":                              "https://api.openai.com/v1/chat/completions",
+		"https://api.openai.com/v1/":                             "https://api.openai.com/v1/chat/completions",
+		"https://gateway.example/openai/v1/chat/completions":     "https://gateway.example/openai/v1/chat/completions",
+		"https://gateway.example/openai/v1/chat/completions/":     "https://gateway.example/openai/v1/chat/completions",
+	}
+	for base, want := range cases {
+		if got := completionURL(base); got != want {
+			t.Errorf("completionURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+}
