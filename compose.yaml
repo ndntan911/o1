@@ -65,6 +65,14 @@ services:
       O1_ROLLUP_INTERVAL: ${O1_ROLLUP_INTERVAL:-15m}
       O1_ROLLUP_MAX_HOURS_PER_RUN: ${O1_ROLLUP_MAX_HOURS_PER_RUN:-24}
       O1_EMAIL_PROVIDER: ${O1_EMAIL_PROVIDER:-mailpit}
+      # Incident insights. Off by default; "stub" answers without a network
+      # call and is what local demos use. See docs/ai/insights.md.
+      O1_AI_PROVIDER: ${O1_AI_PROVIDER:-off}
+      O1_AI_BASE_URL: ${O1_AI_BASE_URL:-}
+      O1_AI_API_KEY: ${O1_AI_API_KEY:-}
+      O1_AI_MODEL: ${O1_AI_MODEL:-gpt-4o-mini}
+      O1_AI_TIMEOUT: ${O1_AI_TIMEOUT:-15s}
+      O1_AI_MAX_TOKENS: ${O1_AI_MAX_TOKENS:-700}
       O1_SMTP_ADDR: ${O1_SMTP_ADDR:-mailpit:1025}
       O1_SMTP_USERNAME: ${O1_SMTP_USERNAME:-}
       O1_SMTP_PASSWORD: ${O1_SMTP_PASSWORD:-}
