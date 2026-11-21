@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"o1/internal/admin"
+	"o1/internal/ai"
 	"o1/internal/alerts"
 	"o1/internal/apikeys"
 	"o1/internal/auth"
@@ -23,6 +24,7 @@ import (
 	"o1/internal/email"
 	"o1/internal/httpx"
 	"o1/internal/incidents"
+	"o1/internal/insights"
 	"o1/internal/monitors"
 	"o1/internal/observability"
 	"o1/internal/probe"
@@ -44,6 +46,7 @@ type Dependencies struct {
 	WorkspaceService  *workspaces.Service
 	MonitorService    *monitors.Service
 	IncidentService   *incidents.Service
+	InsightService    *insights.Service
 	AlertService      *alerts.Service
 	AdminService      *admin.Service
 	StatusPageService *statuspage.Service
@@ -276,6 +279,31 @@ func NewRouter(deps Dependencies) http.Handler {
 	if incidentSvc == nil && deps.Pool != nil {
 		incidentSvc = incidents.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
 	}
+	insightSvc := deps.InsightService
+	if insightSvc == nil && deps.Pool != nil {
+		provider, err := ai.New(ai.Settings{
+			Provider: deps.Config.AIProvider,
+			BaseURL:  deps.Config.AIBaseURL,
+			APIKey:   deps.Config.AIAPIKey,
+			Model:    deps.Config.AIModel,
+			Timeout:  deps.Config.AITimeout,
+		})
+		if err != nil {
+			// A misconfigured provider must not take the API down; the
+			// feature stays off and the router keeps serving.
+			provider = nil
+		}
+		insightSvc = insights.NewService(insights.Options{
+			Store:     insights.NewPostgresStore(deps.Pool),
+			Provider:  provider,
+			Model:     deps.Config.AIModel,
+			Incidents: incidentSvc,
+			Monitors:  monitorSvc,
+			Queries:   sqlc.New(deps.Pool),
+			Timeout:   deps.Config.AITimeout,
+			MaxTokens: deps.Config.AIMaxTokens,
+		})
+	}
 	alertSvc := deps.AlertService
 	if alertSvc == nil && deps.Pool != nil && len(deps.Config.EncryptionKey) == 32 {
 		if box, err := secretbox.New(deps.Config.EncryptionKey); err == nil {
@@ -324,6 +352,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		return requireAuth(keyLimiter(next))
 	}
 	authLimiter := httpx.RateLimit(authRPS(deps.Config), authBurst(deps.Config), true)
+	// Insight generation is expensive; keep it to a handful per minute.
+	insightLimiter := httpx.RateLimit(6, 2, true)
 
 	mux.Handle("POST /api/v1/auth/register", authLimiter(http.HandlerFunc(auth.RegisterHandler(authSvc))))
 	mux.Handle("POST /api/v1/auth/verify-email", authLimiter(http.HandlerFunc(auth.VerifyEmailHandler(authSvc))))
@@ -382,6 +412,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}", withKeyAuth(http.HandlerFunc(incidents.GetHandler(incidentSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/acknowledge", withKeyAuth(http.HandlerFunc(incidents.AcknowledgeHandler(incidentSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/deliveries", withKeyAuth(http.HandlerFunc(incidents.DeliveriesHandler(incidentSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/insights/latest", withKeyAuth(http.HandlerFunc(insights.LatestHandler(insightSvc))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/insights", requireSession(insightLimiter(http.HandlerFunc(insights.GenerateHandler(insightSvc)))))
 
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.ListChannelsHandler(alertSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.CreateChannelHandler(alertSvc))))

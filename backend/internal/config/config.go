@@ -72,6 +72,16 @@ type Config struct {
 	// it explicitly; development derives one from the secret key.
 	BillingWebhookSecret string
 
+	// AI configures the model transport behind incident insights. The feature
+	// is off unless O1_AI_PROVIDER names a provider; "stub" answers
+	// deterministically and is meant for tests and local demos.
+	AIProvider  string
+	AIBaseURL   string
+	AIAPIKey    string
+	AIModel     string
+	AITimeout   time.Duration
+	AIMaxTokens int
+
 	// PublicRatePerMinute and PublicRateBurst configure the per-IP token
 	// bucket on the public status page. Defaults keep 1 rps with a burst of 20.
 	PublicRatePerMinute int
@@ -359,6 +369,16 @@ func Load() (Config, error) {
 	}
 	cfg.BillingProvider = strings.ToLower(strings.TrimSpace(env("O1_BILLING_PROVIDER", "sandbox")))
 	cfg.BillingWebhookSecret = strings.TrimSpace(env("O1_BILLING_WEBHOOK_SECRET", ""))
+	cfg.AIProvider = strings.ToLower(strings.TrimSpace(env("O1_AI_PROVIDER", "off")))
+	cfg.AIBaseURL = strings.TrimSpace(env("O1_AI_BASE_URL", ""))
+	cfg.AIAPIKey = strings.TrimSpace(env("O1_AI_API_KEY", ""))
+	cfg.AIModel = strings.TrimSpace(env("O1_AI_MODEL", "gpt-4o-mini"))
+	if cfg.AITimeout, err = envDuration("O1_AI_TIMEOUT", 15*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.AIMaxTokens, err = envInt("O1_AI_MAX_TOKENS", 700); err != nil {
+		return Config{}, err
+	}
 	if cfg.BillingWebhookSecret == "" {
 		// A 32-byte secret key already protects sessions and key derivation;
 		// derive a domain-separated webhook secret from it rather than making
@@ -465,6 +485,21 @@ func loadEncryptionKey(cfg Config) ([]byte, bool, error) {
 }
 
 func (cfg *Config) validate() error {
+	switch cfg.AIProvider {
+	case "", "off", "stub":
+	case "openai":
+		if cfg.AIAPIKey == "" {
+			return fmt.Errorf("missing O1_AI_API_KEY for O1_AI_PROVIDER=openai")
+		}
+	default:
+		return fmt.Errorf("invalid O1_AI_PROVIDER: %q (use off, stub or openai)", cfg.AIProvider)
+	}
+	if cfg.AITimeout <= 0 || cfg.AITimeout > time.Minute {
+		return fmt.Errorf("invalid O1_AI_TIMEOUT: must be between 1s and 1m")
+	}
+	if cfg.AIMaxTokens <= 0 || cfg.AIMaxTokens > 4000 {
+		return fmt.Errorf("invalid O1_AI_MAX_TOKENS: must be between 1 and 4000")
+	}
 	if cfg.MonitorMinInterval < 60*time.Second || cfg.MonitorMaxInterval > 24*time.Hour {
 		return fmt.Errorf("invalid monitor intervals: must be between 60s and 24h")
 	}

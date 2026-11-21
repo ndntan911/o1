@@ -1,5 +1,6 @@
 import { apiRequest } from '@/lib/api/client';
 import type {
+	IncidentInsight,
 	IncidentDelivery,
 	IncidentDeliveryListResponse,
 	IncidentDetail,
@@ -65,4 +66,26 @@ export async function listIncidentDeliveries(
 		{ signal },
 	);
 	return response.deliveries;
+}
+
+export function getIncidentInsight(
+	workspaceId: string,
+	incidentId: string,
+	signal?: AbortSignal,
+): Promise<IncidentInsight> {
+	return apiRequest<IncidentInsight>(
+		`${incidentPath(workspaceId, incidentId)}/insights/latest`,
+		{ signal },
+	);
+}
+
+export function generateIncidentInsight(
+	workspaceId: string,
+	incidentId: string,
+	force = false,
+): Promise<IncidentInsight> {
+	return apiRequest<IncidentInsight>(
+		`${incidentPath(workspaceId, incidentId)}/insights`,
+		{ method: 'POST', query: force ? { force: 'true' } : undefined },
+	);
 }

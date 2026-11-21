@@ -29,6 +29,7 @@ import {
 	useIncident,
 	useIncidentDeliveries,
 } from './hooks';
+import { IncidentInsightPanel } from './IncidentInsightPanel';
 import { IncidentTimeline } from './IncidentTimeline';
 import { incidentStatusLabel, incidentStatusVariant } from './status';
 
@@ -219,6 +220,11 @@ function IncidentDetailView({ workspace, detail }: IncidentDetailViewProps) {
 			<div className="space-y-3">
 				<h2 className="font-heading text-lg font-medium">Timeline</h2>
 				<IncidentTimeline events={events} />
+					<IncidentInsightPanel
+						workspaceId={workspace.id}
+						incidentId={incident.id}
+						events={events}
+					/>
 			</div>
 
 			{isAdmin ? (

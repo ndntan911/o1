@@ -39,6 +39,12 @@ delivering alerts exactly once through providers that fail in different ways.
 - **Alerts.** Email (Resend or authenticated SMTP), webhooks with optional
   HMAC-SHA256 signing, Slack incoming webhooks, and Telegram. Per-monitor
   switches, delivery history, retries for transient errors.
+- **Incident insights.** On demand, an incident page returns up to three ranked
+  hypotheses for its cause, each citing a timeline event or field that the server verifies
+  before it is shown; a claim it cannot tie to the incident's own data is labelled
+  unverified, and thin data produces "not enough evidence" instead of a story. The model
+  never sees monitor URLs, headers, channel secrets or recipients, and the feature is off
+  until configured.
 - **Public status pages.** One page per workspace at `/status/{slug}` with 90
   daily bars, uptime, and recent incidents. No monitor URLs, errors, or
   acknowledgement data ever leak to it.

@@ -368,3 +368,44 @@ export interface CreateAPIKeyInput {
 	name: string;
 	role: APIKeyRole;
 }
+
+export type InsightConfidence = 'low' | 'medium' | 'high';
+
+export type InsightStatus = 'ok' | 'insufficient' | 'failed';
+
+export interface InsightEvidence {
+	kind: 'event' | 'field';
+	event_id?: string;
+	field?: string;
+	note?: string;
+}
+
+export interface InsightHypothesis {
+	rank: number;
+	cause: string;
+	confidence: InsightConfidence;
+	evidence: InsightEvidence[];
+	falsified_by?: string;
+	unsupported?: boolean;
+}
+
+export interface IncidentInsightResult {
+	sufficient: boolean;
+	assessment: string;
+	hypotheses: InsightHypothesis[];
+}
+
+export interface IncidentInsight {
+	id: string;
+	workspace_id: string;
+	incident_id: string;
+	model: string;
+	prompt_version: string;
+	payload_hash: string;
+	status: InsightStatus;
+	result: IncidentInsightResult;
+	input_tokens: number;
+	output_tokens: number;
+	created_by: string | null;
+	created_at: string;
+}
