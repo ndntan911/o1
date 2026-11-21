@@ -16,6 +16,7 @@ const (
 	CodeForbidden          = "forbidden"
 	CodeRateLimited        = "rate_limited"
 	CodeNotFound           = "not_found"
+	CodeNotImplemented     = "not_implemented"
 	CodeWorkspaceSuspended = "workspace_suspended"
 	CodeQuotaExceeded      = "quota_exceeded"
 	CodeMonitorRateLimited = "monitor_rate_limited"

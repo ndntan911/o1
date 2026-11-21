@@ -40,7 +40,11 @@ export function IncidentInsightPanel({
 		insightQuery.isError &&
 		isApiProblem(insightQuery.error) &&
 		insightQuery.error.problem.status === 404;
-	const unavailable = insightQuery.isError && !missing;
+	const disabled =
+		insightQuery.isError &&
+		isApiProblem(insightQuery.error) &&
+		insightQuery.error.problem.status === 501;
+	const unavailable = (insightQuery.isError && !missing && !disabled) || disabled;
 	const busy = generate.isPending;
 	const eventLabel = (eventId?: string) => {
 		if (!eventId) {

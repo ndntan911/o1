@@ -46,7 +46,8 @@ O1_AI_MAX_TOKENS=700
 
 `O1_AI_PROVIDER=stub` answers deterministically without a network call; that is how the
 feature is demonstrated locally and how the unit tests exercise the pipeline. `off` hides
-the panel and makes both endpoints return 404.
+the panel; both endpoints answer 501 with `not_implemented`, which the UI treats as "this
+deployment does not offer it".
 
 A misconfigured provider never takes the API down: the router logs nothing, leaves the
 feature off, and keeps serving.

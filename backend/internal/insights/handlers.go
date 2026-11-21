@@ -19,7 +19,7 @@ func GenerateHandler(svc *Service) http.HandlerFunc {
 			return
 		}
 		if !svc.Enabled() {
-			insightProblem(w, http.StatusNotFound, httpx.CodeNotFound, "Insights are not available")
+			insightProblem(w, http.StatusNotImplemented, httpx.CodeNotImplemented, "Insights are not configured")
 			return
 		}
 
@@ -34,7 +34,7 @@ func GenerateHandler(svc *Service) http.HandlerFunc {
 			httpx.WriteJSON(w, http.StatusConflict, insight)
 			return
 		case errors.Is(err, ErrDisabled):
-			insightProblem(w, http.StatusNotFound, httpx.CodeNotFound, "Insights are not available")
+			insightProblem(w, http.StatusNotImplemented, httpx.CodeNotImplemented, "Insights are not configured")
 			return
 		case insight.ID != uuid.Nil:
 			// The call failed but the attempt was stored; the body says so.
@@ -56,7 +56,7 @@ func LatestHandler(svc *Service) http.HandlerFunc {
 			return
 		}
 		if !svc.Enabled() {
-			insightProblem(w, http.StatusNotFound, httpx.CodeNotFound, "Insights are not available")
+			insightProblem(w, http.StatusNotImplemented, httpx.CodeNotImplemented, "Insights are not configured")
 			return
 		}
 
