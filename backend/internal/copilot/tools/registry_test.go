@@ -353,6 +353,260 @@ func TestCall_ListMonitorsFillsActiveIncident(t *testing.T) {
 
 func stringPointer(value string) *string { return &value }
 
+func requireSuccess(t *testing.T, result Result, err error) Result {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("result is an error: %+v", result)
+	}
+	return result
+}
+
+func TestCall_ArgumentMappingAndSuccess(t *testing.T) {
+	ctx := actorContext(uuid.New())
+	workspaceID := uuid.New()
+	monitorID := uuid.New()
+	incidentID := uuid.New()
+
+	type incidentListCall struct {
+		filter incidents.IncidentFilter
+		limit  int
+	}
+	var incidentListCalls []incidentListCall
+	var gotIncidentID uuid.UUID
+	var gotOutcomeIncidentID uuid.UUID
+	var gotMonitorID uuid.UUID
+	var checksWindow time.Duration
+	var checksLimit int
+	var checksCursor *monitors.Cursor
+	var summaryWindow time.Duration
+
+	incident := incidents.Incident{
+		ID:          incidentID,
+		MonitorID:   monitorID,
+		MonitorName: "api",
+		Status:      "open",
+		StartedAt:   testNow.Add(-time.Hour),
+	}
+	incidentsSource := &fakeIncidentSource{
+		list: func(_ context.Context, _, _ uuid.UUID, filter incidents.IncidentFilter, _ *httpx.PageCursor, limit int) ([]incidents.Incident, error) {
+			incidentListCalls = append(incidentListCalls, incidentListCall{filter: filter, limit: limit})
+			if filter.Status == "open" {
+				return []incidents.Incident{incident}, nil
+			}
+			return []incidents.Incident{}, nil
+		},
+		get: func(_ context.Context, _, _, id uuid.UUID) (incidents.IncidentDetail, error) {
+			gotIncidentID = id
+			return incidents.IncidentDetail{
+				Incident: incident,
+				Events: []incidents.IncidentEvent{{
+					ID:        uuid.New(),
+					Kind:      "opened",
+					Detail:    json.RawMessage(`{"new_status":"open"}`),
+					CreatedAt: testNow.Add(-time.Hour),
+				}},
+			}, nil
+		},
+		outcomes: func(_ context.Context, _, _, id uuid.UUID) ([]incidents.DeliveryOutcome, error) {
+			gotOutcomeIncidentID = id
+			return []incidents.DeliveryOutcome{{
+				ChannelKind: "email",
+				Event:       "opened",
+				Status:      "sent",
+				Attempts:    1,
+				CreatedAt:   testNow,
+			}}, nil
+		},
+	}
+	monitorsSource := &fakeMonitorSource{
+		list: func(context.Context, uuid.UUID, uuid.UUID, *monitors.Cursor, int) ([]monitors.Monitor, error) {
+			return []monitors.Monitor{{ID: monitorID, Name: "api", Method: "GET", Status: "up"}}, nil
+		},
+		get: func(_ context.Context, _, _, id uuid.UUID) (monitors.Monitor, error) {
+			gotMonitorID = id
+			return monitors.Monitor{
+				ID:                    id,
+				Name:                  "api",
+				URL:                   "https://secret.example.com/health?token=secret",
+				Method:                "GET",
+				Headers:               map[string]string{"Authorization": "Bearer secret"},
+				ExpectedStatus:        "200",
+				IntervalSeconds:       60,
+				TimeoutSeconds:        10,
+				ConfirmationThreshold: 3,
+				RecoveryThreshold:     2,
+				Status:                "up",
+			}, nil
+		},
+		results: func(_ context.Context, _, _, _ uuid.UUID, window time.Duration, cursor *monitors.Cursor, limit int) ([]monitors.ProbeResult, error) {
+			checksWindow = window
+			checksCursor = cursor
+			checksLimit = limit
+			return []monitors.ProbeResult{{CheckedAt: testNow, Status: "down", LatencyMS: 42}}, nil
+		},
+		summary: func(_ context.Context, _, _, _ uuid.UUID, window time.Duration) (monitors.Summary, error) {
+			summaryWindow = window
+			return monitors.Summary{Checks: 1, Down: 1, P95LatencyMS: 42}, nil
+		},
+	}
+	registry := newTestRegistry(incidentsSource, monitorsSource)
+
+	t.Run("list incidents maps filter and limit", func(t *testing.T) {
+		args := json.RawMessage(`{"monitor_id":"` + monitorID.String() + `","status":"open","limit":5}`)
+		res, err := registry.Call(ctx, workspaceID, "o1_list_incidents", args)
+		result := requireSuccess(t, res, err)
+
+		data, ok := result.Data.(*incidentListData)
+		if !ok {
+			t.Fatalf("data = %T, want *incidentListData", result.Data)
+		}
+		if len(data.Incidents) != 1 || data.Incidents[0].ID != incidentID {
+			t.Fatalf("incidents = %+v, want the listed incident", data.Incidents)
+		}
+
+		var call *incidentListCall
+		for i := range incidentListCalls {
+			if incidentListCalls[i].filter.Status == "open" {
+				call = &incidentListCalls[i]
+			}
+		}
+		if call == nil {
+			t.Fatalf("incident list was not called with status open: %+v", incidentListCalls)
+		}
+		if call.filter.MonitorID == nil || *call.filter.MonitorID != monitorID {
+			t.Fatalf("filter.MonitorID = %v, want %s", call.filter.MonitorID, monitorID)
+		}
+		if call.limit != 5 {
+			t.Fatalf("limit = %d, want 5", call.limit)
+		}
+	})
+
+	t.Run("get monitor returns the projection", func(t *testing.T) {
+		args := json.RawMessage(`{"monitor_id":"` + monitorID.String() + `"}`)
+		res, err := registry.Call(ctx, workspaceID, "o1_get_monitor", args)
+		result := requireSuccess(t, res, err)
+		if gotMonitorID != monitorID {
+			t.Fatalf("monitor id = %s, want %s", gotMonitorID, monitorID)
+		}
+
+		data, ok := result.Data.(*monitorData)
+		if !ok {
+			t.Fatalf("data = %T, want *monitorData", result.Data)
+		}
+		if data.Monitor.ID != monitorID || data.Monitor.Name != "api" || data.Monitor.Method != "GET" {
+			t.Fatalf("monitor = %+v, want the projected monitor", data.Monitor)
+		}
+		if data.Monitor.ActiveIncidentID != nil {
+			t.Fatalf("active incident = %v, want nil", data.Monitor.ActiveIncidentID)
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, secret := range []string{"secret.example.com", "Authorization", "Bearer", "token=secret"} {
+			if strings.Contains(string(raw), secret) {
+				t.Fatalf("leaked %q: %s", secret, raw)
+			}
+		}
+	})
+
+	t.Run("alert deliveries maps the incident id and returns member rows", func(t *testing.T) {
+		args := json.RawMessage(`{"incident_id":"` + incidentID.String() + `"}`)
+		res, err := registry.Call(ctx, workspaceID, "o1_get_alert_deliveries", args)
+		result := requireSuccess(t, res, err)
+		if gotOutcomeIncidentID != incidentID {
+			t.Fatalf("incident id = %s, want %s", gotOutcomeIncidentID, incidentID)
+		}
+
+		data, ok := result.Data.(*deliveryListData)
+		if !ok {
+			t.Fatalf("data = %T, want *deliveryListData", result.Data)
+		}
+		if len(data.Deliveries) != 1 {
+			t.Fatalf("deliveries = %d, want 1", len(data.Deliveries))
+		}
+		delivery := data.Deliveries[0]
+		if delivery.ChannelKind != "email" || delivery.Event != "opened" || delivery.Status != "sent" || delivery.Attempts != 1 {
+			t.Fatalf("delivery = %+v, want the member-safe outcome", delivery)
+		}
+	})
+
+	t.Run("recent checks maps the window and limit", func(t *testing.T) {
+		args := json.RawMessage(`{"monitor_id":"` + monitorID.String() + `","hours":6}`)
+		res, err := registry.Call(ctx, workspaceID, "o1_get_recent_checks", args)
+		result := requireSuccess(t, res, err)
+
+		if checksWindow != 6*time.Hour || summaryWindow != 6*time.Hour {
+			t.Fatalf("windows = %s/%s, want 6h", checksWindow, summaryWindow)
+		}
+		if checksLimit != 100 {
+			t.Fatalf("result limit = %d, want 100", checksLimit)
+		}
+		if checksCursor != nil {
+			t.Fatalf("cursor = %+v, want nil", checksCursor)
+		}
+
+		data, ok := result.Data.(*checksData)
+		if !ok {
+			t.Fatalf("data = %T, want *checksData", result.Data)
+		}
+		if len(data.Checks) != 1 || data.Checks[0].Status != "down" {
+			t.Fatalf("checks = %+v, want the returned check", data.Checks)
+		}
+		if data.Count != 1 || data.Failures != 1 {
+			t.Fatalf("aggregates = count %d failures %d, want 1/1", data.Count, data.Failures)
+		}
+	})
+
+	t.Run("get incident returns the projection and timeline", func(t *testing.T) {
+		args := json.RawMessage(`{"incident_id":"` + incidentID.String() + `"}`)
+		res, err := registry.Call(ctx, workspaceID, "o1_get_incident", args)
+		result := requireSuccess(t, res, err)
+		if gotIncidentID != incidentID {
+			t.Fatalf("incident id = %s, want %s", gotIncidentID, incidentID)
+		}
+
+		data, ok := result.Data.(*incidentData)
+		if !ok {
+			t.Fatalf("data = %T, want *incidentData", result.Data)
+		}
+		if data.Incident.ID != incidentID || data.Incident.MonitorID != monitorID {
+			t.Fatalf("incident = %+v, want the projected incident", data.Incident)
+		}
+		if len(data.Events) != 1 || data.Events[0].Kind != "opened" {
+			t.Fatalf("events = %+v, want the projected timeline", data.Events)
+		}
+	})
+
+	t.Run("list monitors returns the projection", func(t *testing.T) {
+		res, err := registry.Call(ctx, workspaceID, "o1_list_monitors", nil)
+		result := requireSuccess(t, res, err)
+		data, ok := result.Data.(*monitorListData)
+		if !ok {
+			t.Fatalf("data = %T, want *monitorListData", result.Data)
+		}
+		if len(data.Monitors) != 1 || data.Monitors[0].ID != monitorID || data.Monitors[0].Name != "api" {
+			t.Fatalf("monitors = %+v, want the projected monitor", data.Monitors)
+		}
+	})
+}
+
+func TestCall_RejectsWorkspaceID(t *testing.T) {
+	registry := newTestRegistry(&fakeIncidentSource{}, nil)
+	args := json.RawMessage(`{"incident_id":"` + uuid.NewString() + `","workspace_id":"` + uuid.NewString() + `"}`)
+
+	result, err := registry.Call(actorContext(uuid.New()), uuid.New(), "o1_get_incident", args)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !result.IsError || result.ErrorCode != "invalid_argument" {
+		t.Fatalf("result = %+v, want invalid_argument", result)
+	}
+}
+
 // resolvePointer follows an RFC 6901 JSON Pointer through a document decoded
 // with encoding/json.
 func resolvePointer(document any, pointer string) (any, bool) {
