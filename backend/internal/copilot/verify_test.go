@@ -74,18 +74,23 @@ func TestVerify_CitationRules(t *testing.T) {
 			if verified != verifyBoolCount(tc.wantVerified) {
 				t.Fatalf("verified = %d, want %d", verified, verifyBoolCount(tc.wantVerified))
 			}
+			if got.Sufficient != tc.wantVerified {
+				t.Fatalf("sufficient = %v, want %v", got.Sufficient, tc.wantVerified)
+			}
+			if !tc.wantVerified {
+				if len(got.Hypotheses) != 0 {
+					t.Fatalf("hypotheses = %d, want none when nothing verified", len(got.Hypotheses))
+				}
+				return
+			}
 			if len(got.Hypotheses) != 1 {
 				t.Fatalf("hypotheses = %d, want 1", len(got.Hypotheses))
 			}
-			if got.Hypotheses[0].Unverified == tc.wantVerified {
-				t.Fatalf("unverified = %v, want %v", got.Hypotheses[0].Unverified, !tc.wantVerified)
+			if got.Hypotheses[0].Unverified {
+				t.Fatal("hypothesis marked unverified, want verified")
 			}
-			wantEvidence := 0
-			if tc.wantVerified {
-				wantEvidence = 1
-			}
-			if len(got.Hypotheses[0].Evidence) != wantEvidence {
-				t.Fatalf("evidence = %d, want %d", len(got.Hypotheses[0].Evidence), wantEvidence)
+			if len(got.Hypotheses[0].Evidence) != 1 {
+				t.Fatalf("evidence = %d, want 1", len(got.Hypotheses[0].Evidence))
 			}
 		})
 	}
@@ -123,6 +128,9 @@ func TestVerify_DropsOnlyFailingEvidence(t *testing.T) {
 	if verified != 1 {
 		t.Fatalf("verified = %d, want 1", verified)
 	}
+	if !got.Sufficient {
+		t.Fatal("sufficient = false, want true")
+	}
 	if len(got.Hypotheses[0].Evidence) != 2 {
 		t.Fatalf("evidence = %d, want 2", len(got.Hypotheses[0].Evidence))
 	}
@@ -131,6 +139,48 @@ func TestVerify_DropsOnlyFailingEvidence(t *testing.T) {
 	}
 	if len(result.Hypotheses[0].Evidence) != 4 {
 		t.Fatalf("Verify mutated its input: evidence = %d", len(result.Hypotheses[0].Evidence))
+	}
+}
+
+func TestVerify_PartialVerificationKeepsBothHypotheses(t *testing.T) {
+	trace := Trace{Calls: []ToolCallRecord{{
+		ID:     "call_1",
+		Result: json.RawMessage(`{"data":{"status":"down"}}`),
+	}}}
+	result := Result{
+		Sufficient: true,
+		Assessment: "assessment",
+		Hypotheses: []Hypothesis{
+			{
+				Rank:       1,
+				Cause:      "cause one",
+				Confidence: "high",
+				Evidence:   []Evidence{verifyEvidence("call_1", "/data/status", `"down"`)},
+			},
+			{
+				Rank:       2,
+				Cause:      "cause two",
+				Confidence: "low",
+				Evidence:   []Evidence{verifyEvidence("call_1", "/data/status", `"up"`)},
+			},
+		},
+	}
+
+	got, verified := Verify(result, trace)
+	if verified != 1 {
+		t.Fatalf("verified = %d, want 1", verified)
+	}
+	if !got.Sufficient {
+		t.Fatal("sufficient = false, want true for a partially verified result")
+	}
+	if len(got.Hypotheses) != 2 {
+		t.Fatalf("hypotheses = %d, want both retained", len(got.Hypotheses))
+	}
+	if got.Hypotheses[0].Unverified {
+		t.Fatal("verified hypothesis marked unverified")
+	}
+	if !got.Hypotheses[1].Unverified {
+		t.Fatal("unverified hypothesis is missing its badge")
 	}
 }
 
@@ -162,16 +212,29 @@ func TestVerify_AllUnverifiedIsInsufficient(t *testing.T) {
 	if verified != 0 {
 		t.Fatalf("verified = %d, want 0", verified)
 	}
-	if len(got.Hypotheses) != 2 {
-		t.Fatalf("hypotheses = %d, want both preserved", len(got.Hypotheses))
+	if got.Sufficient {
+		t.Fatal("sufficient = true, want false when nothing verified")
 	}
-	for i, hypothesis := range got.Hypotheses {
-		if !hypothesis.Unverified {
-			t.Fatalf("hypothesis[%d] not marked unverified", i)
-		}
-		if len(hypothesis.Evidence) != 0 {
-			t.Fatalf("hypothesis[%d] evidence = %d, want 0", i, len(hypothesis.Evidence))
-		}
+	if len(got.Hypotheses) != 0 {
+		t.Fatalf("hypotheses = %#v, want none when nothing verified", got.Hypotheses)
+	}
+	if got.Hypotheses == nil {
+		t.Fatal("hypotheses = nil, want an empty slice")
+	}
+}
+
+func TestVerify_TrueWithNoHypothesesIsInsufficient(t *testing.T) {
+	result := Result{Sufficient: true, Assessment: "assessment", Hypotheses: []Hypothesis{}}
+
+	got, verified := Verify(result, Trace{})
+	if verified != 0 {
+		t.Fatalf("verified = %d, want 0", verified)
+	}
+	if got.Sufficient {
+		t.Fatal("sufficient = true, want false")
+	}
+	if len(got.Hypotheses) != 0 {
+		t.Fatalf("hypotheses = %#v, want none", got.Hypotheses)
 	}
 }
 
@@ -193,8 +256,15 @@ func TestVerify_CountsEachVerifiedHypothesisOnce(t *testing.T) {
 		}},
 	}}
 
-	if _, verified := Verify(result, trace); verified != 2 {
+	got, verified := Verify(result, trace)
+	if verified != 2 {
 		t.Fatalf("verified = %d, want 2", verified)
+	}
+	if !got.Sufficient {
+		t.Fatal("sufficient = false, want true")
+	}
+	if len(got.Hypotheses) != 3 {
+		t.Fatalf("hypotheses = %d, want all retained", len(got.Hypotheses))
 	}
 }
 
@@ -207,13 +277,13 @@ func TestVerify_EmptyTraceAndEmptyResult(t *testing.T) {
 		}},
 	}
 	got, verified := Verify(result, Trace{})
-	if verified != 0 || !got.Hypotheses[0].Unverified {
-		t.Fatalf("verified = %d, unverified = %v", verified, got.Hypotheses[0].Unverified)
+	if verified != 0 || got.Sufficient || len(got.Hypotheses) != 0 {
+		t.Fatalf("verified = %d, sufficient = %v, hypotheses = %d", verified, got.Sufficient, len(got.Hypotheses))
 	}
 
 	resultWithoutEvidence := Result{Sufficient: true, Hypotheses: []Hypothesis{{Rank: 1}}}
 	got, verified = Verify(resultWithoutEvidence, Trace{})
-	if verified != 0 || !got.Hypotheses[0].Unverified {
-		t.Fatalf("verified = %d, unverified = %v", verified, got.Hypotheses[0].Unverified)
+	if verified != 0 || got.Sufficient || len(got.Hypotheses) != 0 {
+		t.Fatalf("verified = %d, sufficient = %v, hypotheses = %d", verified, got.Sufficient, len(got.Hypotheses))
 	}
 }

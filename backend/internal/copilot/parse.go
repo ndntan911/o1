@@ -43,7 +43,8 @@ type evidenceWire struct {
 }
 
 // Parse accepts a raw JSON object or one fenced ```json block and normalizes it
-// into the stored result. Prose, non-object JSON, and trailing text are errors.
+// into the stored result. Prose, non-object JSON, trailing text, and a missing
+// sufficient field are errors.
 func Parse(raw string) (Result, error) {
 	body, err := jsonObject(raw)
 	if err != nil {
@@ -59,16 +60,20 @@ func Parse(raw string) (Result, error) {
 		return Result{}, errors.New("copilot: trailing data after answer object")
 	}
 
+	if wire.Sufficient == nil {
+		return Result{}, errors.New("copilot: answer is missing the sufficient field")
+	}
+
 	result := Result{
-		Sufficient: wire.Sufficient != nil && *wire.Sufficient,
+		Sufficient: *wire.Sufficient,
 		Assessment: cleanText(wire.Assessment, maxAssessmentRunes),
 		Hypotheses: []Hypothesis{},
 		NextChecks: make([]string, 0, maxNextChecks),
 	}
 
 	// An explicit sufficient:false is a refusal; the output contract requires
-	// it to carry no hypotheses. A missing field is left to verification.
-	if wire.Sufficient == nil || *wire.Sufficient {
+	// it to carry no hypotheses.
+	if *wire.Sufficient {
 		result.Hypotheses = normalizeHypotheses(wire.Hypotheses)
 	}
 

@@ -57,11 +57,25 @@ func TestParse_RejectsProseAndNonObjects(t *testing.T) {
 		"wrong fence language":  "```yaml\nsufficient: true\n```",
 		"malformed object":      `{"sufficient": true,`,
 		"wrong field type":      `{"sufficient": true, "assessment": 42}`,
+		"missing sufficient":    `{"assessment":"assessment","hypotheses":[]}`,
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Parse(raw); err == nil {
 				t.Fatalf("Parse(%q) succeeded, want error", raw)
+			}
+		})
+	}
+}
+
+func TestParse_MissingSufficientIsAnError(t *testing.T) {
+	for name, raw := range map[string]string{
+		"raw":    `{"assessment":"assessment","hypotheses":[]}`,
+		"fenced": "```json\n{\"assessment\":\"assessment\"}\n```",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(raw); err == nil {
+				t.Fatalf("Parse(%q) succeeded, want an error for a missing sufficient field", raw)
 			}
 		})
 	}

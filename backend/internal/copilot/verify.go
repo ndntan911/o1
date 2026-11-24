@@ -14,7 +14,9 @@ import (
 // for an unknown or failed call, an unresolvable pointer, or a value that does
 // not match is dropped. A hypothesis with no surviving evidence is marked
 // Unverified. The returned count is the number of hypotheses with at least one
-// verified evidence item.
+// verified evidence item. Sufficient is set from that count, and when it is
+// false the hypotheses are cleared so the stored result cannot contradict
+// itself.
 func Verify(result Result, trace Trace) (Result, int) {
 	calls := make(map[string]ToolCallRecord, len(trace.Calls))
 	for _, call := range trace.Calls {
@@ -42,6 +44,13 @@ func Verify(result Result, trace Trace) (Result, int) {
 			verified++
 		}
 		sanitized.Hypotheses = append(sanitized.Hypotheses, hypothesis)
+	}
+
+	// Sufficient describes what survived verification, not what the model
+	// claimed. A result with no verified cause cannot list causes.
+	sanitized.Sufficient = verified > 0
+	if !sanitized.Sufficient {
+		sanitized.Hypotheses = []Hypothesis{}
 	}
 
 	return sanitized, verified
