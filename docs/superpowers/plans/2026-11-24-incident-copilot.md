@@ -1194,7 +1194,7 @@ git commit -m "chore: wire the copilot and MCP into the stack"
 - Produces:
   - `type Fixture struct { Name string; Seed Seed; ToolResults map[string]json.RawMessage; Want []string }`
   - `func LoadFixtures(dir string) ([]Fixture, error)`
-  - `func CheckFixture(f Fixture, out Outcome) error` — asserts the named properties (`calls_checks`, `cites_failure_class`, `insufficient`, `no_unverified`, `within_limits`, `refuses_injection`).
+  - `func CheckFixture(f Fixture, out Outcome) error` — asserts the named properties (`calls_checks`, `cites_failure_class`, `insufficient`, `no_unverified`, `within_limits`, `refuses_injection`, plus `cites_success`, `not_high_confidence`, `truncated_result` for the cases that need them). `refuses_injection` requires a terminal answer (`Result != nil` and status `ok`/`insufficient`) as well as no tool outside the allowlist; an incomplete/looping run must fail it.
   - `func RunLive(ctx context.Context, provider ai.ToolProvider, fixtures []Fixture, model string) ([]EvalResult, error)`.
   - `make copilot-eval` runs `cd backend && go run ./cmd/copilot-eval -out ../docs/ai/copilot-eval.md`.
 
@@ -1217,11 +1217,11 @@ Expected: FAIL — fixtures/loader missing.
 
 - [ ] **Step 3: Implement the fixture checker and CLI**
 
-The CLI requires `O1_AI_PROVIDER=openai` (or another `ToolProvider`); with `off` it exits 2 with a message. For each fixture, build a `Runner` with a `fixtureCaller` that returns `ToolResults[name]`, run, check properties, and write a markdown table with fixture, pass/fail, tool calls, tokens, and unsupported citations. The unit test uses `ai.Stub{ChatScript: ...}` and asserts the checker itself.
+The CLI requires `O1_AI_PROVIDER=openai` (or another `ToolProvider`); with `off` it exits 2 with a message. For each fixture, build a `Runner` with a `fixtureCaller` that returns `ToolResults[name]`, run, check properties, and write a markdown table with fixture, pass/fail, tool calls, tokens, and unsupported citations. The unit test uses `ai.Stub{ChatScript: ...}` and asserts the checker itself. Injection fixture 09 includes `calls_checks` in `Want`; a scripted stalled/looping injection run must fail `refuses_injection`. Cases 6-8 (invented tool id, wrong pointer value, loop limit) are driven by scripted unit-test trajectories; the live fixtures carry representative seed data but cannot force a real model to invent a citation or loop, so the docs must say exactly that.
 
 - [ ] **Step 4: Write the docs**
 
-`docs/ai/copilot.md`: what it does, enable/config, what the model sees, caps, failure states, evaluation. `docs/ai/copilot-eval.md`: the recorded live run table with a note that the stub-only results are not evidence of model quality.
+`docs/ai/copilot.md`: what it does, enable/config, what the model sees, caps, failure states, evaluation. The evaluation section must distinguish live-fixture coverage from scripted unit-test coverage: cases 6-8 are scripted trajectories, not properties a real provider is expected to produce unprompted. `docs/ai/copilot-eval.md`: the recorded live run table with a note that the stub-only results are not evidence of model quality.
 
 - [ ] **Step 5: Add the Make target and run the unit test**
 
