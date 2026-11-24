@@ -373,7 +373,7 @@ git commit -m "feat: add tool-calling model transport"
   - `func Monitor(m monitors.Monitor) MonitorView`
   - `func Incident(d incidents.IncidentDetail) IncidentView`
   - `func SeedTimeline(d incidents.IncidentDetail) []SeedEventView`
-  - `func Timeline(d incidents.IncidentDetail) []EventView` — allowlist detail keys `previous`, `next`, `from`, `to`, `reason`, `status`, `sequence`; values are strings, truncated to 80 chars.
+  - `func Timeline(d incidents.IncidentDetail) []EventView` — allowlist detail keys `previous_status`, `new_status`, `previous`, `next`, `from`, `to`, `reason`, `status`, `sequence`; values are strings, truncated to 80 chars.
   - `func Checks(results []monitors.ProbeResult, summary monitors.Summary, hours int) ChecksView`
   - `func Delivery(d incidents.DeliveryOutcome) DeliveryView`
 
@@ -397,6 +397,11 @@ func TestFailureClass(t *testing.T) {
     }
     // assert each
 }
+
+func TestChecks_UsesFullWindowSummary(t *testing.T) {
+    // Pass one result but a summary with Checks=10, Down=4, P95=1200.
+    // Expect ChecksView.Count=10, Failures=4, P95=1200; FailureClasses from the one result.
+}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -406,7 +411,7 @@ Expected: FAIL — package/functions undefined.
 
 - [ ] **Step 3: Implement the projections**
 
-Map only the fields named in the spec's tool table. `FailureClass` lowercases, splits at the first `:`, and accepts `timeout`, `dns`, `tls`, `connection`, `redirect`, `status`, `ssrf_blocked`; everything else is `unknown`. `Checks` computes `Count`, `Failures`, `P95LatencyMS`, and `FailureClasses` from the full result slice; it never copies `ProbeResult.Error`. `Timeline` drops detail keys outside the allowlist.
+Map only the fields named in the spec's tool table. `FailureClass` lowercases, splits at the first `:`, and accepts `timeout`, `dns`, `tls`, `connection`, `redirect`, `status`, `ssrf_blocked`; everything else is `unknown`. `Checks` takes `Count`, `Failures`, and `P95LatencyMS` from `summary` (the full requested window) and computes `FailureClasses` from the returned result slice; it never copies `ProbeResult.Error`. `Timeline` drops detail keys outside the allowlist. The allowlist includes the real `previous_status`/`new_status` keys so an opened/resolved event does not project to an empty detail.
 
 - [ ] **Step 4: Move insights onto the shared projections**
 
@@ -436,8 +441,8 @@ git commit -m "feat: share the evidence projection boundary"
 
 **Interfaces:**
 - Produces:
-  - `type DeliveryOutcome struct { ChannelKind, Event, Status string; Attempts int; SentAt *time.Time; CreatedAt time.Time }`
   - `func (s *Service) DeliveryOutcomes(ctx context.Context, actorID, workspaceID, incidentID uuid.UUID) ([]DeliveryOutcome, error)` — requires `RoleMember`; cross-workspace is `ErrNotFound`.
+  - `DeliveryOutcome` already exists from Task 3 (introduced so `evidence.Delivery` could compile); do not redeclare it. If its fields differ from `{ChannelKind, Event, Status, Attempts, SentAt, CreatedAt}`, extend it here and keep the evidence caller compiling.
 
 - [ ] **Step 1: Add the query and failing tests**
 
@@ -541,7 +546,7 @@ Expected: FAIL — `Specs`, `NewRegistry` undefined.
 
 - [ ] **Step 3: Implement definitions and dispatch**
 
-Hand-write the six JSON schemas with `type:"object"`, `additionalProperties:false`, and required ID fields. `Call` looks up the spec, parses args with `json.Decoder.DisallowUnknownFields`, authorizes `spec.MinRole` with `workspaces.Authorize`, then dispatches. Map `workspaces.ErrForbidden` to `forbidden`, `incidents.ErrNotFound`/`monitors.ErrNotFound` to `not_found`, bad UUID/limit to `invalid_argument`. Never return a raw service error to the model; return `Result{IsError:true, ErrorCode:"internal"}` and log at the caller.
+Hand-write the six JSON schemas with `type:"object"`, `additionalProperties:false`, and required ID fields. `Call` looks up the spec, parses args with `json.Decoder.DisallowUnknownFields`, authorizes `spec.MinRole` with `workspaces.Authorize`, then dispatches. For `o1_list_monitors`, fill `MonitorView.ActiveIncidentID` by listing the workspace's active incidents once and mapping by monitor id; do not add a new monitor-service method. Map `workspaces.ErrForbidden` to `forbidden`, `incidents.ErrNotFound`/`monitors.ErrNotFound` to `not_found`, bad UUID/limit to `invalid_argument`. Never return a raw service error to the model; return `Result{IsError:true, ErrorCode:"internal"}` and log at the caller.
 
 - [ ] **Step 4: Implement truncation**
 
