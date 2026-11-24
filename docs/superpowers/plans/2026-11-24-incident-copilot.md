@@ -872,6 +872,7 @@ git commit -m "feat: reap stale investigations"
 - Modify: `backend/internal/api/router.go`
 - Modify: `backend/internal/config/config.go`
 - Modify: `backend/cmd/api/main.go`
+- Modify: `backend/cmd/worker/main.go` — pass `CopilotModel` to the investigation service, not `AIModel`.
 - Test: `backend/internal/api/investigations_integration_test.go`, `backend/internal/config/config_test.go`
 
 **Interfaces:**
@@ -925,7 +926,7 @@ mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/investig
 
 - [ ] **Step 5: Add config and wire the API**
 
-Parse the env names from Global Constraints with defaults. Validate: timeouts 1s–2m, caps > 0, 1,200 output max 4,000, 8 KB result bytes 1 KB–64 KB. `CopilotModel` defaults to `AIModel`. In `cmd/api/main.go`, create `river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{Logger: rt.Logger})` and pass it as `RiverInserter`; it is not started because it only inserts, like the scheduler. In the router, build the provider once; build the copilot service when `CopilotEnabled && provider != nil && RiverInserter != nil`, passing `IncidentService`, `MonitorService`, `WorkspaceService`, `Pool`, and `Queries`; otherwise leave it nil. Leave `/mcp` unregistered in this task; Task 11 adds the handler and route.
+Parse the env names from Global Constraints with defaults. Validate: timeouts 1s–2m, caps > 0, 1,200 output max 4,000, 8 KB result bytes 1 KB–64 KB. `CopilotModel` defaults to `AIModel`. In `cmd/api/main.go`, create `river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{Logger: rt.Logger})` and pass it as `RiverInserter`; it is not started because it only inserts, like the scheduler. In the router, build the provider once; build the copilot service when `CopilotEnabled && provider != nil && RiverInserter != nil`, passing `IncidentService`, `MonitorService`, `WorkspaceService`, `Pool`, and `Queries`; otherwise leave it nil. In `cmd/worker/main.go`, pass `rt.Config.CopilotModel` as the service model so the stored `model` matches the model actually called. Leave `/mcp` unregistered in this task; Task 11 adds the handler and route.
 
 - [ ] **Step 6: Run the tests**
 
