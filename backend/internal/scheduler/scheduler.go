@@ -33,6 +33,11 @@ const probeQueue = "probe"
 // ownership of the rollup and retention passes.
 const maintenanceLockID int64 = 0x6f310013
 
+// staleInvestigationAge is how long a queued or running investigation may go
+// untouched before the scheduler marks it failed. It bounds the damage a
+// crashed worker can do: an abandoned row cannot stay active forever.
+const staleInvestigationAge = 5 * time.Minute
+
 // RollupRunner runs one rollup maintenance pass.
 type RollupRunner interface {
 	Run(ctx context.Context) (rollup.Result, error)
@@ -347,6 +352,24 @@ func (s *Scheduler) enqueueReminders(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// reapStaleInvestigations marks queued or running investigations created more
+// than five minutes before the scheduler's now as failed/stale. It returns the
+// number of abandoned rows it recovered.
+func (s *Scheduler) reapStaleInvestigations(ctx context.Context) (int64, error) {
+	if s.q == nil {
+		return 0, nil
+	}
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	n, err := s.q.ReapAllStaleInvestigations(ctx, now().UTC().Add(-staleInvestigationAge))
+	if err != nil {
+		return 0, fmt.Errorf("reap stale investigations: %w", err)
+	}
+	return n, nil
+}
+
 // safeTick runs the probe pass behind a recover boundary. A panicking tick is
 // reported to Sentry, logged, and turned into an error so Run keeps ticking
 // instead of crashing the process.
@@ -412,6 +435,18 @@ func (s *Scheduler) tickLoop(ctx context.Context, ticks, partitions <-chan time.
 				s.logger.Log(ctx, slog.LevelError, "ensure probe partitions", "error", err)
 			}
 		case <-ticks:
+			// Sweep abandoned investigation rows before the probe pass. A
+			// failed sweep must not stop probes; it is retried next tick.
+			reaped, err := s.reapStaleInvestigations(ctx)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				s.logger.Log(ctx, slog.LevelError, "stale investigation sweep failed", "error", err)
+			} else if reaped > 0 {
+				s.logger.Log(ctx, slog.LevelInfo, "reaped stale investigations", "count", reaped)
+			}
+
 			start := time.Now()
 			n, err := s.safeTick(ctx)
 			if err != nil {

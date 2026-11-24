@@ -104,6 +104,119 @@ func (e *schedulerEnv) addMonitor(t *testing.T, name string, interval int, pause
 	return id
 }
 
+// addRunningInvestigation seeds a monitor, incident, and a running
+// investigation row created at createdAt. Each call gets its own incident so
+// the one-active-run-per-incident index is never in play.
+func (e *schedulerEnv) addRunningInvestigation(t *testing.T, createdAt time.Time) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	monitorID := e.addMonitor(t, "reap "+uuid.NewString(), 60, false, false, time.Now().Add(time.Hour))
+
+	var workspaceID uuid.UUID
+	if err := e.pool.QueryRow(ctx,
+		`SELECT workspace_id FROM monitors WHERE id = $1`, monitorID).Scan(&workspaceID); err != nil {
+		t.Fatalf("read monitor workspace: %v", err)
+	}
+	var incidentID uuid.UUID
+	if err := e.pool.QueryRow(ctx,
+		`INSERT INTO incidents (id, workspace_id, monitor_id, status)
+		 VALUES (gen_random_uuid(), $1, $2, 'open') RETURNING id`,
+		workspaceID, monitorID).Scan(&incidentID); err != nil {
+		t.Fatalf("insert incident: %v", err)
+	}
+	var investigationID uuid.UUID
+	if err := e.pool.QueryRow(ctx,
+		`INSERT INTO incident_investigations
+		   (id, workspace_id, incident_id, status, model, prompt_version, created_at)
+		 VALUES (gen_random_uuid(), $1, $2, 'running', 'stub', 'test', $3) RETURNING id`,
+		workspaceID, incidentID, createdAt).Scan(&investigationID); err != nil {
+		t.Fatalf("insert investigation: %v", err)
+	}
+	return investigationID
+}
+
+// investigationState reads back the fields the sweep owns.
+func (e *schedulerEnv) investigationState(t *testing.T, id uuid.UUID) (status string, errorCode *string, completed bool) {
+	t.Helper()
+	var completedAt *time.Time
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT status, error_code, completed_at FROM incident_investigations WHERE id = $1`, id).
+		Scan(&status, &errorCode, &completedAt); err != nil {
+		t.Fatalf("read investigation: %v", err)
+	}
+	return status, errorCode, completedAt != nil
+}
+
+func TestScheduler_ReapsStaleInvestigations(t *testing.T) {
+	env := newSchedulerEnv(t)
+	now := time.Now().UTC()
+	stale := env.addRunningInvestigation(t, now.Add(-10*time.Minute))
+	fresh := env.addRunningInvestigation(t, now.Add(-time.Minute))
+	env.sched.now = func() time.Time { return now }
+
+	n, err := env.sched.reapStaleInvestigations(context.Background())
+	if err != nil {
+		t.Fatalf("reapStaleInvestigations: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reapStaleInvestigations = %d, want 1", n)
+	}
+
+	status, errorCode, completed := env.investigationState(t, stale)
+	if status != "failed" || errorCode == nil || *errorCode != "stale" || !completed {
+		t.Fatalf("stale row = %q/%v/completed=%v, want failed/stale/completed=true",
+			status, errorCode, completed)
+	}
+
+	status, errorCode, completed = env.investigationState(t, fresh)
+	if status != "running" || errorCode != nil || completed {
+		t.Fatalf("fresh row = %q/%v/completed=%v, want running/nil/completed=false",
+			status, errorCode, completed)
+	}
+}
+
+// TestScheduler_ReapsStaleOnTick verifies the run loop sweeps stale rows before
+// each probe tick and logs the count.
+func TestScheduler_ReapsStaleOnTick(t *testing.T) {
+	env := newSchedulerEnv(t)
+	stale := env.addRunningInvestigation(t, time.Now().Add(-10*time.Minute))
+
+	var logs bytes.Buffer
+	env.sched.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.sched.tickFn = func(context.Context) (int, error) {
+		cancel()
+		return 0, nil
+	}
+	env.sched.reminderFn = func(context.Context) (int, error) { return 0, nil }
+
+	ticks := make(chan time.Time, 1)
+	done := make(chan error, 1)
+	go func() { done <- env.sched.tickLoop(ctx, ticks, make(chan time.Time)) }()
+	ticks <- time.Now()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("tickLoop: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("tickLoop did not stop after the context was canceled")
+	}
+
+	status, errorCode, completed := env.investigationState(t, stale)
+	if status != "failed" || errorCode == nil || *errorCode != "stale" || !completed {
+		t.Fatalf("row after tick = %q/%v/completed=%v, want failed/stale/completed=true",
+			status, errorCode, completed)
+	}
+	if !strings.Contains(logs.String(), "reaped stale investigations") ||
+		!strings.Contains(logs.String(), "count=1") {
+		t.Fatalf("sweep count was not logged:\n%s", logs.String())
+	}
+}
+
 func TestTick_EnqueuesOnlyDueActiveMonitors(t *testing.T) {
 	env := newSchedulerEnv(t)
 	env.addMonitor(t, "due", 60, false, false, time.Now().Add(-time.Minute))
