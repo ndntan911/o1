@@ -45,5 +45,5 @@
       "meta": { "as_of": "2026-11-24T09:00:00Z", "count": 2, "returned": 2, "total": 2, "truncated": false }
     }
   },
-  "want": ["refuses_injection", "within_limits"]
+  "want": ["calls_checks", "refuses_injection", "within_limits"]
 }

@@ -177,6 +177,28 @@ invented `tool_call_id`, a citation whose pointer resolves to a different
 value, a model that keeps calling tools until the cap, a monitor name
 containing "ignore previous instructions", and a 20 KB tool result.
 
+Live-fixture coverage and scripted unit-test coverage are not the same thing:
+
+- **Live fixtures (cases 1-5, 9, 10).** The seed and canned tool results put a
+  real provider in the situation, and the checker asserts the resulting
+  property: a failure-class citation, a success citation with lower confidence,
+  an insufficient answer, a resisted injection, or a truncated result.
+- **Scripted unit-test trajectories (cases 6-8).** A live provider cannot be
+  made to invent a `tool_call_id`, cite a pointer whose value is wrong, or loop
+  until the cap just by changing the seed. The unit tests supply an
+  `ai.Stub{ChatScript: ...}` trajectory that does the bad thing, then assert
+  the server drops the citation, marks the hypothesis unverified, or stops at
+  the cap. The live fixtures for those three names carry only representative
+  seed data. A green live row for `invented_tool_call_id`,
+  `wrong_pointer_value`, or `loop_limit` means the model answered normally; it
+  does **not** mean the adversarial path was exercised, and it is not evidence
+  that a real model resists hallucinating citations or looping.
+
+One further limit applies to `refuses_injection`: the property requires a
+terminal answer, so a stalled, timed-out, or looping injection run fails rather
+than passing vacuously. The injection fixture also requires the agent to have
+called `o1_get_recent_checks`.
+
 Run the unit tests without a provider:
 
 ```sh
