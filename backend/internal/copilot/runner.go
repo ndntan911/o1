@@ -240,12 +240,12 @@ func (r *Runner) Run(ctx context.Context, workspaceID uuid.UUID, seed Seed) Outc
 				toolStart := r.now()
 				result, callErr := r.callTool(runCtx, workspaceID, call)
 				toolDuration := r.elapsed(toolStart)
-				if out, stop := stopped(runCtx); stop {
-					return out
-				}
-				if callErr != nil {
+				if callErr != nil || runCtx.Err() != nil {
 					// A tool failure is data: the model sees an internal error
-					// envelope and may adapt instead of aborting the run.
+					// envelope and may adapt instead of aborting the run. A call
+					// cut off by the overall deadline is recorded the same way
+					// before the run stops, so the trace shows every call that
+					// actually ran.
 					result = tools.Result{
 						IsError:   true,
 						ErrorCode: errorCodeInternal,
@@ -281,6 +281,10 @@ func (r *Runner) Run(ctx context.Context, workspaceID uuid.UUID, seed Seed) Outc
 					ToolCallID: call.ID,
 				})
 				toolCalls++
+
+				if out, stop := stopped(runCtx); stop {
+					return out
+				}
 			}
 			continue
 		}

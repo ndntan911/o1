@@ -105,6 +105,15 @@ func (f *fakeCaller) Calls() []callerInvocation {
 	return out
 }
 
+// blockingCaller waits for the context deadline, so a tool call that runs into
+// the overall run limit is deterministic without a fixed sleep.
+type blockingCaller struct{}
+
+func (*blockingCaller) Call(ctx context.Context, _ uuid.UUID, _ string, _ json.RawMessage) (tools.Result, error) {
+	<-ctx.Done()
+	return tools.Result{}, ctx.Err()
+}
+
 func toolCall(id, name, args string) ai.ToolCall {
 	return ai.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)}
 }
@@ -280,6 +289,24 @@ func TestRunner_TransientProviderErrorIsReturned(t *testing.T) {
 	}
 }
 
+func TestRunner_PermanentProviderErrorFails(t *testing.T) {
+	providerErr := &ai.HTTPError{StatusCode: 400, Body: "bad request"}
+	provider := &scriptedProvider{err: providerErr}
+
+	out := NewRunner(provider, &fakeCaller{}, "m", DefaultLimits(), time.Now).
+		Run(context.Background(), uuid.New(), Seed{})
+
+	if out.Status != StatusFailed || out.ErrorCode != "provider_rejected" {
+		t.Fatalf("out = %+v, want failed/provider_rejected", out)
+	}
+	if out.Err != nil {
+		t.Fatalf("out.Err = %v, want nil", out.Err)
+	}
+	if out.Result != nil {
+		t.Fatalf("out.Result = %+v, want nil", out.Result)
+	}
+}
+
 func TestRunner_CallTimeoutIsTransient(t *testing.T) {
 	limits := DefaultLimits()
 	limits.Timeout = 2 * time.Second
@@ -315,6 +342,38 @@ func TestRunner_OverallDeadlineIsIncomplete(t *testing.T) {
 	}
 	if len(out.Trace.ModelCalls) != 1 {
 		t.Fatalf("model calls = %d, want one recorded timed-out call", len(out.Trace.ModelCalls))
+	}
+}
+
+func TestRunner_RecordsToolCallThatHitsDeadline(t *testing.T) {
+	limits := DefaultLimits()
+	limits.Timeout = 40 * time.Millisecond
+	limits.CallTimeout = time.Second
+
+	provider := &scriptedProvider{script: []ai.ChatResponse{
+		{ToolCalls: []ai.ToolCall{toolCall("call_1", "o1_get_recent_checks", `{"monitor_id":"m"}`)}},
+	}}
+
+	out := NewRunner(provider, &blockingCaller{}, "m", limits, time.Now).
+		Run(context.Background(), uuid.New(), Seed{})
+
+	if out.Status != StatusIncomplete || out.ErrorCode != "limit_exceeded" {
+		t.Fatalf("out = %+v, want incomplete/limit_exceeded", out)
+	}
+	if out.Result != nil {
+		t.Fatalf("out.Result = %+v, want nil", out.Result)
+	}
+	if len(out.Trace.Steps) != 1 || out.Trace.Steps[0].Status != "error" {
+		t.Fatalf("steps = %+v, want one error step", out.Trace.Steps)
+	}
+	if len(out.Trace.Calls) != 1 || !out.Trace.Calls[0].IsError {
+		t.Fatalf("calls = %+v, want one error call", out.Trace.Calls)
+	}
+	if len(out.Trace.ModelCalls) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(out.Trace.ModelCalls))
+	}
+	if !strings.Contains(string(out.Trace.Calls[0].Result), `"error_code":"internal"`) {
+		t.Fatalf("trace result = %s, want an internal error envelope", out.Trace.Calls[0].Result)
 	}
 }
 
