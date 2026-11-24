@@ -25,23 +25,53 @@ var ErrNotFound = errors.New("copilot: investigation not found")
 // The partial unique index incident_investigations_one_active_idx enforces it.
 var ErrActive = errors.New("copilot: investigation already active")
 
+// ErrNotActive means the row is no longer queued or running, typically because
+// the stale reaper already failed it. The worker's late write must not revive
+// it, so MarkRunning, SaveProgress, and Complete return this instead.
+var ErrNotActive = errors.New("copilot: investigation no longer active")
+
 // oneActiveConstraint is the index name Postgres reports on the unique
 // violation for a second active row.
 const oneActiveConstraint = "incident_investigations_one_active_idx"
 
 // Store persists investigations in incident_investigations.
 type Store struct {
-	q *sqlc.Queries
+	pool *pgxpool.Pool
+	q    *sqlc.Queries
 }
 
 // NewPostgresStore builds a store over a pgx pool.
 func NewPostgresStore(pool *pgxpool.Pool) *Store {
-	return &Store{q: sqlc.New(pool)}
+	return &Store{pool: pool, q: sqlc.New(pool)}
 }
 
-// Create inserts one row. It returns ErrActive when the incident already has a
-// queued or running run. A nil id or zero created_at is filled in.
+// Create inserts one row in its own transaction. It returns ErrActive when the
+// incident already has a queued or running run. A nil id or zero created_at is
+// filled in.
 func (s *Store) Create(ctx context.Context, inv Investigation) (Investigation, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Investigation{}, fmt.Errorf("copilot: begin create: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	created, err := s.CreateTx(ctx, tx, inv)
+	if err != nil {
+		return Investigation{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Investigation{}, fmt.Errorf("copilot: commit create: %w", err)
+	}
+	return created, nil
+}
+
+// CreateTx inserts one row on the caller's transaction. Task 10 uses it to
+// write the investigation row and its River job atomically. It maps the
+// one-active unique violation to ErrActive; a nil id or zero created_at is
+// filled in.
+func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, inv Investigation) (Investigation, error) {
 	if inv.ID == uuid.Nil {
 		id, err := uuid.NewV7()
 		if err != nil {
@@ -58,7 +88,7 @@ func (s *Store) Create(ctx context.Context, inv Investigation) (Investigation, e
 		return Investigation{}, err
 	}
 
-	row, err := s.q.CreateInvestigation(ctx, sqlc.CreateInvestigationParams{
+	row, err := sqlc.New(tx).CreateInvestigation(ctx, sqlc.CreateInvestigationParams{
 		ID:            inv.ID,
 		WorkspaceID:   inv.WorkspaceID,
 		IncidentID:    inv.IncidentID,
@@ -136,10 +166,11 @@ func (s *Store) Latest(ctx context.Context, workspaceID, incidentID uuid.UUID) (
 	return &inv, nil
 }
 
-// MarkRunning moves a queued row to running and clears any completed_at. It is
-// a no-op for an id that does not exist or is no longer active.
+// MarkRunning moves a queued row to running and clears any completed_at. It
+// returns ErrNotActive when the row is missing or already terminal, so a worker
+// whose row was reaped cannot revive it.
 func (s *Store) MarkRunning(ctx context.Context, id uuid.UUID, attempt int, seedHash string) error {
-	err := s.q.MarkInvestigationRunning(ctx, sqlc.MarkInvestigationRunningParams{
+	affected, err := s.q.MarkInvestigationRunning(ctx, sqlc.MarkInvestigationRunningParams{
 		ID:       id,
 		Attempts: int32(attempt),
 		SeedHash: seedHash,
@@ -147,36 +178,45 @@ func (s *Store) MarkRunning(ctx context.Context, id uuid.UUID, attempt int, seed
 	if err != nil {
 		return fmt.Errorf("copilot: mark investigation running: %w", err)
 	}
+	if affected == 0 {
+		return ErrNotActive
+	}
 	return nil
 }
 
-// SaveProgress stores the trace and usage counters of a still-running row.
+// SaveProgress stores the trace and usage counters of a still-running row. It
+// returns ErrNotActive when the row is no longer running.
 func (s *Store) SaveProgress(ctx context.Context, id uuid.UUID, trace Trace, attempts, toolCalls, inputTokens, outputTokens int) error {
 	encoded, err := json.Marshal(trace)
 	if err != nil {
 		return fmt.Errorf("copilot: encode trace: %w", err)
 	}
-	if err := s.q.SaveInvestigationProgress(ctx, sqlc.SaveInvestigationProgressParams{
+	affected, err := s.q.SaveInvestigationProgress(ctx, sqlc.SaveInvestigationProgressParams{
 		ID:           id,
 		Trace:        encoded,
 		Attempts:     int32(attempts),
 		ToolCalls:    int32(toolCalls),
 		InputTokens:  int32(inputTokens),
 		OutputTokens: int32(outputTokens),
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("copilot: save investigation progress: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotActive
 	}
 	return nil
 }
 
 // Complete writes the terminal state of a run. completed_at is always set to
-// the database clock, so the caller's value is ignored.
+// the database clock, so the caller's value is ignored. It returns ErrNotActive
+// when the row is already terminal.
 func (s *Store) Complete(ctx context.Context, inv Investigation) error {
 	result, trace, err := encodePayloads(inv)
 	if err != nil {
 		return err
 	}
-	if err := s.q.CompleteInvestigation(ctx, sqlc.CompleteInvestigationParams{
+	affected, err := s.q.CompleteInvestigation(ctx, sqlc.CompleteInvestigationParams{
 		ID:           inv.ID,
 		Status:       string(inv.Status),
 		Result:       result,
@@ -186,8 +226,12 @@ func (s *Store) Complete(ctx context.Context, inv Investigation) error {
 		InputTokens:  int32(inv.InputTokens),
 		OutputTokens: int32(inv.OutputTokens),
 		ToolCalls:    int32(inv.ToolCalls),
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("copilot: complete investigation: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotActive
 	}
 	return nil
 }

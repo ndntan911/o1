@@ -60,21 +60,33 @@ type Step struct {
 	DurationMS  int    `json:"duration_ms"`
 }
 
-// ToolCallRecord is one executed tool call in the trace. Result holds the
-// redacted result, or a hash and a truncated marker when the cap was reached.
+// ToolCallRecord is one executed tool call in the trace. ArgsHash is the hash
+// of the unredacted arguments; Result holds the redacted result, or a hash and
+// a truncated marker when the cap was reached.
 type ToolCallRecord struct {
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`
 	ArgsSummary string          `json:"args_summary,omitempty"`
+	ArgsHash    string          `json:"args_hash,omitempty"`
 	Result      json.RawMessage `json:"result,omitempty"`
 	IsError     bool            `json:"is_error,omitempty"`
 	DurationMS  int             `json:"duration_ms"`
 }
 
+// ModelCallRecord is one model request in the trace.
+type ModelCallRecord struct {
+	Index        int    `json:"index"`
+	FinishReason string `json:"finish_reason,omitempty"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	DurationMS   int    `json:"duration_ms"`
+}
+
 // Trace is the stored audit trail of a run.
 type Trace struct {
-	Steps []Step           `json:"steps"`
-	Calls []ToolCallRecord `json:"calls"`
+	Steps      []Step            `json:"steps"`
+	Calls      []ToolCallRecord  `json:"calls"`
+	ModelCalls []ModelCallRecord `json:"model_calls"`
 }
 
 // Investigation is one stored run for an incident.

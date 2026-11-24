@@ -19,21 +19,21 @@ SELECT * FROM incident_investigations
 WHERE workspace_id=$1 AND incident_id=$2
 ORDER BY created_at DESC, id DESC LIMIT 1;
 
--- name: MarkInvestigationRunning :exec
+-- name: MarkInvestigationRunning :execrows
 UPDATE incident_investigations
 SET status='running', attempts=$2, seed_hash=$3, completed_at=NULL
 WHERE id=$1 AND status IN ('queued','running');
 
--- name: SaveInvestigationProgress :exec
+-- name: SaveInvestigationProgress :execrows
 UPDATE incident_investigations
 SET trace=$2, attempts=$3, tool_calls=$4, input_tokens=$5, output_tokens=$6
-WHERE id=$1;
+WHERE id=$1 AND status='running';
 
--- name: CompleteInvestigation :exec
+-- name: CompleteInvestigation :execrows
 UPDATE incident_investigations
 SET status=$2, result=$3, trace=$4, duration_ms=$5, error_code=$6,
     input_tokens=$7, output_tokens=$8, tool_calls=$9, completed_at=now()
-WHERE id=$1;
+WHERE id=$1 AND status IN ('queued','running');
 
 -- name: ReapStaleInvestigations :execrows
 UPDATE incident_investigations

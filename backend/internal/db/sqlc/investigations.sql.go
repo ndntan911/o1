@@ -13,11 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const completeInvestigation = `-- name: CompleteInvestigation :exec
+const completeInvestigation = `-- name: CompleteInvestigation :execrows
 UPDATE incident_investigations
 SET status=$2, result=$3, trace=$4, duration_ms=$5, error_code=$6,
     input_tokens=$7, output_tokens=$8, tool_calls=$9, completed_at=now()
-WHERE id=$1
+WHERE id=$1 AND status IN ('queued','running')
 `
 
 type CompleteInvestigationParams struct {
@@ -32,8 +32,8 @@ type CompleteInvestigationParams struct {
 	ToolCalls    int32
 }
 
-func (q *Queries) CompleteInvestigation(ctx context.Context, arg CompleteInvestigationParams) error {
-	_, err := q.db.Exec(ctx, completeInvestigation,
+func (q *Queries) CompleteInvestigation(ctx context.Context, arg CompleteInvestigationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeInvestigation,
 		arg.ID,
 		arg.Status,
 		arg.Result,
@@ -44,7 +44,10 @@ func (q *Queries) CompleteInvestigation(ctx context.Context, arg CompleteInvesti
 		arg.OutputTokens,
 		arg.ToolCalls,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const countInvestigationsForIncidentSince = `-- name: CountInvestigationsForIncidentSince :one
@@ -261,7 +264,7 @@ func (q *Queries) GetLatestInvestigation(ctx context.Context, arg GetLatestInves
 	return i, err
 }
 
-const markInvestigationRunning = `-- name: MarkInvestigationRunning :exec
+const markInvestigationRunning = `-- name: MarkInvestigationRunning :execrows
 UPDATE incident_investigations
 SET status='running', attempts=$2, seed_hash=$3, completed_at=NULL
 WHERE id=$1 AND status IN ('queued','running')
@@ -273,9 +276,12 @@ type MarkInvestigationRunningParams struct {
 	SeedHash string
 }
 
-func (q *Queries) MarkInvestigationRunning(ctx context.Context, arg MarkInvestigationRunningParams) error {
-	_, err := q.db.Exec(ctx, markInvestigationRunning, arg.ID, arg.Attempts, arg.SeedHash)
-	return err
+func (q *Queries) MarkInvestigationRunning(ctx context.Context, arg MarkInvestigationRunningParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markInvestigationRunning, arg.ID, arg.Attempts, arg.SeedHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const reapAllStaleInvestigations = `-- name: ReapAllStaleInvestigations :execrows
@@ -311,10 +317,10 @@ func (q *Queries) ReapStaleInvestigations(ctx context.Context, arg ReapStaleInve
 	return result.RowsAffected(), nil
 }
 
-const saveInvestigationProgress = `-- name: SaveInvestigationProgress :exec
+const saveInvestigationProgress = `-- name: SaveInvestigationProgress :execrows
 UPDATE incident_investigations
 SET trace=$2, attempts=$3, tool_calls=$4, input_tokens=$5, output_tokens=$6
-WHERE id=$1
+WHERE id=$1 AND status='running'
 `
 
 type SaveInvestigationProgressParams struct {
@@ -326,8 +332,8 @@ type SaveInvestigationProgressParams struct {
 	OutputTokens int32
 }
 
-func (q *Queries) SaveInvestigationProgress(ctx context.Context, arg SaveInvestigationProgressParams) error {
-	_, err := q.db.Exec(ctx, saveInvestigationProgress,
+func (q *Queries) SaveInvestigationProgress(ctx context.Context, arg SaveInvestigationProgressParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveInvestigationProgress,
 		arg.ID,
 		arg.Trace,
 		arg.Attempts,
@@ -335,5 +341,8 @@ func (q *Queries) SaveInvestigationProgress(ctx context.Context, arg SaveInvesti
 		arg.InputTokens,
 		arg.OutputTokens,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -103,9 +103,13 @@ func assertTrace(t *testing.T, got, want Trace) {
 	for index := range want.Calls {
 		g, w := got.Calls[index], want.Calls[index]
 		if g.ID != w.ID || g.Name != w.Name || g.ArgsSummary != w.ArgsSummary ||
-			g.IsError != w.IsError || g.DurationMS != w.DurationMS || !jsonEqual(g.Result, w.Result) {
+			g.ArgsHash != w.ArgsHash || g.IsError != w.IsError || g.DurationMS != w.DurationMS ||
+			!jsonEqual(g.Result, w.Result) {
 			t.Fatalf("call %d = %+v, want %+v", index, g, w)
 		}
+	}
+	if !reflect.DeepEqual(got.ModelCalls, want.ModelCalls) {
+		t.Fatalf("model calls = %+v, want %+v", got.ModelCalls, want.ModelCalls)
 	}
 }
 
@@ -299,8 +303,11 @@ func TestPostgresStore_RoundTrip(t *testing.T) {
 	trace := Trace{
 		Steps: []Step{{Index: 0, Tool: "get_monitor", ArgsSummary: "{}", Status: "ok", DurationMS: 12}},
 		Calls: []ToolCallRecord{{
-			ID: "call-1", Name: "get_monitor", ArgsSummary: "{}",
+			ID: "call-1", Name: "get_monitor", ArgsSummary: "{}", ArgsHash: "sha256:args-1",
 			Result: json.RawMessage(`{"status":"up"}`), DurationMS: 12,
+		}},
+		ModelCalls: []ModelCallRecord{{
+			Index: 0, FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 5, DurationMS: 40,
 		}},
 	}
 
@@ -345,7 +352,13 @@ func TestPostgresStore_RoundTrip(t *testing.T) {
 
 	progressTrace := Trace{
 		Steps: []Step{{Index: 1, Tool: "list_checks", ArgsSummary: `{"limit":5}`, Status: "ok", DurationMS: 30}},
-		Calls: []ToolCallRecord{{ID: "call-2", Name: "list_checks", ArgsSummary: `{"limit":5}`, Result: json.RawMessage(`[]`), DurationMS: 30}},
+		Calls: []ToolCallRecord{{
+			ID: "call-2", Name: "list_checks", ArgsSummary: `{"limit":5}`, ArgsHash: "sha256:args-2",
+			Result: json.RawMessage(`[]`), DurationMS: 30,
+		}},
+		ModelCalls: []ModelCallRecord{{
+			Index: 1, FinishReason: "tool_calls", InputTokens: 20, OutputTokens: 10, DurationMS: 50,
+		}},
 	}
 	if err := s.SaveProgress(ctx, created.ID, progressTrace, 2, 3, 20, 10); err != nil {
 		t.Fatal(err)
@@ -424,6 +437,78 @@ func TestPostgresStore_CompleteFailed(t *testing.T) {
 	}
 	if failed.Status != StatusFailed || failed.ErrorCode != "provider_error" || failed.Result != nil {
 		t.Fatalf("failed row = %+v", failed)
+	}
+}
+
+func TestPostgresStore_StaleRowCannotBeRevived(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	ctx := context.Background()
+	ws, inc := seedWorkspaceIncident(t, pool)
+	s := NewPostgresStore(pool)
+
+	id := insertInvestigationRaw(t, pool, ws, inc, StatusRunning, time.Now().Add(-10*time.Minute))
+	reaped, err := s.ReapStale(ctx, inc, time.Now().Add(-5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reaped != 1 {
+		t.Fatalf("reaped = %d, want 1", reaped)
+	}
+
+	if err := s.MarkRunning(ctx, id, 2, "seed-2"); !errors.Is(err, ErrNotActive) {
+		t.Fatalf("mark running stale row err = %v, want ErrNotActive", err)
+	}
+	if err := s.SaveProgress(ctx, id, Trace{}, 2, 0, 0, 0); !errors.Is(err, ErrNotActive) {
+		t.Fatalf("save progress stale row err = %v, want ErrNotActive", err)
+	}
+	if err := s.Complete(ctx, Investigation{ID: id, Status: StatusOK}); !errors.Is(err, ErrNotActive) {
+		t.Fatalf("complete stale row err = %v, want ErrNotActive", err)
+	}
+
+	got, err := s.GetByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusFailed || got.ErrorCode != "stale" || got.CompletedAt == nil {
+		t.Fatalf("stale row after late writes = %+v, want failed/stale/completed", got)
+	}
+}
+
+func TestPostgresStore_CreateTxRollsBack(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	ctx := context.Background()
+	ws, inc := seedWorkspaceIncident(t, pool)
+	s := NewPostgresStore(pool)
+
+	inv := Investigation{
+		ID: uuid.New(), WorkspaceID: ws, IncidentID: inc,
+		Status: StatusQueued, Model: "stub", PromptVersion: "test",
+		CreatedAt: time.Now().UTC(),
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTx(ctx, tx, inv); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	none, err := s.Latest(ctx, ws, inc)
+	if err != nil || none != nil {
+		t.Fatalf("latest after rollback = %+v, %v; want nil, nil", none, err)
+	}
+
+	created, err := s.Create(ctx, inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Latest(ctx, ws, inc)
+	if err != nil || got == nil || got.ID != created.ID {
+		t.Fatalf("latest after create = %+v, %v", got, err)
 	}
 }
 
