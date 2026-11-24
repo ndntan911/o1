@@ -73,15 +73,14 @@ func TestFailureClass(t *testing.T) {
 func TestTimeline_AllowlistsAndTruncatesDetail(t *testing.T) {
 	long := strings.Repeat("a", 120)
 	detail := map[string]any{
-		"previous":        "up",
-		"next":            "down",
-		"from":            "healthy",
-		"to":              "failing",
-		"reason":          long,
-		"status":          "open",
-		"sequence":        3,
-		"secret":          "token=secret",
-		"previous_status": "up",
+		"previous": "up",
+		"next":     "down",
+		"from":     "healthy",
+		"to":       "failing",
+		"reason":   long,
+		"status":   "open",
+		"sequence": 3,
+		"secret":   "token=secret",
 	}
 	raw, err := json.Marshal(detail)
 	if err != nil {
@@ -105,9 +104,6 @@ func TestTimeline_AllowlistsAndTruncatesDetail(t *testing.T) {
 	if _, ok := got["secret"]; ok {
 		t.Fatalf("unknown key survived: %+v", got)
 	}
-	if _, ok := got["previous_status"]; ok {
-		t.Fatalf("unknown key survived: %+v", got)
-	}
 	if len(got["reason"]) != 80 {
 		t.Fatalf("reason length = %d, want 80", len(got["reason"]))
 	}
@@ -115,6 +111,30 @@ func TestTimeline_AllowlistsAndTruncatesDetail(t *testing.T) {
 		t.Fatalf("sequence = %q, want 3", got["sequence"])
 	}
 	if len(got) != 7 {
+		t.Fatalf("detail keys = %+v", got)
+	}
+}
+
+func TestTimeline_KeepsRealStatusKeys(t *testing.T) {
+	inc := incidents.IncidentDetail{Events: []incidents.IncidentEvent{{
+		ID:        uuid.New(),
+		Kind:      "opened",
+		Detail:    json.RawMessage(`{"previous_status":"unknown","new_status":"down","secret":"x"}`),
+		CreatedAt: time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC),
+	}}}
+
+	events := Timeline(inc)
+	if len(events) != 1 {
+		t.Fatalf("events = %d", len(events))
+	}
+	got := events[0].Detail
+	if got["previous_status"] != "unknown" || got["new_status"] != "down" {
+		t.Fatalf("real status keys missing: %+v", got)
+	}
+	if _, ok := got["secret"]; ok {
+		t.Fatalf("unknown key survived: %+v", got)
+	}
+	if len(got) != 2 {
 		t.Fatalf("detail keys = %+v", got)
 	}
 }
@@ -160,7 +180,7 @@ func TestChecks_ComputesAggregatesWithoutErrors(t *testing.T) {
 		{CheckedAt: time.Date(2026, 11, 24, 9, 2, 0, 0, time.UTC), Status: "down", LatencyMS: 300, Error: strPtr("timeout: dial tcp 10.0.0.1:443")},
 		{CheckedAt: time.Date(2026, 11, 24, 9, 3, 0, 0, time.UTC), Status: "down", LatencyMS: 400, Error: strPtr("dns: lookup failed")},
 	}
-	view := Checks(results, monitors.Summary{Checks: 999, Down: 999, P95LatencyMS: 1}, 24)
+	view := Checks(results, monitors.Summary{Checks: 4, Down: 2, P95LatencyMS: 385}, 24)
 
 	if view.WindowHours != 24 {
 		t.Fatalf("window hours = %d", view.WindowHours)
@@ -190,6 +210,26 @@ func TestChecks_ComputesAggregatesWithoutErrors(t *testing.T) {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("checks leaked %q: %s", forbidden, text)
 		}
+	}
+}
+
+func TestChecks_UsesFullWindowSummary(t *testing.T) {
+	results := []monitors.ProbeResult{
+		{CheckedAt: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC), Status: "down", LatencyMS: 250, Error: strPtr("timeout: request timed out")},
+	}
+	view := Checks(results, monitors.Summary{Checks: 10, Down: 4, P95LatencyMS: 1200}, 24)
+
+	if view.Count != 10 || view.Failures != 4 {
+		t.Fatalf("count/failures = %d/%d, want 10/4", view.Count, view.Failures)
+	}
+	if view.P95LatencyMS != 1200 {
+		t.Fatalf("p95 = %v, want 1200", view.P95LatencyMS)
+	}
+	if len(view.Checks) != 1 {
+		t.Fatalf("checks = %d, want the returned slice", len(view.Checks))
+	}
+	if view.FailureClasses["timeout"] != 1 || len(view.FailureClasses) != 1 {
+		t.Fatalf("failure classes = %+v, want only the returned result", view.FailureClasses)
 	}
 }
 

@@ -9,8 +9,6 @@ package evidence
 import (
 	"bytes"
 	"encoding/json"
-	"math"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,8 +73,9 @@ type CheckView struct {
 	FailureClass string    `json:"failure_class"`
 }
 
-// ChecksView summarizes the requested window. Count, failures, p95, and the
-// failure-class counts come from the results passed in, never from raw errors.
+// ChecksView summarizes the requested window. Count, failures, and p95 come
+// from the full-window summary; failure-class counts come from the returned
+// results. Raw error messages never leave the system.
 type ChecksView struct {
 	WindowHours    int            `json:"window_hours"`
 	Checks         []CheckView    `json:"checks"`
@@ -100,13 +99,15 @@ type DeliveryView struct {
 // allowedDetailKeys is the complete set of incident-event detail keys that may
 // leave the system. Everything else is dropped.
 var allowedDetailKeys = map[string]struct{}{
-	"previous": {},
-	"next":     {},
-	"from":     {},
-	"to":       {},
-	"reason":   {},
-	"status":   {},
-	"sequence": {},
+	"previous_status": {},
+	"new_status":      {},
+	"previous":        {},
+	"next":            {},
+	"from":            {},
+	"to":              {},
+	"reason":          {},
+	"status":          {},
+	"sequence":        {},
 }
 
 var failureClasses = map[string]struct{}{
@@ -262,17 +263,18 @@ func truncate(value string, limit int) string {
 	return string(runes[:limit])
 }
 
-// Checks projects probe results and derives the aggregates from them. The
-// summary is accepted for call-site symmetry but is not trusted for redaction:
-// every reported value comes from the result slice.
-func Checks(results []monitors.ProbeResult, _ monitors.Summary, hours int) ChecksView {
+// Checks projects probe results. Count, failures, and p95 come from the
+// full-window summary because the result slice may be capped; failure-class
+// counts come from the returned slice. The stored error message is never copied.
+func Checks(results []monitors.ProbeResult, summary monitors.Summary, hours int) ChecksView {
 	view := ChecksView{
 		WindowHours:    hours,
 		Checks:         make([]CheckView, 0, len(results)),
-		Count:          len(results),
+		Count:          int(summary.Checks),
+		Failures:       int(summary.Down),
+		P95LatencyMS:   summary.P95LatencyMS,
 		FailureClasses: make(map[string]int),
 	}
-	latencies := make([]int, 0, len(results))
 	for _, result := range results {
 		class := FailureClass(result.Error)
 		view.Checks = append(view.Checks, CheckView{
@@ -282,32 +284,11 @@ func Checks(results []monitors.ProbeResult, _ monitors.Summary, hours int) Check
 			LatencyMS:    result.LatencyMS,
 			FailureClass: class,
 		})
-		latencies = append(latencies, result.LatencyMS)
 		if result.Status == "down" {
-			view.Failures++
 			view.FailureClasses[class]++
 		}
 	}
-	view.P95LatencyMS = percentile95(latencies)
 	return view
-}
-
-// percentile95 matches percentile_cont(0.95): linear interpolation over the
-// sorted sample.
-func percentile95(values []int) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-	sorted := append([]int(nil), values...)
-	sort.Ints(sorted)
-	rank := 0.95 * float64(len(sorted)-1)
-	lower := int(math.Floor(rank))
-	upper := int(math.Ceil(rank))
-	if lower == upper {
-		return float64(sorted[lower])
-	}
-	fraction := rank - float64(lower)
-	return float64(sorted[lower]) + fraction*(float64(sorted[upper])-float64(sorted[lower]))
 }
 
 // Delivery projects an alert outcome without recipients or error text.
