@@ -72,6 +72,8 @@ describe('APIKeysScreen', () => {
 		expect(screen.getByText('Read-only dashboard')).toBeInTheDocument();
 		expect(screen.getByText('o1_abcdefghijkl')).toHaveClass('font-mono');
 		expect(screen.getAllByRole('row')).toHaveLength(keys.length + 1);
+		expect(screen.getByText(`${ORIGIN}/mcp`)).toBeInTheDocument();
+		expect(screen.getByText(/viewer key/i)).toBeInTheDocument();
 	});
 
 	test('Create key opens the create dialog', async () => {
@@ -149,6 +151,7 @@ describe('APIKeysScreen', () => {
 		renderWithProviders(<APIKeysScreen workspace={workspace} />);
 
 		expect(await screen.findByText('No API keys yet.')).toBeInTheDocument();
+		expect(screen.getByText(`${ORIGIN}/mcp`)).toBeInTheDocument();
 	});
 
 	test('never renders a secret or token hash', async () => {

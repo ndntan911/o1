@@ -22,6 +22,7 @@ import { formatRelativeTime } from '@/lib/format';
 import { canManageAPIKeys } from '@/lib/roles';
 import { CreateAPIKeyDialog } from './CreateAPIKeyDialog';
 import { useAPIKeys, useRevokeAPIKey } from './hooks';
+import { MCPCard } from './MCPCard';
 
 export interface APIKeysScreenProps {
 	workspace: Workspace;
@@ -141,6 +142,8 @@ function APIKeysContent({ workspace }: APIKeysScreenProps) {
 					</TableBody>
 				</Table>
 			)}
+
+			<MCPCard endpoint={`${window.location.origin}/mcp`} />
 
 			{createOpen ? (
 				<CreateAPIKeyDialog
