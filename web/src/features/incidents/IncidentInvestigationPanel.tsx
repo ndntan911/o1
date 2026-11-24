@@ -52,6 +52,7 @@ export function IncidentInvestigationPanel({
 	);
 	const start = useStartIncidentInvestigation(workspaceId, incidentId);
 
+	const investigation = investigationQuery.data;
 	const missing =
 		investigationQuery.isError &&
 		isApiProblem(investigationQuery.error) &&
@@ -60,8 +61,10 @@ export function IncidentInvestigationPanel({
 		investigationQuery.isError &&
 		isApiProblem(investigationQuery.error) &&
 		investigationQuery.error.problem.status === 501;
+	// Retained data wins: a failed refetch after a successful load keeps the
+	// stored result readable. Only hide when there is nothing to show.
 	const unavailable =
-		(investigationQuery.isError && !missing && !disabled) || disabled;
+		!investigation && (disabled || (investigationQuery.isError && !missing));
 
 	if (unavailable) {
 		return null;
@@ -71,7 +74,6 @@ export function IncidentInvestigationPanel({
 		return null;
 	}
 
-	const investigation = investigationQuery.data;
 	if (!investigation) {
 		// A viewer with nothing stored has nothing to see; the panel stays out
 		// of the way rather than offering an action they cannot take.

@@ -126,7 +126,9 @@ export async function startIncidentInvestigation(
 	workspaceId: string,
 	incidentId: string,
 ): Promise<IncidentInvestigation> {
-	const body = await apiRequest<IncidentInvestigation | ApiProblem>(
+	const body = await apiRequest<
+		IncidentInvestigation | ApiProblem | undefined
+	>(
 		investigationsPath(workspaceId, incidentId),
 		{
 			method: 'POST',
@@ -136,13 +138,14 @@ export async function startIncidentInvestigation(
 		},
 	);
 	if (!isInvestigation(body)) {
-		// This 409 was a problem, not a row: no run is in flight.
+		// This 409 was a problem (or an empty body), not a row: no run is in
+		// flight.
 		throw new ApiError({
-			type: body.type ?? 'about:blank',
-			title: body.title ?? 'Conflict',
-			status: body.status ?? 409,
-			code: body.code ?? 'conflict',
-			...(body.detail ? { detail: body.detail } : {}),
+			type: body?.type ?? 'about:blank',
+			title: body?.title ?? 'Conflict',
+			status: body?.status ?? 409,
+			code: body?.code ?? 'conflict',
+			...(body?.detail ? { detail: body.detail } : {}),
 		});
 	}
 	return body;

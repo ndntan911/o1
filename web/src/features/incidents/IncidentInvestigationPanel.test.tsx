@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { server } from '@/test/msw/server';
-import { renderWithProviders } from '@/test/render';
+import { createTestQueryClient, renderWithProviders } from '@/test/render';
 import type { IncidentInvestigation } from '@/lib/api/types';
+import { queryKeys } from '@/lib/query/keys';
 import { IncidentInvestigationPanel } from './IncidentInvestigationPanel';
 
 const workspaceId = '11111111-1111-1111-1111-111111111111';
@@ -267,6 +268,50 @@ describe('IncidentInvestigationPanel', () => {
 		expect(posts).toBe(1);
 	});
 
+	test('keeps a stored result when a later refetch fails', async () => {
+		let calls = 0;
+
+		server.use(
+			http.get(latestPath, () => {
+				calls += 1;
+				if (calls === 1) {
+					return HttpResponse.json(investigation());
+				}
+				return problem('internal_error', 500, 'Internal Server Error');
+			}),
+		);
+
+		const queryClient = createTestQueryClient();
+		renderWithProviders(
+			<IncidentInvestigationPanel
+				workspaceId={workspaceId}
+				incidentId={incidentId}
+				canStart={false}
+			/>,
+			{ queryClient },
+		);
+
+		expect(
+			await screen.findByText(/timeouts above the limit/i),
+		).toBeInTheDocument();
+
+		const key = queryKeys.incidentInvestigationLatest(
+			workspaceId,
+			incidentId,
+		);
+
+		await act(async () => {
+			await queryClient.invalidateQueries({ queryKey: key });
+			// React Query batches observer notifications on a zero-delay timer,
+			// so give the panel a chance to re-render before asserting.
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		});
+
+		expect(calls).toBe(2);
+		expect(queryClient.getQueryState(key)?.status).toBe('error');
+		expect(screen.getByText(/timeouts above the limit/i)).toBeInTheDocument();
+	});
+
 	test('does not treat a 409 problem as a running investigation', async () => {
 		server.use(
 			http.get(latestPath, () => new HttpResponse(null, { status: 404 })),
@@ -295,6 +340,29 @@ describe('IncidentInvestigationPanel', () => {
 			await screen.findByText(/could not be started/i),
 		).toBeInTheDocument();
 		expect(screen.queryByRole('status')).not.toBeInTheDocument();
+	});
+
+	test('does not throw on a 409 with no body', async () => {
+		server.use(
+			http.get(latestPath, () => new HttpResponse(null, { status: 404 })),
+			http.post(base, () => new HttpResponse(null, { status: 409 })),
+		);
+
+		renderWithProviders(
+			<IncidentInvestigationPanel
+				workspaceId={workspaceId}
+				incidentId={incidentId}
+				canStart
+			/>,
+		);
+
+		await userEvent.click(
+			await screen.findByRole('button', { name: /^investigate$/i }),
+		);
+
+		expect(
+			await screen.findByText(/could not be started/i),
+		).toBeInTheDocument();
 	});
 
 	test('shows the refusal when every hypothesis was unverified', async () => {
