@@ -40,6 +40,16 @@ func main() {
 	}
 }
 
+// investigationModel returns the model the investigation service records and
+// sends per request. CopilotModel defaults to AIModel in config, so a missing
+// copilot setting keeps the historical behavior.
+func investigationModel(copilotModel, aiModel string) string {
+	if copilotModel != "" {
+		return copilotModel
+	}
+	return aiModel
+}
+
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -110,13 +120,14 @@ func run() error {
 			Provider:   toolProvider,
 			Pool:       rt.Pool,
 			Queries:    q,
-			Model:      rt.Config.AIModel,
+			Model:      investigationModel(rt.Config.CopilotModel, rt.Config.AIModel),
 			Limits:     copilot.DefaultLimits(),
 			Now:        time.Now,
 			Logger:     rt.Logger,
 			Metrics:    obs.Metrics,
 		})
-		rt.Logger.Info("copilot enabled", "provider", rt.Config.AIProvider, "model", rt.Config.AIModel)
+		rt.Logger.Info("copilot enabled", "provider", rt.Config.AIProvider,
+			"model", investigationModel(rt.Config.CopilotModel, rt.Config.AIModel))
 	}
 	investigationWorker := worker.NewInvestigationWorker(investigationSvc, rt.Logger, obs.Metrics)
 

@@ -17,3 +17,14 @@ func TestProbeLimiterFractionalRPSAllowsProbes(t *testing.T) {
 		t.Fatalf("burst = %d, want 1", limiter.Burst())
 	}
 }
+
+func TestInvestigationModelUsesCopilotModel(t *testing.T) {
+	if got := investigationModel("copilot", "insights"); got != "copilot" {
+		t.Fatalf("investigationModel with copilot model = %q, want copilot", got)
+	}
+	// Config normally fills CopilotModel from AIModel; the fallback keeps a
+	// hand-built config from recording an empty model.
+	if got := investigationModel("", "insights"); got != "insights" {
+		t.Fatalf("investigationModel fallback = %q, want insights", got)
+	}
+}

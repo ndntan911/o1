@@ -31,7 +31,7 @@ type investigationAPIEnv struct {
 	server *httptest.Server
 }
 
-func newInvestigationAPIEnv(t *testing.T, enabled bool) *investigationAPIEnv {
+func newInvestigationAPIEnv(t *testing.T, enabled bool, perIncidentPerHour int) *investigationAPIEnv {
 	t.Helper()
 	pool, cleanup := testutil.NewPostgres(t)
 	t.Cleanup(cleanup)
@@ -40,7 +40,9 @@ func newInvestigationAPIEnv(t *testing.T, enabled bool) *investigationAPIEnv {
 	cfg.AIProvider = "stub"
 	cfg.AIModel = "stub"
 	cfg.CopilotEnabled = enabled
-	cfg.CopilotModel = "stub"
+	// A distinct copilot model proves the router passes deps.Config.CopilotModel
+	// through to the stored row rather than reusing AIModel.
+	cfg.CopilotModel = "copilot-test-model"
 	cfg.CopilotTimeout = 90 * time.Second
 	cfg.CopilotCallTimeout = 30 * time.Second
 	cfg.CopilotMaxModelCalls = 5
@@ -48,7 +50,7 @@ func newInvestigationAPIEnv(t *testing.T, enabled bool) *investigationAPIEnv {
 	cfg.CopilotMaxResultBytes = 8192
 	cfg.CopilotMaxOutputTokens = 1200
 	cfg.CopilotMaxInputTokens = 40000
-	cfg.CopilotPerIncidentPerHour = 3
+	cfg.CopilotPerIncidentPerHour = perIncidentPerHour
 	cfg.CopilotPerWorkspacePerDay = 20
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -142,7 +144,7 @@ func (e *investigationAPIEnv) doBearer(token, path string) (*http.Response, []by
 }
 
 func TestInvestigations_MemberStartsViewerReads(t *testing.T) {
-	env := newInvestigationAPIEnv(t, true)
+	env := newInvestigationAPIEnv(t, true, 3)
 	owner := env.login("owner@example.com")
 	viewerEmail := "viewer@example.com"
 	viewer := env.login(viewerEmail)
@@ -171,19 +173,23 @@ func TestInvestigations_MemberStartsViewerReads(t *testing.T) {
 	if started.ID == "" || started.IncidentID != incidentID.String() {
 		t.Fatalf("started = %+v", started)
 	}
-	if started.Status != "queued" || started.Model != "stub" {
-		t.Fatalf("started status/model = %q/%q, want queued/stub", started.Status, started.Model)
+	if started.Status != "queued" || started.Model != "copilot-test-model" {
+		t.Fatalf("started status/model = %q/%q, want queued/copilot-test-model", started.Status, started.Model)
 	}
 
-	// The row and its River job are committed together.
-	var rowStatus string
+	// The row and its River job are committed together, and the stored model
+	// is the configured copilot model, not the AI model used for insights.
+	var rowStatus, rowModel string
 	if err := env.pool.QueryRow(context.Background(),
-		`SELECT status FROM incident_investigations WHERE id = $1`, started.ID,
-	).Scan(&rowStatus); err != nil {
+		`SELECT status, model FROM incident_investigations WHERE id = $1`, started.ID,
+	).Scan(&rowStatus, &rowModel); err != nil {
 		t.Fatalf("load investigation row: %v", err)
 	}
 	if rowStatus != "queued" {
 		t.Fatalf("stored status = %q, want queued", rowStatus)
+	}
+	if rowModel != "copilot-test-model" {
+		t.Fatalf("stored model = %q, want copilot-test-model", rowModel)
 	}
 	var queue string
 	var maxAttempts int
@@ -291,21 +297,21 @@ func TestInvestigations_MemberStartsViewerReads(t *testing.T) {
 }
 
 func TestInvestigations_Limit(t *testing.T) {
-	env := newInvestigationAPIEnv(t, true)
+	// A configured cap of one proves the router passes
+	// CopilotPerIncidentPerHour through instead of relying on the default.
+	env := newInvestigationAPIEnv(t, true, 1)
 	owner := env.login("limit@example.com")
 	workspaceID := owner.createWorkspace(t, "Limit")
 	incidentID := env.createIncident(owner, workspaceID)
 
-	// Three completed runs in the last hour exhaust the per-incident cap.
-	for i := 0; i < 3; i++ {
-		if _, err := env.pool.Exec(context.Background(),
-			`INSERT INTO incident_investigations
-			   (id, workspace_id, incident_id, status, model, prompt_version, created_at, completed_at)
-			 VALUES (gen_random_uuid(), $1, $2, 'ok', 'stub', 'test', now(), now())`,
-			workspaceID, incidentID,
-		); err != nil {
-			t.Fatalf("seed completed investigation: %v", err)
-		}
+	// One completed run in the last hour exhausts the configured cap.
+	if _, err := env.pool.Exec(context.Background(),
+		`INSERT INTO incident_investigations
+		   (id, workspace_id, incident_id, status, model, prompt_version, created_at, completed_at)
+		 VALUES (gen_random_uuid(), $1, $2, 'ok', 'stub', 'test', now(), now())`,
+		workspaceID, incidentID,
+	); err != nil {
+		t.Fatalf("seed completed investigation: %v", err)
 	}
 
 	resp, _ := env.postInvestigation(owner, workspaceID, incidentID)
@@ -313,7 +319,7 @@ func TestInvestigations_Limit(t *testing.T) {
 }
 
 func TestInvestigations_Disabled(t *testing.T) {
-	env := newInvestigationAPIEnv(t, false)
+	env := newInvestigationAPIEnv(t, false, 3)
 	owner := env.login("disabled@example.com")
 	workspaceID := owner.createWorkspace(t, "Disabled")
 	incidentID := env.createIncident(owner, workspaceID)
