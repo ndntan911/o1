@@ -705,6 +705,16 @@ func TestRunner_TransientProviderErrorIsReturned(t *testing.T) {
     // provider returns &ai.HTTPError{StatusCode:500}; expect out.Err != nil,
     // out.Status empty, and no result.
 }
+
+func TestRunner_PermanentProviderErrorFails(t *testing.T) {
+    // provider returns &ai.HTTPError{StatusCode:400}; expect StatusFailed,
+    // ErrorCode "provider_rejected", Err nil, Result nil.
+}
+
+func TestRunner_RecordsToolCallThatHitsDeadline(t *testing.T) {
+    // A caller that blocks until the overall deadline; expect StatusIncomplete,
+    // ErrorCode "limit_exceeded", and exactly one error Step/ToolCallRecord.
+}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -714,7 +724,7 @@ Expected: FAIL — `Runner` undefined.
 
 - [ ] **Step 3: Implement the loop**
 
-Start with `ChatRoleSystem` = `SystemPrompt`, `ChatRoleUser` = `BuildUserMessage(seed)`. Each iteration calls `provider.Chat` with the six tool definitions from `tools.Specs()`; record one `ModelCallRecord` per call (finish reason, input/output tokens, duration). If tool calls are present, execute sequentially (each with `CallTimeout`), append a `tool` message with the envelope JSON, record a `Step` and `ToolCallRecord` (including the SHA-256 hex `ArgsHash` of the raw arguments), and stop with `incomplete/limit_exceeded` at 6 calls. A Go error from the caller becomes an `is_error` tool result with code `internal`; it does not abort the loop. If text is present, parse it; on parse error return `failed/invalid_output`. Verify; `StatusOK` when verified count > 0, else `StatusInsufficient`. Track token totals and a 90s overall context; hitting it returns `incomplete/limit_exceeded`. A transient provider error returns `Outcome{Err: err}`; a permanent one returns `failed/provider_rejected`.
+Start with `ChatRoleSystem` = `SystemPrompt`, `ChatRoleUser` = `BuildUserMessage(seed)`. Each iteration calls `provider.Chat` with the six tool definitions from `tools.Specs()`; record one `ModelCallRecord` per call (finish reason, input/output tokens, duration). If tool calls are present, execute sequentially (each with `CallTimeout`), append a `tool` message with the envelope JSON, record a `Step` and `ToolCallRecord` (including the SHA-256 hex `ArgsHash` of the raw arguments), and stop with `incomplete/limit_exceeded` at 6 calls. A Go error from the caller becomes an `is_error` tool result with code `internal`; it does not abort the loop. If the overall deadline expires during a tool call, still record that call as an error step before returning `incomplete`; the trace must show every call that actually ran. If text is present, parse it; on parse error return `failed/invalid_output`. Verify; `StatusOK` when verified count > 0, else `StatusInsufficient`. Track token totals and a 90s overall context; hitting it returns `incomplete/limit_exceeded`. A transient provider error returns `Outcome{Err: err}`; a permanent one returns `failed/provider_rejected`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -782,7 +792,7 @@ Expected: FAIL — `copilot.NewService`, worker undefined.
 
 - [ ] **Step 3: Implement `Service.Run`**
 
-`NewService` builds the tool registry with `tools.NewRegistry(opts.Incidents, opts.Monitors, opts.Now)` and the runner with `NewRunner(opts.Provider, registry, opts.Model, opts.Limits, opts.Now)`; it stores `opts.Workspaces`, `opts.Queries`, and `opts.Pool` for `Start`. `auth.ContextWithPrincipal` is available from Task 5. Load the row; terminal statuses are no-ops. Build the actor context with `auth.ContextWithPrincipal(ctx, auth.Principal{UserID: *inv.CreatedBy})`; if `CreatedBy` is nil or no longer a member, complete `failed/actor_removed`. Build the seed; on error complete `failed/internal`. `MarkRunning` with `attempt` and `HashSeed`. Run the runner. On `Outcome.Err` transient and `attempt < maxAttempts`, `SaveProgress` and return the error for River; otherwise complete `failed/provider_unavailable` on the final attempt. On `StatusOK` or `StatusInsufficient`, complete, append one `investigation_completed` timeline event via `RecordInvestigationEvent`, and write an `investigation_completed` audit row with the model, status, tool calls, hypotheses, and token counts. On other statuses, complete without a timeline event and write the same audit row with the error code. Record `ObserveInvestigation(status, duration, toolCalls, inputTokens, outputTokens)` when non-nil.
+`NewService` builds the tool registry with `tools.NewRegistry(opts.Incidents, opts.Monitors, opts.Now)` and the runner with `NewRunner(opts.Provider, registry, opts.Model, opts.Limits, opts.Now)`; it stores `opts.Workspaces`, `opts.Queries`, and `opts.Pool` for `Start`. `auth.ContextWithPrincipal` is available from Task 5. Load the row; terminal statuses are no-ops. Build the actor context with `auth.ContextWithPrincipal(ctx, auth.Principal{UserID: *inv.CreatedBy})`; if `CreatedBy` is nil or no longer a member, complete `failed/actor_removed`. Build the seed; on error complete `failed/internal`. `MarkRunning` with `attempt` and `HashSeed`. Run the runner. On `Outcome.Err` transient and `attempt < maxAttempts`, `SaveProgress` and return the error for River; otherwise complete `failed/provider_unavailable` on the final attempt. On `StatusOK` or `StatusInsufficient`, complete, append one `investigation_completed` timeline event via `RecordInvestigationEvent`, and write an `investigation_completed` audit row with the model, status, tool calls, hypotheses, and token counts. On other statuses, complete without a timeline event and write the same audit row with the error code. Record `ObserveInvestigation(status, duration, toolCalls, inputTokens, outputTokens)` when non-nil. If `MarkRunning`, `SaveProgress`, or `Complete` returns `ErrNotActive`, the stale reaper or another worker won the race: return nil without reviving the row, writing a timeline event, or overwriting the stale error code.
 
 - [ ] **Step 4: Wire the worker**
 
