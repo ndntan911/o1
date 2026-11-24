@@ -14,10 +14,16 @@ import (
 type Stub struct {
 	Reply string
 	Err   error
+	// ChatScript, when non-empty, is returned one entry per Chat call. With no
+	// script, Chat runs the deterministic demo trajectory.
+	ChatScript []ChatResponse
 
-	mu      sync.Mutex
-	lastReq Request
-	calls   int
+	mu          sync.Mutex
+	lastReq     Request
+	calls       int
+	lastChatReq ChatRequest
+	chatCalls   int
+	chatIndex   int
 }
 
 // Complete records the request and returns Reply.

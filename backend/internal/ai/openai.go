@@ -108,8 +108,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req Request) (Response, err
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return Response{}, fmt.Errorf("ai: provider returned %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return Response{}, providerHTTPError(resp)
 	}
 
 	var decoded openAIResponse
