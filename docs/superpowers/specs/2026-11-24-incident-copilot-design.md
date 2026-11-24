@@ -433,21 +433,24 @@ a viewer key.
 
 ## UI
 
-The incident page keeps the insights panel and adds one "Investigate" block
-under it, sharing the same card with two actions:
+The incident page keeps the insights panel and adds a separate investigation
+card below it; v1 does not merge the two actions into one card.
 
 - **Quick explanation** runs existing insights, unchanged.
 - **Investigate** starts the agent, then shows the step trace as it arrives:
-  tool name, a short argument summary, status, and duration. The trace is
-  collapsible after completion.
+  tool name, a short argument summary, status, and duration. The stored result
+  keeps the steps for audit; v1 does not re-render a collapsible completed
+  trace after the run ends.
 - The final answer shows the assessment, hypotheses, confidence, evidence chips
-  that link to the cited timeline event or check row where possible, and an
-  "Unverified" badge when the server dropped every citation.
+  with the cited pointer and value, and an "Unverified" badge when a hypothesis
+  lost every citation. Deep links to the cited check row are a later
+  enhancement; the API does not expose a check-row id in the citation.
 - `insufficient` shows the refusal text; `failed` and `incomplete` show what
   happened and a retry button; `queued`/`running` show a live region with
   elapsed time, and `attempts > 1` says the provider call is being retried.
-- The model and generation time are always visible. The copy says the agent is
-  read-only and that the hypotheses are a starting point.
+- The model and generation time (the stored `created_at`) are always visible.
+  The copy says the agent is read-only and that the hypotheses are a starting
+  point.
 
 The API keys screen gains the MCP card described above. The public status page
 is untouched.
