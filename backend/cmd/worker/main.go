@@ -18,14 +18,19 @@ import (
 	"github.com/riverqueue/river/rivertype"
 	"golang.org/x/time/rate"
 
+	"o1/internal/ai"
 	"o1/internal/alerts"
 	"o1/internal/app"
+	"o1/internal/copilot"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
+	"o1/internal/incidents"
+	"o1/internal/monitors"
 	"o1/internal/observability"
 	"o1/internal/probe"
 	"o1/internal/secretbox"
 	"o1/internal/worker"
+	"o1/internal/workspaces"
 )
 
 func main() {
@@ -71,6 +76,50 @@ func run() error {
 	}
 	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, box, alerts.NewNotifier(guard, ""), rt.Config, rt.Logger, obs.Metrics)
 
+	// The copilot is optional: a misconfigured or absent provider leaves the
+	// service nil and the worker registered as a no-op, so the rest of the
+	// worker fleet still starts.
+	wsSvc := workspaces.NewService(rt.Pool, q)
+	var investigationSvc *copilot.Service
+	provider, providerErr := ai.New(ai.Settings{
+		Provider: rt.Config.AIProvider,
+		BaseURL:  rt.Config.AIBaseURL,
+		APIKey:   rt.Config.AIAPIKey,
+		Model:    rt.Config.AIModel,
+		Timeout:  rt.Config.AITimeout,
+		Headers:  rt.Config.AIExtraHeaders,
+	})
+	switch {
+	case providerErr != nil:
+		rt.Logger.Warn("copilot disabled: provider misconfigured",
+			"provider", rt.Config.AIProvider, "error", providerErr)
+	case provider == nil:
+		rt.Logger.Info("copilot disabled", "provider", rt.Config.AIProvider)
+	default:
+		toolProvider, ok := provider.(ai.ToolProvider)
+		if !ok {
+			rt.Logger.Warn("copilot disabled: provider does not support tool calls",
+				"provider", rt.Config.AIProvider)
+			break
+		}
+		investigationSvc = copilot.NewService(copilot.Options{
+			Store:      copilot.NewPostgresStore(rt.Pool),
+			Incidents:  incidents.NewService(rt.Pool, q, wsSvc),
+			Monitors:   monitors.NewService(rt.Pool, q, wsSvc, box, guard, rt.Config),
+			Workspaces: wsSvc,
+			Provider:   toolProvider,
+			Pool:       rt.Pool,
+			Queries:    q,
+			Model:      rt.Config.AIModel,
+			Limits:     copilot.DefaultLimits(),
+			Now:        time.Now,
+			Logger:     rt.Logger,
+			Metrics:    obs.Metrics,
+		})
+		rt.Logger.Info("copilot enabled", "provider", rt.Config.AIProvider, "model", rt.Config.AIModel)
+	}
+	investigationWorker := worker.NewInvestigationWorker(investigationSvc, rt.Logger, obs.Metrics)
+
 	// Queue and incident gauges are shared across the environment, so they are
 	// refreshed by exactly one process: the worker. Other processes expose
 	// their own request, probe, and pool metrics only.
@@ -81,6 +130,7 @@ func run() error {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, probeWorker)
 	river.AddWorker(workers, alertWorker)
+	river.AddWorker(workers, investigationWorker)
 
 	client, err := river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{
 		Logger:       rt.Logger,
@@ -89,6 +139,7 @@ func run() error {
 		Queues: map[string]river.QueueConfig{
 			"probe": {MaxWorkers: rt.Config.WorkerConcurrency},
 			"alert": {MaxWorkers: 4},
+			"ai":    {MaxWorkers: 2},
 		},
 		WorkerMiddleware: []rivertype.WorkerMiddleware{
 			observability.RiverMiddleware(obs.Metrics, obs.Tracer),

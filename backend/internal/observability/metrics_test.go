@@ -53,6 +53,28 @@ func TestMetrics_HTTPMiddlewareBoundedLabels(t *testing.T) {
 	}
 }
 
+func TestMetrics_ObserveInvestigation(t *testing.T) {
+	m := observability.NewMetrics("o1-worker", "test")
+	m.ObserveInvestigation("ok", 2*time.Second, 3, 1200, 240)
+
+	body := gatherText(t, m.Registry())
+	for _, want := range []string{
+		`o1_investigation_runs_total{status="ok"} 1`,
+		`o1_investigation_duration_seconds_count{status="ok"} 1`,
+		`o1_investigation_tool_calls_sum{status="ok"} 3`,
+		`o1_investigation_input_tokens_sum{status="ok"} 1200`,
+		`o1_investigation_output_tokens_sum{status="ok"} 240`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("investigation metrics missing %q:\n%s", want, body)
+		}
+	}
+
+	// A nil *Metrics is a documented no-op.
+	var absent *observability.Metrics
+	absent.ObserveInvestigation("ok", time.Second, 1, 1, 1)
+}
+
 func TestMetrics_HTTPMiddlewareNormalizesMethod(t *testing.T) {
 	m := observability.NewMetrics("o1-api", "test")
 	h := m.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

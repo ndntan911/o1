@@ -19,30 +19,35 @@ type Metrics struct {
 	registry *prometheus.Registry
 	handler  http.Handler
 
-	httpRequestsTotal     *prometheus.CounterVec
-	httpRequestDuration   *prometheus.HistogramVec
-	httpInFlightRequests  prometheus.Gauge
-	probeResults          *prometheus.CounterVec
-	probeDuration         *prometheus.HistogramVec
-	probeSkipped          *prometheus.CounterVec
-	alertDeliveries       *prometheus.CounterVec
-	alertDeliveryDuration *prometheus.HistogramVec
-	schedulerTicks        prometheus.Counter
-	schedulerEnqueued     prometheus.Counter
-	schedulerTickDuration prometheus.Histogram
-	incidentsOpen         prometheus.Gauge
-	queueJobs             *prometheus.GaugeVec
-	queueOldestJobAge     *prometheus.GaugeVec
-	rollupRuns            *prometheus.CounterVec
-	rollupHours           prometheus.Counter
-	rollupRows            prometheus.Counter
-	rollupWatermark       prometheus.Gauge
-	retentionRuns         *prometheus.CounterVec
-	retentionRows         *prometheus.CounterVec
-	retentionCandidates   *prometheus.CounterVec
-	retentionPartitions   *prometheus.CounterVec
-	retentionSkipped      *prometheus.CounterVec
-	maintenanceDuration   *prometheus.HistogramVec
+	httpRequestsTotal      *prometheus.CounterVec
+	httpRequestDuration    *prometheus.HistogramVec
+	httpInFlightRequests   prometheus.Gauge
+	probeResults           *prometheus.CounterVec
+	probeDuration          *prometheus.HistogramVec
+	probeSkipped           *prometheus.CounterVec
+	alertDeliveries        *prometheus.CounterVec
+	alertDeliveryDuration  *prometheus.HistogramVec
+	investigationRuns      *prometheus.CounterVec
+	investigationDuration  *prometheus.HistogramVec
+	investigationTools     *prometheus.HistogramVec
+	investigationInTokens  *prometheus.HistogramVec
+	investigationOutTokens *prometheus.HistogramVec
+	schedulerTicks         prometheus.Counter
+	schedulerEnqueued      prometheus.Counter
+	schedulerTickDuration  prometheus.Histogram
+	incidentsOpen          prometheus.Gauge
+	queueJobs              *prometheus.GaugeVec
+	queueOldestJobAge      *prometheus.GaugeVec
+	rollupRuns             *prometheus.CounterVec
+	rollupHours            prometheus.Counter
+	rollupRows             prometheus.Counter
+	rollupWatermark        prometheus.Gauge
+	retentionRuns          *prometheus.CounterVec
+	retentionRows          *prometheus.CounterVec
+	retentionCandidates    *prometheus.CounterVec
+	retentionPartitions    *prometheus.CounterVec
+	retentionSkipped       *prometheus.CounterVec
+	maintenanceDuration    *prometheus.HistogramVec
 }
 
 // NewMetrics builds a fresh registry with Go/process collectors, build info,
@@ -100,6 +105,30 @@ func NewMetrics(service, version string) *Metrics {
 			Help:    "Alert delivery duration by channel kind.",
 			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
 		}, []string{"channel_kind"}),
+		investigationRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_investigation_runs_total",
+			Help: "Copilot investigations by terminal status.",
+		}, []string{"status"}),
+		investigationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "o1_investigation_duration_seconds",
+			Help:    "Copilot investigation duration by terminal status.",
+			Buckets: []float64{0.5, 1, 2.5, 5, 10, 20, 30, 45, 60, 90, 120},
+		}, []string{"status"}),
+		investigationTools: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "o1_investigation_tool_calls",
+			Help:    "Tool calls per copilot investigation by terminal status.",
+			Buckets: []float64{0, 1, 2, 3, 4, 5, 6},
+		}, []string{"status"}),
+		investigationInTokens: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "o1_investigation_input_tokens",
+			Help:    "Input tokens per copilot investigation by terminal status.",
+			Buckets: []float64{500, 1000, 2500, 5000, 10000, 20000, 40000},
+		}, []string{"status"}),
+		investigationOutTokens: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "o1_investigation_output_tokens",
+			Help:    "Output tokens per copilot investigation by terminal status.",
+			Buckets: []float64{100, 250, 500, 1000, 2000, 4000, 6000},
+		}, []string{"status"}),
 		schedulerTicks: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "o1_scheduler_ticks_total",
 			Help: "Scheduler ticks executed.",
@@ -177,6 +206,11 @@ func NewMetrics(service, version string) *Metrics {
 		m.probeSkipped,
 		m.alertDeliveries,
 		m.alertDeliveryDuration,
+		m.investigationRuns,
+		m.investigationDuration,
+		m.investigationTools,
+		m.investigationInTokens,
+		m.investigationOutTokens,
 		m.schedulerTicks,
 		m.schedulerEnqueued,
 		m.schedulerTickDuration,
@@ -301,6 +335,20 @@ func (m *Metrics) ObserveAlert(channelKind, status string, d time.Duration) {
 	}
 	m.alertDeliveries.WithLabelValues(channelKind, status).Inc()
 	m.alertDeliveryDuration.WithLabelValues(channelKind).Observe(d.Seconds())
+}
+
+// ObserveInvestigation records one terminal investigation: its status,
+// duration, tool calls, and token usage. status must come from the bounded
+// copilot.Status enum so the label cardinality stays fixed.
+func (m *Metrics) ObserveInvestigation(status string, d time.Duration, toolCalls, inputTokens, outputTokens int) {
+	if m == nil {
+		return
+	}
+	m.investigationRuns.WithLabelValues(status).Inc()
+	m.investigationDuration.WithLabelValues(status).Observe(d.Seconds())
+	m.investigationTools.WithLabelValues(status).Observe(float64(toolCalls))
+	m.investigationInTokens.WithLabelValues(status).Observe(float64(inputTokens))
+	m.investigationOutTokens.WithLabelValues(status).Observe(float64(outputTokens))
 }
 
 // ObserveSchedulerTick records one scheduler tick, its enqueued count, and

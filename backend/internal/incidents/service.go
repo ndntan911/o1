@@ -438,6 +438,82 @@ func (s *Service) SetMonitorAlert(ctx context.Context, actorID, workspaceID, mon
 	return nil
 }
 
+// investigationEventKind is the timeline entry appended when an investigation
+// reaches ok or insufficient. Failed and incomplete runs stay out of the
+// timeline; the investigation panel shows them instead.
+const investigationEventKind = "investigation_completed"
+
+// maxInvestigationEventText bounds the free-text fields copied into the
+// timeline detail. Status is a small enum, but the model name is deployment
+// configured, so both are capped before storage.
+const maxInvestigationEventText = 100
+
+// RecordInvestigationEvent appends the single investigation_completed timeline
+// event for a successful run. It requires the authenticated principal in ctx to
+// still be a member of the workspace, and the incident must belong to that
+// workspace. The event detail is bounded and carries no investigation content:
+// only the id, model, status, tool-call count, and hypothesis count.
+func (s *Service) RecordInvestigationEvent(
+	ctx context.Context,
+	workspaceID, incidentID, investigationID uuid.UUID,
+	status, model string,
+	toolCalls, hypotheses int,
+) error {
+	principal, ok := auth.PrincipalFrom(ctx)
+	if !ok {
+		return ErrForbidden
+	}
+	if _, err := s.ws.Authorize(ctx, principal.UserID, workspaceID, workspaces.RoleMember); err != nil {
+		return err
+	}
+	if _, err := s.q.GetIncident(ctx, sqlc.GetIncidentParams{ID: incidentID, WorkspaceID: workspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load incident for investigation event: %w", err)
+	}
+
+	if toolCalls < 0 {
+		toolCalls = 0
+	}
+	if hypotheses < 0 {
+		hypotheses = 0
+	}
+	detail, err := json.Marshal(map[string]any{
+		"investigation_id": investigationID.String(),
+		"status":           boundedEventText(status),
+		"model":            boundedEventText(model),
+		"tool_calls":       toolCalls,
+		"hypotheses":       hypotheses,
+	})
+	if err != nil {
+		return fmt.Errorf("encode investigation event: %w", err)
+	}
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("new incident event id: %w", err)
+	}
+	if err := s.q.CreateIncidentEvent(ctx, sqlc.CreateIncidentEventParams{
+		ID:          eventID,
+		IncidentID:  incidentID,
+		Kind:        investigationEventKind,
+		ActorUserID: pgtype.UUID{}, // automated run, no user action
+		Detail:      detail,
+	}); err != nil {
+		return fmt.Errorf("create investigation incident event: %w", err)
+	}
+	return nil
+}
+
+// boundedEventText caps a stored timeline string by runes.
+func boundedEventText(value string) string {
+	runes := []rune(value)
+	if len(runes) > maxInvestigationEventText {
+		return string(runes[:maxInvestigationEventText])
+	}
+	return value
+}
+
 // normalizeRecipients trims, lowercases, validates, and dedupes email
 // addresses while preserving first-seen order. Enabled channels require at
 // least one recipient; empty lists are only allowed when alerts are disabled.
