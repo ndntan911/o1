@@ -212,11 +212,24 @@ func (s *Store) SaveProgress(ctx context.Context, id uuid.UUID, trace Trace, att
 // the database clock, so the caller's value is ignored. It returns ErrNotActive
 // when the row is already terminal.
 func (s *Store) Complete(ctx context.Context, inv Investigation) error {
+	return completeWith(ctx, s.q, inv)
+}
+
+// CompleteTx writes the terminal state on the caller's transaction. The worker
+// uses it to commit the row and its incident timeline event atomically. It
+// returns ErrNotActive when the row is already terminal, leaving the caller's
+// transaction free to roll back without reviving the row.
+func (s *Store) CompleteTx(ctx context.Context, tx pgx.Tx, inv Investigation) error {
+	return completeWith(ctx, s.q.WithTx(tx), inv)
+}
+
+// completeWith runs the active-only terminal update through q.
+func completeWith(ctx context.Context, q *sqlc.Queries, inv Investigation) error {
 	result, trace, err := encodePayloads(inv)
 	if err != nil {
 		return err
 	}
-	affected, err := s.q.CompleteInvestigation(ctx, sqlc.CompleteInvestigationParams{
+	affected, err := q.CompleteInvestigation(ctx, sqlc.CompleteInvestigationParams{
 		ID:           inv.ID,
 		Status:       string(inv.Status),
 		Result:       result,

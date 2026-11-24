@@ -241,23 +241,42 @@ func (s *Service) finishFailure(ctx context.Context, inv Investigation, code str
 	return s.complete(ctx, inv, s.now().Sub(started), toolCalls, hypotheses)
 }
 
-// complete writes the terminal row, the optional timeline event, the audit
-// row, and the metrics. ErrNotActive means another writer already finished the
-// row: the stale error code wins and nothing else is written.
+// complete writes the terminal row and, for a successful run, its timeline
+// event in one transaction. A failed event insert rolls the status back so River
+// can retry; the row must never be terminal without the event it promised.
+// ErrNotActive means another writer already finished the row: the stale error
+// code wins and nothing else is written. Audit and metrics happen only after the
+// transaction commits.
 func (s *Service) complete(ctx context.Context, inv Investigation, duration time.Duration, toolCalls, hypotheses int) error {
 	inv.DurationMS = durationMillis(duration)
 	inv.ToolCalls = toolCalls
+	wantsEvent := inv.Status == StatusOK || inv.Status == StatusInsufficient
 
-	if err := s.store.Complete(ctx, inv); err != nil {
+	pool := s.pool
+	if pool == nil && s.store != nil {
+		pool = s.store.pool
+	}
+	if pool == nil {
+		return fmt.Errorf("copilot: complete investigation %s: no database pool", inv.ID)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("copilot: begin investigation %s completion: %w", inv.ID, err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if err := s.store.CompleteTx(ctx, tx, inv); err != nil {
 		if errors.Is(err, ErrNotActive) {
 			return nil
 		}
 		return fmt.Errorf("copilot: complete investigation %s: %w", inv.ID, err)
 	}
-
-	if inv.Status == StatusOK || inv.Status == StatusInsufficient {
-		if err := s.incidents.RecordInvestigationEvent(
+	if wantsEvent {
+		if err := s.incidents.RecordInvestigationEventTx(
 			ctx,
+			tx,
 			inv.WorkspaceID,
 			inv.IncidentID,
 			inv.ID,
@@ -266,12 +285,11 @@ func (s *Service) complete(ctx context.Context, inv Investigation, duration time
 			toolCalls,
 			hypotheses,
 		); err != nil {
-			s.logger.Log(ctx, slog.LevelWarn, "investigation timeline event failed",
-				"investigation_id", inv.ID,
-				"incident_id", inv.IncidentID,
-				"error", err,
-			)
+			return fmt.Errorf("copilot: record investigation %s event: %w", inv.ID, err)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("copilot: commit investigation %s completion: %w", inv.ID, err)
 	}
 
 	s.recordAudit(ctx, inv, toolCalls, hypotheses)

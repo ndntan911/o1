@@ -396,6 +396,88 @@ func TestInvestigationWorker_TransientFailureRetriesThenFails(t *testing.T) {
 	}
 }
 
+// TestInvestigationWorker_EventInsertRollsBackAndRetries proves the terminal
+// row and its timeline event commit together. A blocked event insert must leave
+// the row running so River can retry instead of losing the event forever.
+func TestInvestigationWorker_EventInsertRollsBackAndRetries(t *testing.T) {
+	pool, _ := testutil.NewPostgres(t)
+	ctx := context.Background()
+	fixture := seedInvestigationFixture(t, pool)
+	createdBy := fixture.userID
+	inv := createQueuedInvestigation(t, pool, fixture, &createdBy)
+
+	if _, err := pool.Exec(ctx, `
+		CREATE FUNCTION block_investigation_event_fn() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'blocked investigation event';
+		END;
+		$$ LANGUAGE plpgsql;`); err != nil {
+		t.Fatalf("create event blocking function: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE TRIGGER block_investigation_event_trg
+			BEFORE INSERT ON incident_events
+			FOR EACH ROW WHEN (NEW.kind = 'investigation_completed')
+			EXECUTE FUNCTION block_investigation_event_fn();`); err != nil {
+		t.Fatalf("install event blocking trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS block_investigation_event_trg ON incident_events`)
+		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS block_investigation_event_fn()`)
+	})
+
+	// The stub's deterministic demo trajectory can run again on the retry.
+	svc := newInvestigationService(t, pool, &ai.Stub{}, nil)
+	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil)
+
+	err := w.Work(ctx, investigationJob(inv.ID, 1, 3))
+	if err == nil {
+		t.Fatal("Work = nil, want the blocked event to fail the transaction")
+	}
+
+	store := copilot.NewPostgresStore(pool)
+	afterFail, err := store.GetByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("load investigation after blocked event: %v", err)
+	}
+	if afterFail.Status != copilot.StatusRunning {
+		t.Fatalf("status = %s, want running (completion must roll back)", afterFail.Status)
+	}
+	if afterFail.CompletedAt != nil || afterFail.ErrorCode != "" {
+		t.Fatalf("row = %+v, want an active row with no terminal code", afterFail)
+	}
+	if events := investigationEvents(t, pool, fixture.incidentID); len(events) != 0 {
+		t.Fatalf("blocked event still wrote a timeline row: %+v", events)
+	}
+
+	if _, err := pool.Exec(ctx,
+		`DROP TRIGGER IF EXISTS block_investigation_event_trg ON incident_events`); err != nil {
+		t.Fatalf("remove event blocking trigger: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`DROP FUNCTION IF EXISTS block_investigation_event_fn()`); err != nil {
+		t.Fatalf("remove event blocking function: %v", err)
+	}
+	if err := w.Work(ctx, investigationJob(inv.ID, 2, 3)); err != nil {
+		t.Fatalf("retry Work: %v", err)
+	}
+
+	got, err := store.GetByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("load investigation after retry: %v", err)
+	}
+	if got.Status != copilot.StatusOK {
+		t.Fatalf("status = %s, want ok after retry", got.Status)
+	}
+	if got.CompletedAt == nil || got.Attempts != 2 {
+		t.Fatalf("row = %+v, want completed at attempt 2", got)
+	}
+	events := investigationEvents(t, pool, fixture.incidentID)
+	if len(events) != 1 || events[0].kind != "investigation_completed" {
+		t.Fatalf("events = %+v, want exactly one investigation_completed", events)
+	}
+}
+
 func TestInvestigationWorker_NonMemberFailsAsActorRemoved(t *testing.T) {
 	pool, _ := testutil.NewPostgres(t)
 	ctx := context.Background()

@@ -466,7 +466,33 @@ func (s *Service) RecordInvestigationEvent(
 	if _, err := s.ws.Authorize(ctx, principal.UserID, workspaceID, workspaces.RoleMember); err != nil {
 		return err
 	}
-	if _, err := s.q.GetIncident(ctx, sqlc.GetIncidentParams{ID: incidentID, WorkspaceID: workspaceID}); err != nil {
+	return s.recordInvestigationEvent(ctx, s.q, workspaceID, incidentID, investigationID, status, model, toolCalls, hypotheses)
+}
+
+// RecordInvestigationEventTx appends the same timeline event on the caller's
+// transaction. The caller has already authorized the actor and owns commit and
+// rollback; the worker uses it so the terminal row and its event commit
+// together.
+func (s *Service) RecordInvestigationEventTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID, incidentID, investigationID uuid.UUID,
+	status, model string,
+	toolCalls, hypotheses int,
+) error {
+	return s.recordInvestigationEvent(ctx, s.q.WithTx(tx), workspaceID, incidentID, investigationID, status, model, toolCalls, hypotheses)
+}
+
+// recordInvestigationEvent verifies the incident belongs to the workspace and
+// inserts the bounded investigation_completed event through q.
+func (s *Service) recordInvestigationEvent(
+	ctx context.Context,
+	q *sqlc.Queries,
+	workspaceID, incidentID, investigationID uuid.UUID,
+	status, model string,
+	toolCalls, hypotheses int,
+) error {
+	if _, err := q.GetIncident(ctx, sqlc.GetIncidentParams{ID: incidentID, WorkspaceID: workspaceID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -493,7 +519,7 @@ func (s *Service) RecordInvestigationEvent(
 	if err != nil {
 		return fmt.Errorf("new incident event id: %w", err)
 	}
-	if err := s.q.CreateIncidentEvent(ctx, sqlc.CreateIncidentEventParams{
+	if err := q.CreateIncidentEvent(ctx, sqlc.CreateIncidentEventParams{
 		ID:          eventID,
 		IncidentID:  incidentID,
 		Kind:        investigationEventKind,
