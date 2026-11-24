@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"o1/internal/auth"
 	"o1/internal/httpx"
 	"o1/internal/incidents"
 	"o1/internal/monitors"
@@ -82,10 +83,12 @@ func (f *fakeMonitorSource) Summary(ctx context.Context, actorID, workspaceID, m
 	return monitors.Summary{}, nil
 }
 
-func newTestRegistry(inc IncidentSource, mon MonitorSource, actorID uuid.UUID) *Registry {
-	registry := NewRegistry(inc, mon, func() time.Time { return testNow })
-	registry.actorFrom = func(context.Context) (uuid.UUID, bool) { return actorID, true }
-	return registry
+func newTestRegistry(inc IncidentSource, mon MonitorSource) *Registry {
+	return NewRegistry(inc, mon, func() time.Time { return testNow })
+}
+
+func actorContext(actorID uuid.UUID) context.Context {
+	return auth.ContextWithPrincipal(context.Background(), auth.Principal{UserID: actorID})
 }
 
 func TestSpecs_AreSixAndValidJSON(t *testing.T) {
@@ -156,12 +159,11 @@ func assertRequired(t *testing.T, name string, schema map[string]any, field stri
 }
 
 func TestCall_RejectsUnknownAndCrossTenant(t *testing.T) {
-	ctx := context.Background()
 	workspaceID := uuid.New()
 
 	t.Run("unknown tool", func(t *testing.T) {
-		registry := newTestRegistry(nil, nil, uuid.New())
-		if _, err := registry.Call(ctx, workspaceID, "o1_delete_everything", nil); !errors.Is(err, ErrUnknownTool) {
+		registry := newTestRegistry(nil, nil)
+		if _, err := registry.Call(actorContext(uuid.New()), workspaceID, "o1_delete_everything", nil); !errors.Is(err, ErrUnknownTool) {
 			t.Fatalf("err = %v, want ErrUnknownTool", err)
 		}
 	})
@@ -172,10 +174,10 @@ func TestCall_RejectsUnknownAndCrossTenant(t *testing.T) {
 				return incidents.IncidentDetail{}, incidents.ErrNotFound
 			},
 		}
-		registry := newTestRegistry(incidentsSource, nil, uuid.New())
+		registry := newTestRegistry(incidentsSource, nil)
 		args := json.RawMessage(`{"incident_id":"` + uuid.NewString() + `"}`)
 
-		result, err := registry.Call(ctx, workspaceID, "o1_get_incident", args)
+		result, err := registry.Call(actorContext(uuid.New()), workspaceID, "o1_get_incident", args)
 		if err != nil {
 			t.Fatalf("Call: %v", err)
 		}
@@ -194,10 +196,10 @@ func TestCall_RejectsUnknownAndCrossTenant(t *testing.T) {
 				return []incidents.DeliveryOutcome{}, nil
 			},
 		}
-		registry := newTestRegistry(incidentsSource, nil, viewerID)
+		registry := newTestRegistry(incidentsSource, nil)
 		args := json.RawMessage(`{"incident_id":"` + uuid.NewString() + `"}`)
 
-		result, err := registry.Call(ctx, workspaceID, "o1_get_alert_deliveries", args)
+		result, err := registry.Call(actorContext(viewerID), workspaceID, "o1_get_alert_deliveries", args)
 		if err != nil {
 			t.Fatalf("Call: %v", err)
 		}
@@ -207,8 +209,8 @@ func TestCall_RejectsUnknownAndCrossTenant(t *testing.T) {
 	})
 
 	t.Run("bad identifier is invalid_argument", func(t *testing.T) {
-		registry := newTestRegistry(&fakeIncidentSource{}, nil, uuid.New())
-		result, err := registry.Call(ctx, workspaceID, "o1_get_incident", json.RawMessage(`{"incident_id":"not-a-uuid"}`))
+		registry := newTestRegistry(&fakeIncidentSource{}, nil)
+		result, err := registry.Call(actorContext(uuid.New()), workspaceID, "o1_get_incident", json.RawMessage(`{"incident_id":"not-a-uuid"}`))
 		if err != nil {
 			t.Fatalf("Call: %v", err)
 		}
@@ -219,7 +221,7 @@ func TestCall_RejectsUnknownAndCrossTenant(t *testing.T) {
 }
 
 func TestCall_TruncatesStructurally(t *testing.T) {
-	ctx := context.Background()
+	ctx := actorContext(uuid.New())
 	workspaceID := uuid.New()
 	monitorID := uuid.New()
 
@@ -243,7 +245,7 @@ func TestCall_TruncatesStructurally(t *testing.T) {
 			return monitors.Summary{Checks: 100, Down: 100, P95LatencyMS: 250}, nil
 		},
 	}
-	registry := newTestRegistry(nil, monitorsSource, uuid.New())
+	registry := newTestRegistry(nil, monitorsSource)
 	args := json.RawMessage(`{"monitor_id":"` + monitorID.String() + `","hours":24}`)
 
 	result, err := registry.Call(ctx, workspaceID, "o1_get_recent_checks", args)
@@ -299,7 +301,7 @@ func TestCall_TruncatesStructurally(t *testing.T) {
 }
 
 func TestCall_ListMonitorsFillsActiveIncident(t *testing.T) {
-	ctx := context.Background()
+	ctx := actorContext(uuid.New())
 	workspaceID := uuid.New()
 	downID := uuid.New()
 	upID := uuid.New()
@@ -318,7 +320,7 @@ func TestCall_ListMonitorsFillsActiveIncident(t *testing.T) {
 			return []incidents.Incident{{ID: activeIncidentID, MonitorID: downID}}, nil
 		},
 	}
-	registry := newTestRegistry(incidentsSource, monitorsSource, uuid.New())
+	registry := newTestRegistry(incidentsSource, monitorsSource)
 
 	result, err := registry.Call(ctx, workspaceID, "o1_list_monitors", nil)
 	if err != nil {

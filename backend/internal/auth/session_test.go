@@ -923,3 +923,21 @@ func mustTOTPCode(t *testing.T, secret string, at time.Time) string {
 	}
 	return code
 }
+
+func TestContextWithPrincipal_RoundTrips(t *testing.T) {
+	principal := auth.Principal{
+		UserID:    uuid.New(),
+		SessionID: uuid.New(),
+		Email:     "user@example.com",
+		IsAdmin:   true,
+	}
+
+	ctx := auth.ContextWithPrincipal(context.Background(), principal)
+	got, ok := auth.PrincipalFrom(ctx)
+	if !ok {
+		t.Fatal("PrincipalFrom returned no principal")
+	}
+	if got != principal {
+		t.Fatalf("principal = %+v, want %+v", got, principal)
+	}
+}

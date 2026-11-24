@@ -56,7 +56,6 @@ type Registry struct {
 	incidents IncidentSource
 	monitors  MonitorSource
 	now       func() time.Time
-	actorFrom func(context.Context) (uuid.UUID, bool)
 }
 
 // NewRegistry wires a registry around the domain services and a clock.
@@ -64,18 +63,7 @@ func NewRegistry(incidents IncidentSource, monitors MonitorSource, now func() ti
 	if now == nil {
 		now = time.Now
 	}
-	return &Registry{
-		incidents: incidents,
-		monitors:  monitors,
-		now:       now,
-		actorFrom: func(ctx context.Context) (uuid.UUID, bool) {
-			principal, ok := auth.PrincipalFrom(ctx)
-			if !ok {
-				return uuid.Nil, false
-			}
-			return principal.UserID, true
-		},
-	}
+	return &Registry{incidents: incidents, monitors: monitors, now: now}
 }
 
 // Specs returns the six tool definitions in spec order.
@@ -87,10 +75,11 @@ func (r *Registry) Call(ctx context.Context, workspaceID uuid.UUID, name string,
 	if _, ok := specFor(name); !ok {
 		return Result{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
 	}
-	actorID, ok := r.actorFrom(ctx)
+	principal, ok := auth.PrincipalFrom(ctx)
 	if !ok {
 		return r.errorResult("forbidden"), nil
 	}
+	actorID := principal.UserID
 
 	switch name {
 	case "o1_list_monitors":

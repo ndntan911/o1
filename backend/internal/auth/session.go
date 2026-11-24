@@ -57,6 +57,14 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
+// ContextWithPrincipal returns a child context carrying p as the authenticated
+// principal. It lets callers that run work outside the HTTP middleware, such as
+// the copilot worker and tool-registry tests, use the same principal context as
+// request handlers.
+func ContextWithPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, p)
+}
+
 // LoginStart is the result of the password step of a login. When MFARequired
 // is true, Token is empty and Challenge carries the raw, single-use token that
 // must be submitted with the second factor.
