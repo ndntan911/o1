@@ -21,11 +21,13 @@ import (
 	"o1/internal/billing"
 	"o1/internal/config"
 	"o1/internal/copilot"
+	"o1/internal/copilot/tools"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
 	"o1/internal/httpx"
 	"o1/internal/incidents"
 	"o1/internal/insights"
+	"o1/internal/mcpserver"
 	"o1/internal/monitors"
 	"o1/internal/observability"
 	"o1/internal/probe"
@@ -59,8 +61,9 @@ type Dependencies struct {
 	// RiverInserter enqueues investigation jobs. It is an insert-only client,
 	// so the API process does not consume the "ai" queue.
 	RiverInserter copilot.JobInserter
-	// MCPHandler serves POST /mcp when the MCP feature is enabled. Task 11
-	// registers the route; the API process only assembles the handler here.
+	// MCPHandler overrides the MCP handler the router builds when MCPEnabled
+	// is true. The router builds one from Pool, AuthService, and the domain
+	// services; main.go leaves this nil.
 	MCPHandler http.Handler
 	Metrics    *observability.Metrics
 	Tracer     *observability.Tracer
@@ -423,9 +426,34 @@ func NewRouter(deps Dependencies) http.Handler {
 		keySvc = apikeys.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
 	}
 
+	// The MCP endpoint gets a real per-key handler only when the feature is
+	// enabled and every dependency it needs exists. Otherwise the route is
+	// still registered so callers get an explicit 501, not a 404.
+	mcpHandler := deps.MCPHandler
+	if deps.Config.MCPEnabled && mcpHandler == nil && deps.Pool != nil &&
+		authSvc != nil && incidentSvc != nil && monitorSvc != nil {
+		mcpHandler = mcpserver.New(mcpserver.Options{
+			Auth:           authSvc,
+			Registry:       tools.NewRegistry(incidentSvc, monitorSvc, time.Now),
+			Queries:        sqlc.New(deps.Pool),
+			AllowedOrigins: deps.Config.AllowedOrigins,
+			Version:        deps.Config.Release,
+			Logger:         logger,
+			Metrics:        deps.Metrics,
+		}).Handler()
+	}
+	if deps.Config.MCPEnabled && mcpHandler == nil {
+		logger.Warn("mcp enabled but dependencies are unavailable")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HandleHealthz)
 	mux.HandleFunc("GET /readyz", readyzHandler(deps.Pool))
+	if deps.Config.MCPEnabled && mcpHandler != nil {
+		mux.Handle("POST /mcp", mcpHandler)
+	} else {
+		mux.Handle("POST /mcp", mcpNotImplementedHandler())
+	}
 
 	requireSession := auth.RequireSession(authSvc)
 	// requireAuth accepts a Bearer API key or a session cookie. keyLimiter
@@ -580,6 +608,18 @@ func writeNotReady(w http.ResponseWriter) {
 		Title:  "Service Unavailable",
 		Status: http.StatusServiceUnavailable,
 		Code:   "not_ready",
+	})
+}
+
+// mcpNotImplementedHandler answers POST /mcp while the feature is disabled.
+func mcpNotImplementedHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteProblem(w, httpx.Problem{
+			Type:   "about:blank",
+			Title:  "Not Implemented",
+			Status: http.StatusNotImplemented,
+			Code:   httpx.CodeNotImplemented,
+		})
 	})
 }
 

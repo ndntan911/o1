@@ -32,6 +32,8 @@ type Metrics struct {
 	investigationTools     *prometheus.HistogramVec
 	investigationInTokens  *prometheus.HistogramVec
 	investigationOutTokens *prometheus.HistogramVec
+	mcpToolCalls           *prometheus.CounterVec
+	mcpToolDuration        *prometheus.HistogramVec
 	schedulerTicks         prometheus.Counter
 	schedulerEnqueued      prometheus.Counter
 	schedulerTickDuration  prometheus.Histogram
@@ -129,6 +131,15 @@ func NewMetrics(service, version string) *Metrics {
 			Help:    "Output tokens per copilot investigation by terminal status.",
 			Buckets: []float64{100, 250, 500, 1000, 2000, 4000, 6000},
 		}, []string{"status"}),
+		mcpToolCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "o1_mcp_tool_calls_total",
+			Help: "MCP tool calls by tool and bounded status.",
+		}, []string{"tool", "status"}),
+		mcpToolDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "o1_mcp_tool_duration_seconds",
+			Help:    "MCP tool call duration by tool and bounded status.",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		}, []string{"tool", "status"}),
 		schedulerTicks: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "o1_scheduler_ticks_total",
 			Help: "Scheduler ticks executed.",
@@ -211,6 +222,8 @@ func NewMetrics(service, version string) *Metrics {
 		m.investigationTools,
 		m.investigationInTokens,
 		m.investigationOutTokens,
+		m.mcpToolCalls,
+		m.mcpToolDuration,
 		m.schedulerTicks,
 		m.schedulerEnqueued,
 		m.schedulerTickDuration,
@@ -349,6 +362,16 @@ func (m *Metrics) ObserveInvestigation(status string, d time.Duration, toolCalls
 	m.investigationTools.WithLabelValues(status).Observe(float64(toolCalls))
 	m.investigationInTokens.WithLabelValues(status).Observe(float64(inputTokens))
 	m.investigationOutTokens.WithLabelValues(status).Observe(float64(outputTokens))
+}
+
+// ObserveMCPTool records one MCP tool call. tool and status must come from
+// bounded sets so the label cardinality stays fixed.
+func (m *Metrics) ObserveMCPTool(tool, status string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mcpToolCalls.WithLabelValues(tool, status).Inc()
+	m.mcpToolDuration.WithLabelValues(tool, status).Observe(d.Seconds())
 }
 
 // ObserveSchedulerTick records one scheduler tick, its enqueued count, and
