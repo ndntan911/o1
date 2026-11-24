@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"o1/internal/evidence"
 	"o1/internal/incidents"
 	"o1/internal/monitors"
 )
@@ -68,16 +69,24 @@ func BuildPayload(
 ) Payload {
 	inc := detail.Incident
 
-	view := MonitorView{Name: inc.MonitorName}
+	source := monitors.Monitor{Name: inc.MonitorName}
 	if monitor != nil {
-		view.Method = monitor.Method
-		view.ExpectedStatus = monitor.ExpectedStatus
-		view.IntervalSeconds = monitor.IntervalSeconds
-		view.TimeoutSeconds = monitor.TimeoutSeconds
-		view.ConfirmationThreshold = monitor.ConfirmationThreshold
-		view.RecoveryThreshold = monitor.RecoveryThreshold
+		source = *monitor
+	}
+	projectedMonitor := evidence.Monitor(source)
+	view := MonitorView{
+		Name:                  projectedMonitor.Name,
+		Method:                projectedMonitor.Method,
+		ExpectedStatus:        projectedMonitor.ExpectedStatus,
+		IntervalSeconds:       projectedMonitor.IntervalSeconds,
+		TimeoutSeconds:        projectedMonitor.TimeoutSeconds,
+		ConfirmationThreshold: projectedMonitor.ConfirmationThreshold,
+		RecoveryThreshold:     projectedMonitor.RecoveryThreshold,
 	}
 
+	projectedIncident := evidence.Incident(detail)
+	// Duration is the only field that depends on the caller's clock. Keep the
+	// injected time so the payload hash stays deterministic in tests.
 	end := now
 	if inc.ResolvedAt != nil {
 		end = *inc.ResolvedAt
@@ -86,35 +95,49 @@ func BuildPayload(
 	if duration < 0 {
 		duration = 0
 	}
+	projectedIncident.DurationMinutes = duration
 
-	events := make([]EventView, 0, len(detail.Events))
-	for _, event := range detail.Events {
+	projectedEvents := evidence.Timeline(detail)
+	events := make([]EventView, 0, len(projectedEvents))
+	for _, event := range projectedEvents {
+		detailText := "{}"
+		if encoded, err := json.Marshal(event.Detail); err == nil {
+			detailText = string(encoded)
+		}
 		events = append(events, EventView{
 			ID:     event.ID,
 			Kind:   event.Kind,
-			At:     event.CreatedAt,
-			Detail: string(event.Detail),
+			At:     event.At,
+			Detail: detailText,
 		})
 	}
 
 	dels := make([]DeliveryView, 0, len(deliveries))
 	for _, delivery := range deliveries {
-		dels = append(dels, DeliveryView{
+		projectedDelivery := evidence.Delivery(incidents.DeliveryOutcome{
 			ChannelKind: delivery.ChannelKind,
 			Event:       delivery.Event,
 			Status:      delivery.Status,
 			Attempts:    delivery.Attempts,
+			SentAt:      delivery.SentAt,
+			CreatedAt:   delivery.CreatedAt,
+		})
+		dels = append(dels, DeliveryView{
+			ChannelKind: projectedDelivery.ChannelKind,
+			Event:       projectedDelivery.Event,
+			Status:      projectedDelivery.Status,
+			Attempts:    projectedDelivery.Attempts,
 		})
 	}
 
 	return Payload{
 		Monitor: view,
 		Incident: IncidentView{
-			Status:        inc.Status,
-			StartedAt:     inc.StartedAt,
-			ResolvedAt:    inc.ResolvedAt,
-			ReminderCount: inc.ReminderCount,
-			DurationMin:   duration,
+			Status:        projectedIncident.Status,
+			StartedAt:     projectedIncident.StartedAt,
+			ResolvedAt:    projectedIncident.ResolvedAt,
+			ReminderCount: projectedIncident.ReminderCount,
+			DurationMin:   projectedIncident.DurationMinutes,
 		},
 		Timeline:   events,
 		Deliveries: dels,

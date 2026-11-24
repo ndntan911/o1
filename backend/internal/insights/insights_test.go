@@ -30,7 +30,7 @@ func fixture() (incidents.IncidentDetail, []incidents.Delivery, *monitors.Monito
 			ReminderCount: 1,
 		},
 		Events: []incidents.IncidentEvent{
-			{ID: eventID, Kind: "opened", Detail: json.RawMessage(`{"next":"down"}`), CreatedAt: started},
+			{ID: eventID, Kind: "opened", Detail: json.RawMessage(`{"next":"down","internal_only":"should-not-appear"}`), CreatedAt: started},
 		},
 	}
 
@@ -88,6 +88,15 @@ func TestBuildPayload_LeaksNothingSensitive(t *testing.T) {
 	}
 	if len(payload.Timeline) != 1 || payload.Timeline[0].Kind != "opened" {
 		t.Fatalf("timeline = %+v", payload.Timeline)
+	}
+	// The allowlist keeps known detail keys and drops unknown ones; raw detail
+	// must never survive wholesale.
+	if !strings.Contains(payload.Timeline[0].Detail, `"next":"down"`) {
+		t.Fatalf("timeline lost allowlisted detail: %+v", payload.Timeline[0])
+	}
+	if strings.Contains(payload.Timeline[0].Detail, "internal_only") ||
+		strings.Contains(payload.Timeline[0].Detail, "should-not-appear") {
+		t.Fatalf("timeline kept unknown detail: %+v", payload.Timeline[0])
 	}
 	if len(payload.Deliveries) != 1 || payload.Deliveries[0].ChannelKind != "email" {
 		t.Fatalf("deliveries = %+v", payload.Deliveries)

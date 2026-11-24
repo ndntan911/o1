@@ -119,6 +119,18 @@ type Delivery struct {
 	CreatedAt   time.Time  `json:"created_at"`
 }
 
+// DeliveryOutcome is the member-safe view of one alert delivery: who was not
+// notified is irrelevant, so recipient, channel name, and error text are
+// omitted. It exists so evidence projections never widen Delivery.
+type DeliveryOutcome struct {
+	ChannelKind string     `json:"channel_kind"`
+	Event       string     `json:"event"`
+	Status      string     `json:"status"`
+	Attempts    int        `json:"attempts"`
+	SentAt      *time.Time `json:"sent_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
 // IncidentFilter selects a page of incidents. Status accepts active, open,
 // acknowledged, resolved, or all; an empty status means active.
 type IncidentFilter struct {
