@@ -495,6 +495,7 @@ git commit -m "feat: read redacted delivery outcomes for members"
 **Files:**
 - Create: `backend/internal/copilot/tools/definitions.go`
 - Create: `backend/internal/copilot/tools/registry.go`
+- Modify: `backend/internal/auth/session.go` — add `ContextWithPrincipal` so tests and later tasks use the real principal context, not a test seam.
 - Test: `backend/internal/copilot/tools/registry_test.go`
 
 **Interfaces:**
@@ -509,6 +510,7 @@ git commit -m "feat: read redacted delivery outcomes for members"
   - `type Registry struct`; `func NewRegistry(incidents IncidentSource, monitors MonitorSource, now func() time.Time) *Registry`.
   - `func (r *Registry) Specs() []Spec`
   - `func (r *Registry) Call(ctx context.Context, workspaceID uuid.UUID, name string, args json.RawMessage) (Result, error)`
+  - `func auth.ContextWithPrincipal(ctx context.Context, p auth.Principal) context.Context` — reuses the existing `principalKey{}` key; the registry tests and Task 8 both use it.
 
 - [ ] **Step 1: Write the failing registry tests**
 
@@ -537,6 +539,19 @@ func TestCall_TruncatesStructurally(t *testing.T) {
     // assert len <= 8192, Meta.Truncated true, Meta.Total 100, and a JSON Pointer
     // into Data/checks/0 still resolves.
 }
+
+func TestCall_ArgumentMappingAndSuccess(t *testing.T) {
+    // Fake sources capture their arguments. Assert:
+    // o1_list_incidents passes filter.Status, filter.MonitorID, and the limit.
+    // o1_get_monitor returns the projected monitor.
+    // o1_get_alert_deliveries passes the incident id and returns member rows.
+    // o1_get_recent_checks passes the 6h window and the result limit.
+}
+
+func TestCall_RejectsWorkspaceID(t *testing.T) {
+    // o1_get_incident with {"incident_id":"...","workspace_id":"..."}
+    // -> Result{IsError:true, ErrorCode:"invalid_argument"}.
+}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -546,7 +561,7 @@ Expected: FAIL — `Specs`, `NewRegistry` undefined.
 
 - [ ] **Step 3: Implement definitions and dispatch**
 
-Hand-write the six JSON schemas with `type:"object"`, `additionalProperties:false`, and required ID fields. `Call` looks up the spec, parses args with `json.Decoder.DisallowUnknownFields`, authorizes `spec.MinRole` with `workspaces.Authorize`, then dispatches. For `o1_list_monitors`, fill `MonitorView.ActiveIncidentID` by listing the workspace's active incidents once and mapping by monitor id; do not add a new monitor-service method. Map `workspaces.ErrForbidden` to `forbidden`, `incidents.ErrNotFound`/`monitors.ErrNotFound` to `not_found`, bad UUID/limit to `invalid_argument`. Never return a raw service error to the model; return `Result{IsError:true, ErrorCode:"internal"}` and log at the caller.
+Hand-write the six JSON schemas with `type:"object"`, `additionalProperties:false`, and required ID fields. `Call` looks up the spec, parses args with `json.Decoder.DisallowUnknownFields`, then dispatches. The tests build the actor context with the real `auth.ContextWithPrincipal`, not a test-only seam. Do not add a separate authorizer: the source methods already enforce viewer for monitor/incident/check reads and member for `DeliveryOutcomes`; `Spec.MinRole` is the MCP tool-list filter, and a viewer that calls the delivery tool directly still gets `forbidden` from the service. For `o1_list_monitors`, fill `MonitorView.ActiveIncidentID` by listing the workspace's active incidents once and mapping by monitor id; do not add a new monitor-service method. Map `workspaces.ErrForbidden` to `forbidden`, `incidents.ErrNotFound`/`monitors.ErrNotFound` to `not_found`, bad UUID/limit to `invalid_argument`. Never return a raw service error to the model; return `Result{IsError:true, ErrorCode:"internal"}` and log at the caller.
 
 - [ ] **Step 4: Implement truncation**
 
@@ -721,7 +736,6 @@ git commit -m "feat: add the bounded copilot agent runner"
 - Create: `backend/internal/jobs/investigation.go`
 - Create: `backend/internal/copilot/service.go`
 - Create: `backend/internal/worker/investigation_worker.go`
-- Modify: `backend/internal/auth/session.go` — add `ContextWithPrincipal`.
 - Modify: `backend/internal/incidents/service.go` — add `RecordInvestigationEvent`.
 - Modify: `backend/internal/observability/metrics.go` — add `ObserveInvestigation`.
 - Modify: `backend/cmd/worker/main.go`
@@ -730,7 +744,6 @@ git commit -m "feat: add the bounded copilot agent runner"
 **Interfaces:**
 - Consumes: Task 1 store, Task 5 registry, Task 7 runner, `incidents.Service`, `monitors.Service`.
 - Produces:
-  - `func auth.ContextWithPrincipal(ctx context.Context, p auth.Principal) context.Context`
   - `func (s *incidents.Service) RecordInvestigationEvent(ctx context.Context, workspaceID, incidentID, investigationID uuid.UUID, status, model string, toolCalls, hypotheses int) error` — requires `RoleMember`, appends one `investigation_completed` event with a bounded detail object.
   - `func (m *observability.Metrics) ObserveInvestigation(status string, d time.Duration, toolCalls, inputTokens, outputTokens int)` — counter plus duration/token histograms; nil receiver is safe.
   - `type InvestigationArgs struct { InvestigationID uuid.UUID }`; `func (InvestigationArgs) Kind() string { return "investigation" }`.
@@ -769,7 +782,7 @@ Expected: FAIL — `copilot.NewService`, worker undefined.
 
 - [ ] **Step 3: Implement `Service.Run`**
 
-`NewService` builds the tool registry with `tools.NewRegistry(opts.Incidents, opts.Monitors, opts.Now)` and the runner with `NewRunner(opts.Provider, registry, opts.Model, opts.Limits, opts.Now)`; it stores `opts.Workspaces`, `opts.Queries`, and `opts.Pool` for `Start`. Add `auth.ContextWithPrincipal` to `internal/auth/session.go` by reusing the existing `principalKey{}` context key. Load the row; terminal statuses are no-ops. Build the actor context with `auth.ContextWithPrincipal(ctx, auth.Principal{UserID: *inv.CreatedBy})`; if `CreatedBy` is nil or no longer a member, complete `failed/actor_removed`. Build the seed; on error complete `failed/internal`. `MarkRunning` with `attempt` and `HashSeed`. Run the runner. On `Outcome.Err` transient and `attempt < maxAttempts`, `SaveProgress` and return the error for River; otherwise complete `failed/provider_unavailable` on the final attempt. On `StatusOK` or `StatusInsufficient`, complete, append one `investigation_completed` timeline event via `RecordInvestigationEvent`, and write an `investigation_completed` audit row with the model, status, tool calls, hypotheses, and token counts. On other statuses, complete without a timeline event and write the same audit row with the error code. Record `ObserveInvestigation(status, duration, toolCalls, inputTokens, outputTokens)` when non-nil.
+`NewService` builds the tool registry with `tools.NewRegistry(opts.Incidents, opts.Monitors, opts.Now)` and the runner with `NewRunner(opts.Provider, registry, opts.Model, opts.Limits, opts.Now)`; it stores `opts.Workspaces`, `opts.Queries`, and `opts.Pool` for `Start`. `auth.ContextWithPrincipal` is available from Task 5. Load the row; terminal statuses are no-ops. Build the actor context with `auth.ContextWithPrincipal(ctx, auth.Principal{UserID: *inv.CreatedBy})`; if `CreatedBy` is nil or no longer a member, complete `failed/actor_removed`. Build the seed; on error complete `failed/internal`. `MarkRunning` with `attempt` and `HashSeed`. Run the runner. On `Outcome.Err` transient and `attempt < maxAttempts`, `SaveProgress` and return the error for River; otherwise complete `failed/provider_unavailable` on the final attempt. On `StatusOK` or `StatusInsufficient`, complete, append one `investigation_completed` timeline event via `RecordInvestigationEvent`, and write an `investigation_completed` audit row with the model, status, tool calls, hypotheses, and token counts. On other statuses, complete without a timeline event and write the same audit row with the error code. Record `ObserveInvestigation(status, duration, toolCalls, inputTokens, outputTokens)` when non-nil.
 
 - [ ] **Step 4: Wire the worker**
 
