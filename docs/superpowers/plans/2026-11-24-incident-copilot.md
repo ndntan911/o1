@@ -104,11 +104,13 @@ These are the failure modes most likely to make the feature unsafe or untrustwor
   - `type Hypothesis struct { Rank int; Cause string; Confidence string; Evidence []Evidence; FalsifiedBy string; Unverified bool }`
   - `type Result struct { Sufficient bool; Assessment string; Hypotheses []Hypothesis; NextChecks []string }`
   - `type Step struct { Index int; Tool string; ArgsSummary string; Status string; DurationMS int }`
-  - `type ToolCallRecord struct { ID string; Name string; ArgsSummary string; Result json.RawMessage; IsError bool; DurationMS int }`
-  - `type Trace struct { Steps []Step; Calls []ToolCallRecord }`
+  - `type ToolCallRecord struct { ID string; Name string; ArgsSummary string; ArgsHash string; Result json.RawMessage; IsError bool; DurationMS int }`
+  - `type ModelCallRecord struct { Index int; FinishReason string; InputTokens, OutputTokens, DurationMS int }`
+  - `type Trace struct { Steps []Step; Calls []ToolCallRecord; ModelCalls []ModelCallRecord }`
   - `type Investigation struct { ID, WorkspaceID, IncidentID uuid.UUID; Status Status; Model, PromptVersion, SeedHash string; Result *Result; Trace Trace; Attempts, ToolCalls, InputTokens, OutputTokens, DurationMS int; ErrorCode string; CreatedBy *uuid.UUID; CreatedAt time.Time; CompletedAt *time.Time }`
   - `type Store struct`; `func NewPostgresStore(pool *pgxpool.Pool) *Store`.
-  - `func (s *Store) Create(ctx context.Context, inv Investigation) (Investigation, error)`
+  - `func (s *Store) Create(ctx context.Context, inv Investigation) (Investigation, error)` — begins a transaction and calls `CreateTx`.
+  - `func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, inv Investigation) (Investigation, error)` — the atomic path Task 10 uses to insert the row and the River job in one transaction.
   - `func (s *Store) Get(ctx context.Context, workspaceID, incidentID, id uuid.UUID) (Investigation, error)`
   - `func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (Investigation, error)`
   - `func (s *Store) Latest(ctx context.Context, workspaceID, incidentID uuid.UUID) (*Investigation, error)`
@@ -119,7 +121,7 @@ These are the failure modes most likely to make the feature unsafe or untrustwor
   - `func (s *Store) ReapAllStale(ctx context.Context, before time.Time) (int64, error)`
   - `func (s *Store) CountForIncidentSince(ctx context.Context, incidentID uuid.UUID, since time.Time) (int64, error)`
   - `func (s *Store) CountForWorkspaceSince(ctx context.Context, workspaceID uuid.UUID, since time.Time) (int64, error)`
-  - Errors `ErrNotFound`, `ErrActive`.
+  - Errors `ErrNotFound`, `ErrActive`, `ErrNotActive` — the last one is returned by `MarkRunning`, `SaveProgress`, and `Complete` when the row is no longer `queued`/`running` (for example after the stale reaper won the race).
 
 - [ ] **Step 1: Write the migration and queries**
 
@@ -147,21 +149,21 @@ SELECT * FROM incident_investigations
 WHERE workspace_id=$1 AND incident_id=$2
 ORDER BY created_at DESC, id DESC LIMIT 1;
 
--- name: MarkInvestigationRunning :exec
+-- name: MarkInvestigationRunning :execrows
 UPDATE incident_investigations
 SET status='running', attempts=$2, seed_hash=$3, completed_at=NULL
 WHERE id=$1 AND status IN ('queued','running');
 
--- name: SaveInvestigationProgress :exec
+-- name: SaveInvestigationProgress :execrows
 UPDATE incident_investigations
 SET trace=$2, attempts=$3, tool_calls=$4, input_tokens=$5, output_tokens=$6
-WHERE id=$1;
+WHERE id=$1 AND status='running';
 
--- name: CompleteInvestigation :exec
+-- name: CompleteInvestigation :execrows
 UPDATE incident_investigations
 SET status=$2, result=$3, trace=$4, duration_ms=$5, error_code=$6,
     input_tokens=$7, output_tokens=$8, tool_calls=$9, completed_at=now()
-WHERE id=$1;
+WHERE id=$1 AND status IN ('queued','running');
 
 -- name: ReapStaleInvestigations :execrows
 UPDATE incident_investigations
@@ -213,6 +215,17 @@ func TestPostgresStore_OneActiveAndReapStale(t *testing.T) {
 func TestPostgresStore_GetIsWorkspaceScoped(t *testing.T) {
     // Create in ws A; Get from ws B returns ErrNotFound.
 }
+
+func TestPostgresStore_StaleRowCannotBeRevived(t *testing.T) {
+    // Create a running row with created_at 10 minutes ago; ReapStale -> failed/stale.
+    // MarkRunning, SaveProgress, and Complete each return ErrNotActive.
+    // Reload and assert status=failed, error_code=stale, completed_at non-null.
+}
+
+func TestPostgresStore_CreateTxRollsBack(t *testing.T) {
+    // Begin a transaction, CreateTx, rollback; Latest returns nil.
+    // Then Create succeeds and Latest returns the row.
+}
 ```
 
 Define `seedWorkspaceIncident(t, pool)` in the same test file: insert a user, workspace, monitor, monitor_state, and incident with `gen_random_uuid()` where the schema allows; return their ids. Use raw SQL like `backend/internal/worker/alert_worker_test.go` does.
@@ -224,7 +237,7 @@ Expected: FAIL — `NewPostgresStore` undefined.
 
 - [ ] **Step 5: Implement types and the store**
 
-Map each generated row to `Investigation` with `json.Unmarshal` of `trace` and `result`; marshal on write. `Create` maps PostgreSQL unique violation `incident_investigations_one_active_idx` to `ErrActive`. `Latest` returns `nil, nil` on `pgx.ErrNoRows`; `Get` returns `ErrNotFound`.
+Map each generated row to `Investigation` with `json.Unmarshal` of `trace` and `result`; marshal on write. `CreateTx` runs `CreateInvestigation` on the caller's transaction and maps PostgreSQL unique violation `incident_investigations_one_active_idx` to `ErrActive`; `Create` begins a transaction, calls `CreateTx`, and commits. `MarkRunning`, `SaveProgress`, and `Complete` use the `:execrows` queries and return `ErrNotActive` when zero rows match, so a stale row cannot be revived by its old worker. `Latest` returns `nil, nil` on `pgx.ErrNoRows`; `Get` returns `ErrNotFound`. The roundtrip test includes `Trace.ModelCalls` and `ToolCallRecord.ArgsHash`.
 
 - [ ] **Step 6: Run the test to verify it passes**
 
@@ -681,7 +694,7 @@ Expected: FAIL — `Runner` undefined.
 
 - [ ] **Step 3: Implement the loop**
 
-Start with `ChatRoleSystem` = `SystemPrompt`, `ChatRoleUser` = `BuildUserMessage(seed)`. Each iteration calls `provider.Chat` with the six tool definitions from `tools.Specs()`. If tool calls are present, execute sequentially (each with `CallTimeout`), append a `tool` message with the envelope JSON, record a `Step` and `ToolCallRecord`, and stop with `incomplete/limit_exceeded` at 6 calls. A Go error from the caller becomes an `is_error` tool result with code `internal`; it does not abort the loop. If text is present, parse it; on parse error return `failed/invalid_output`. Verify; `StatusOK` when verified count > 0, else `StatusInsufficient`. Track token totals and a 90s overall context; hitting it returns `incomplete/limit_exceeded`. A transient provider error returns `Outcome{Err: err}`; a permanent one returns `failed/provider_rejected`.
+Start with `ChatRoleSystem` = `SystemPrompt`, `ChatRoleUser` = `BuildUserMessage(seed)`. Each iteration calls `provider.Chat` with the six tool definitions from `tools.Specs()`; record one `ModelCallRecord` per call (finish reason, input/output tokens, duration). If tool calls are present, execute sequentially (each with `CallTimeout`), append a `tool` message with the envelope JSON, record a `Step` and `ToolCallRecord` (including the SHA-256 hex `ArgsHash` of the raw arguments), and stop with `incomplete/limit_exceeded` at 6 calls. A Go error from the caller becomes an `is_error` tool result with code `internal`; it does not abort the loop. If text is present, parse it; on parse error return `failed/invalid_output`. Verify; `StatusOK` when verified count > 0, else `StatusInsufficient`. Track token totals and a 90s overall context; hitting it returns `incomplete/limit_exceeded`. A transient provider error returns `Outcome{Err: err}`; a permanent one returns `failed/provider_rejected`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -860,7 +873,7 @@ Expected: FAIL — routes absent.
 
 - [ ] **Step 3: Implement `Start` atomically**
 
-Call `s.workspaces.Authorize(ctx, actorID, workspaceID, workspaces.RoleMember)` first (viewer -> `ErrForbidden`), then `s.incidents.Get(ctx, actorID, workspaceID, incidentID)` to verify the incident and return `ErrNotFound` for a cross-workspace id. Open a transaction; `qtx := s.queries.WithTx(tx)`; call `qtx.ReapStaleInvestigations(ctx, incidentID, now-5m)`; count with `qtx.CountInvestigationsForIncidentSince` and `qtx.CountInvestigationsForWorkspaceSince`, return `ErrLimit` at 3/20; insert the investigation row with `qtx.CreateInvestigation` and `jobs.InvestigationArgs` with `InsertTx` and `river.InsertOpts{Queue: "ai", MaxAttempts: 3}`; commit. Map the partial unique violation to `ErrActive`. Write `investigation_started` audit best-effort.
+Call `s.workspaces.Authorize(ctx, actorID, workspaceID, workspaces.RoleMember)` first (viewer -> `ErrForbidden`), then `s.incidents.Get(ctx, actorID, workspaceID, incidentID)` to verify the incident and return `ErrNotFound` for a cross-workspace id. Open a transaction; `qtx := s.queries.WithTx(tx)`; call `qtx.ReapStaleInvestigations(ctx, incidentID, now-5m)`; count with `qtx.CountInvestigationsForIncidentSince` and `qtx.CountInvestigationsForWorkspaceSince`, return `ErrLimit` at 3/20; insert the investigation row with `s.store.CreateTx(ctx, tx, inv)` (which maps the partial unique violation to `ErrActive`) and `jobs.InvestigationArgs` with `InsertTx` and `river.InsertOpts{Queue: "ai", MaxAttempts: 3}`; commit. Write `investigation_started` audit best-effort.
 
 - [ ] **Step 4: Implement handlers and routes**
 

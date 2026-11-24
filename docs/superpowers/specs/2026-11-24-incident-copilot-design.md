@@ -385,11 +385,11 @@ CREATE UNIQUE INDEX incident_investigations_one_active_idx
     WHERE status IN ('queued', 'running');
 ```
 
-`trace` holds the seed hash, each model call (finish reason, tokens), and each
-tool call (id, tool, arguments hash, redacted arguments, redacted result, error
-flag, duration). It is capped; when the cap is reached, result bodies are
-replaced by their hashes and a `truncated` marker, because the citation check
-already happened before storage.
+The row stores `seed_hash` separately. `trace` holds each model call (finish
+reason, tokens, duration) and each tool call (id, tool, arguments summary,
+arguments hash, redacted result, error flag, duration). It is capped; when the
+cap is reached, result bodies are replaced by their hashes and a `truncated`
+marker, because the citation check already happened before storage.
 
 The worker marks the row `running` when it starts. Retries do not create a
 second row. A transient provider error leaves the row `running`, increments
