@@ -1,0 +1,61 @@
+{
+  "name": "one_success_in_failures",
+  "seed": {
+    "incident": {
+      "id": "11111111-1111-4111-8111-111111111113",
+      "monitor_id": "22222222-2222-4222-8222-222222222224",
+      "monitor_name": "checkout-api",
+      "status": "open",
+      "started_at": "2026-11-24T06:00:00Z",
+      "duration_minutes": 180,
+      "reminder_count": 2
+    },
+    "monitor": {
+      "id": "22222222-2222-4222-8222-222222222224",
+      "name": "checkout-api",
+      "method": "GET",
+      "expected_status": "200",
+      "interval_seconds": 60,
+      "timeout_seconds": 10,
+      "confirmation_threshold": 3,
+      "recovery_threshold": 2,
+      "paused": false,
+      "status": "down",
+      "active_incident_id": "11111111-1111-4111-8111-111111111113",
+      "last_check_at": "2026-11-24T08:59:00Z"
+    },
+    "timeline": [
+      { "kind": "opened", "at": "2026-11-24T06:00:00Z" },
+      { "kind": "reminder_sent", "at": "2026-11-24T07:00:00Z" }
+    ],
+    "deliveries": [
+      {
+        "channel_kind": "email",
+        "event": "opened",
+        "status": "sent",
+        "attempts": 1,
+        "sent_at": "2026-11-24T06:00:20Z",
+        "created_at": "2026-11-24T06:00:05Z"
+      }
+    ]
+  },
+  "tool_results": {
+    "o1_get_recent_checks": {
+      "data": {
+        "window_hours": 24,
+        "checks": [
+          { "checked_at": "2026-11-24T08:45:00Z", "status": "down", "status_code": null, "latency_ms": 0, "failure_class": "timeout" },
+          { "checked_at": "2026-11-24T08:46:00Z", "status": "down", "status_code": null, "latency_ms": 0, "failure_class": "timeout" },
+          { "checked_at": "2026-11-24T08:47:00Z", "status": "up", "status_code": 200, "latency_ms": 140, "failure_class": "" },
+          { "checked_at": "2026-11-24T08:48:00Z", "status": "down", "status_code": null, "latency_ms": 0, "failure_class": "timeout" }
+        ],
+        "count": 4,
+        "failures": 3,
+        "p95_latency_ms": 140,
+        "failure_classes": { "timeout": 3 }
+      },
+      "meta": { "as_of": "2026-11-24T09:00:00Z", "count": 4, "returned": 4, "total": 4, "truncated": false }
+    }
+  },
+  "want": ["calls_checks", "cites_success", "not_high_confidence", "no_unverified", "within_limits"]
+}

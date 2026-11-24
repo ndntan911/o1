@@ -1,6 +1,6 @@
 BACKEND := backend
 
-.PHONY: dev-db dev-db-down test test-integration lint vet run
+.PHONY: dev-db dev-db-down test test-integration lint vet run copilot-eval
 
 dev-db:
 	docker compose up -d
@@ -25,3 +25,7 @@ lint:
 run:
 	@test -f .env || { echo "missing .env: copy .env.example to .env" >&2; exit 1; }
 	cd $(BACKEND) && set -a && . ../.env && set +a && go run ./cmd/api
+
+# Opt-in live evaluation; needs O1_AI_PROVIDER and its credentials.
+copilot-eval:
+	cd $(BACKEND) && go run ./cmd/copilot-eval -out ../docs/ai/copilot-eval.md
