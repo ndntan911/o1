@@ -94,6 +94,42 @@ type IncidentEvent struct {
 	CreatedAt   time.Time
 }
 
+type IncidentInsight struct {
+	ID            uuid.UUID
+	WorkspaceID   uuid.UUID
+	IncidentID    uuid.UUID
+	Model         string
+	PromptVersion string
+	PayloadHash   string
+	Status        string
+	Result        []byte
+	InputTokens   int32
+	OutputTokens  int32
+	CreatedBy     pgtype.UUID
+	CreatedAt     time.Time
+}
+
+type IncidentInvestigation struct {
+	ID            uuid.UUID
+	WorkspaceID   uuid.UUID
+	IncidentID    uuid.UUID
+	Status        string
+	Model         string
+	PromptVersion string
+	SeedHash      string
+	Result        []byte
+	Trace         []byte
+	Attempts      int32
+	ToolCalls     int32
+	InputTokens   int32
+	OutputTokens  int32
+	DurationMs    int32
+	ErrorCode     *string
+	CreatedBy     pgtype.UUID
+	CreatedAt     time.Time
+	CompletedAt   *time.Time
+}
+
 type MFAChallenge struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID
