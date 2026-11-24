@@ -409,3 +409,58 @@ export interface IncidentInsight {
 	created_by: string | null;
 	created_at: string;
 }
+
+export type InvestigationStatus =
+	| 'queued'
+	| 'running'
+	| 'ok'
+	| 'insufficient'
+	| 'incomplete'
+	| 'failed';
+
+export interface InvestigationEvidence {
+	tool_call_id: string;
+	pointer: string;
+	value: unknown;
+	note?: string;
+}
+
+export interface InvestigationHypothesis {
+	rank: number;
+	cause: string;
+	confidence: InsightConfidence;
+	evidence: InvestigationEvidence[];
+	falsified_by?: string;
+	unverified?: boolean;
+}
+
+export interface InvestigationResult {
+	sufficient: boolean;
+	assessment: string;
+	hypotheses: InvestigationHypothesis[];
+	next_checks?: string[];
+}
+
+export interface InvestigationStep {
+	index: number;
+	tool?: string;
+	args_summary?: string;
+	status: string;
+	duration_ms: number;
+}
+
+export interface IncidentInvestigation {
+	id: string;
+	incident_id: string;
+	status: InvestigationStatus;
+	model: string;
+	result: InvestigationResult | null;
+	trace: { steps: InvestigationStep[] };
+	attempts: number;
+	tool_calls: number;
+	input_tokens: number;
+	output_tokens: number;
+	error_code: string;
+	created_at: string;
+	completed_at: string | null;
+}

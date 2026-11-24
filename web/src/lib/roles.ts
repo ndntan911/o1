@@ -25,6 +25,10 @@ export function canAcknowledgeIncidents(role: Role): boolean {
 	return roleAtLeast(role, 'member');
 }
 
+export function canInvestigateIncidents(role: Role): boolean {
+	return roleAtLeast(role, 'member');
+}
+
 export function canManageBilling(role: Role): boolean {
 	return roleAtLeast(role, 'admin');
 }

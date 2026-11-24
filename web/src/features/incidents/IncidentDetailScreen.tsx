@@ -23,13 +23,18 @@ import type {
 	Workspace,
 } from '@/lib/api/types';
 import { formatRelativeTime } from '@/lib/format';
-import { canAcknowledgeIncidents, canManageAlertChannels } from '@/lib/roles';
+import {
+	canAcknowledgeIncidents,
+	canInvestigateIncidents,
+	canManageAlertChannels,
+} from '@/lib/roles';
 import {
 	useAcknowledgeIncident,
 	useIncident,
 	useIncidentDeliveries,
 } from './hooks';
 import { IncidentInsightPanel } from './IncidentInsightPanel';
+import { IncidentInvestigationPanel } from './IncidentInvestigationPanel';
 import { IncidentTimeline } from './IncidentTimeline';
 import { incidentStatusLabel, incidentStatusVariant } from './status';
 
@@ -224,6 +229,11 @@ function IncidentDetailView({ workspace, detail }: IncidentDetailViewProps) {
 					workspaceId={workspace.id}
 					incidentId={incident.id}
 					events={events}
+				/>
+				<IncidentInvestigationPanel
+					workspaceId={workspace.id}
+					incidentId={incident.id}
+					canStart={canInvestigateIncidents(workspace.role)}
 				/>
 			</div>
 

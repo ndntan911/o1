@@ -34,6 +34,19 @@ export const queryKeys = {
 		['incident-deliveries', workspaceId, incidentId] as const,
 	incidentInsight: (workspaceId: string, incidentId: string) =>
 		['incident-insight', workspaceId, incidentId] as const,
+	incidentInvestigationLatest: (workspaceId: string, incidentId: string) =>
+		['incident-investigation-latest', workspaceId, incidentId] as const,
+	incidentInvestigation: (
+		workspaceId: string,
+		incidentId: string,
+		investigationId: string,
+	) =>
+		[
+			'incident-investigation',
+			workspaceId,
+			incidentId,
+			investigationId,
+		] as const,
 	alertChannels: (workspaceId: string) =>
 		['alert-channels', workspaceId] as const,
 	monitorAlertChannel: (workspaceId: string, monitorId: string) =>

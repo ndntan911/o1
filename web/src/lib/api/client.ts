@@ -11,6 +11,8 @@ export interface ApiRequestOptions {
 	body?: unknown;
 	query?: Record<string, string | number | boolean | null | undefined>;
 	signal?: AbortSignal;
+	/** Non-2xx statuses whose body is still the requested resource. */
+	successStatuses?: number[];
 }
 
 export class ApiError extends Error {
@@ -63,7 +65,7 @@ export async function apiRequest<T>(
 		signal: options.signal,
 	});
 
-	if (!response.ok) {
+	if (!response.ok && !options.successStatuses?.includes(response.status)) {
 		const problem = await parseProblem(response);
 		if (problem.code === 'unauthenticated') unauthenticatedHandler?.();
 		if (problem.code === 'workspace_suspended') markWorkspaceSuspended();

@@ -1,10 +1,12 @@
-import { apiRequest } from '@/lib/api/client';
+import { ApiError, apiRequest } from '@/lib/api/client';
+import type { ApiProblem } from '@/lib/api/problems';
 import type {
 	IncidentInsight,
 	IncidentDelivery,
 	IncidentDeliveryListResponse,
 	IncidentDetail,
 	IncidentFilters,
+	IncidentInvestigation,
 	IncidentListResponse,
 } from '@/lib/api/types';
 
@@ -87,5 +89,71 @@ export function generateIncidentInsight(
 	return apiRequest<IncidentInsight>(
 		`${incidentPath(workspaceId, incidentId)}/insights`,
 		{ method: 'POST', query: force ? { force: 'true' } : undefined },
+	);
+}
+
+function investigationsPath(
+	workspaceId: string,
+	incidentId: string,
+): string {
+	return `${incidentPath(workspaceId, incidentId)}/investigations`;
+}
+
+export function getIncidentInvestigationLatest(
+	workspaceId: string,
+	incidentId: string,
+	signal?: AbortSignal,
+): Promise<IncidentInvestigation> {
+	return apiRequest<IncidentInvestigation>(
+		`${investigationsPath(workspaceId, incidentId)}/latest`,
+		{ signal },
+	);
+}
+
+export function getIncidentInvestigation(
+	workspaceId: string,
+	incidentId: string,
+	investigationId: string,
+	signal?: AbortSignal,
+): Promise<IncidentInvestigation> {
+	return apiRequest<IncidentInvestigation>(
+		`${investigationsPath(workspaceId, incidentId)}/${investigationId}`,
+		{ signal },
+	);
+}
+
+export async function startIncidentInvestigation(
+	workspaceId: string,
+	incidentId: string,
+): Promise<IncidentInvestigation> {
+	const body = await apiRequest<IncidentInvestigation | ApiProblem>(
+		investigationsPath(workspaceId, incidentId),
+		{
+			method: 'POST',
+			// A 409 can still carry the run already in flight, so keep polling
+			// it instead of treating the click as a failure.
+			successStatuses: [409],
+		},
+	);
+	if (!isInvestigation(body)) {
+		// This 409 was a problem, not a row: no run is in flight.
+		throw new ApiError({
+			type: body.type ?? 'about:blank',
+			title: body.title ?? 'Conflict',
+			status: body.status ?? 409,
+			code: body.code ?? 'conflict',
+			...(body.detail ? { detail: body.detail } : {}),
+		});
+	}
+	return body;
+}
+
+function isInvestigation(value: unknown): value is IncidentInvestigation {
+	if (typeof value !== 'object' || value === null) {
+		return false;
+	}
+	const candidate = value as Partial<IncidentInvestigation>;
+	return (
+		typeof candidate.id === 'string' && typeof candidate.status === 'string'
 	);
 }
