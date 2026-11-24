@@ -76,3 +76,10 @@ FROM alert_deliveries d
 JOIN alert_channels c ON c.id = d.channel_id
 WHERE d.incident_id=$1
 ORDER BY d.created_at, d.id;
+
+-- name: ListIncidentDeliveryOutcomes :many
+SELECT c.kind AS channel_kind, d.event, d.status, d.attempts, d.sent_at, d.created_at
+FROM alert_deliveries d
+JOIN alert_channels c ON c.id = d.channel_id
+WHERE d.incident_id=$1
+ORDER BY d.created_at, d.id;

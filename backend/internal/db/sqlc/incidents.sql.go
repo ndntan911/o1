@@ -225,6 +225,50 @@ func (q *Queries) ListIncidentDeliveries(ctx context.Context, incidentID uuid.UU
 	return items, nil
 }
 
+const listIncidentDeliveryOutcomes = `-- name: ListIncidentDeliveryOutcomes :many
+SELECT c.kind AS channel_kind, d.event, d.status, d.attempts, d.sent_at, d.created_at
+FROM alert_deliveries d
+JOIN alert_channels c ON c.id = d.channel_id
+WHERE d.incident_id=$1
+ORDER BY d.created_at, d.id
+`
+
+type ListIncidentDeliveryOutcomesRow struct {
+	ChannelKind string
+	Event       string
+	Status      string
+	Attempts    int32
+	SentAt      *time.Time
+	CreatedAt   time.Time
+}
+
+func (q *Queries) ListIncidentDeliveryOutcomes(ctx context.Context, incidentID uuid.UUID) ([]ListIncidentDeliveryOutcomesRow, error) {
+	rows, err := q.db.Query(ctx, listIncidentDeliveryOutcomes, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListIncidentDeliveryOutcomesRow
+	for rows.Next() {
+		var i ListIncidentDeliveryOutcomesRow
+		if err := rows.Scan(
+			&i.ChannelKind,
+			&i.Event,
+			&i.Status,
+			&i.Attempts,
+			&i.SentAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIncidentEvents = `-- name: ListIncidentEvents :many
 SELECT id, incident_id, kind, actor_user_id, detail, created_at FROM incident_events
 WHERE incident_id=$1
