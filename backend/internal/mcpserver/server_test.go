@@ -2,6 +2,7 @@ package mcpserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -397,6 +398,16 @@ func TestMCP_AuditsAndRedacts(t *testing.T) {
 	}
 	if !strings.Contains(string(detail), `"o1_get_alert_deliveries"`) {
 		t.Fatalf("audit detail = %s, want tool name", detail)
+	}
+	var auditDetail map[string]any
+	if err := json.Unmarshal(detail, &auditDetail); err != nil {
+		t.Fatalf("decode audit detail: %v", err)
+	}
+	if got, ok := auditDetail["duration_ms"].(float64); !ok || got < 0 {
+		t.Fatalf("audit duration_ms = %v, want a non-negative number", auditDetail["duration_ms"])
+	}
+	if got, ok := auditDetail["result_bytes"].(float64); !ok || got <= 0 {
+		t.Fatalf("audit result_bytes = %v, want a positive number", auditDetail["result_bytes"])
 	}
 	for _, forbidden := range []string{"o1_aaaaaaaaaaaa_", strings.Repeat("A", 43), recipient} {
 		if strings.Contains(string(detail), forbidden) {

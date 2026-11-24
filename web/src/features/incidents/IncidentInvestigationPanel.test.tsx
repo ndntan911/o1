@@ -265,7 +265,34 @@ describe('IncidentInvestigationPanel', () => {
 		);
 
 		expect(await screen.findByRole('status')).toHaveTextContent(/attempt 2/i);
+		expect(screen.getByText(/provider call is being retried/i)).toBeInTheDocument();
 		expect(posts).toBe(1);
+	});
+
+	test('names a stale investigation', async () => {
+		server.use(
+			http.get(latestPath, () =>
+				HttpResponse.json(
+					investigation({
+						status: 'failed',
+						result: null,
+						error_code: 'stale',
+					}),
+				),
+			),
+		);
+
+		renderWithProviders(
+			<IncidentInvestigationPanel
+				workspaceId={workspaceId}
+				incidentId={incidentId}
+				canStart
+			/>,
+		);
+
+		expect(
+			await screen.findByText(/timed out before a worker could finish/i),
+		).toBeInTheDocument();
 	});
 
 	test('keeps a stored result when a later refetch fails', async () => {

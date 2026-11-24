@@ -391,6 +391,37 @@ func TestRunner_ParseFailureIsInvalidOutput(t *testing.T) {
 	}
 }
 
+func TestRunner_TruncatedOutputIsALimit(t *testing.T) {
+	cases := map[string]string{
+		"empty":     "",
+		"truncated": `{"sufficient":true,"assessment":"the API`,
+	}
+	for name, text := range cases {
+		t.Run(name, func(t *testing.T) {
+			provider := &scriptedProvider{script: []ai.ChatResponse{{
+				Text:         text,
+				FinishReason: "length",
+			}}}
+
+			out := NewRunner(provider, &fakeCaller{}, "m", DefaultLimits(), time.Now).
+				Run(context.Background(), uuid.New(), Seed{})
+
+			if out.Err != nil {
+				t.Fatalf("out.Err = %v", out.Err)
+			}
+			if out.Status != StatusIncomplete || out.ErrorCode != "limit_exceeded" {
+				t.Fatalf("out = %+v, want incomplete/limit_exceeded", out)
+			}
+			if out.Result != nil {
+				t.Fatalf("out.Result = %+v, want nil", out.Result)
+			}
+			if len(out.Trace.ModelCalls) != 1 || out.Trace.ModelCalls[0].FinishReason != "length" {
+				t.Fatalf("model calls = %+v, want one recorded length call", out.Trace.ModelCalls)
+			}
+		})
+	}
+}
+
 func TestRunner_ToolErrorIsData(t *testing.T) {
 	provider := &scriptedProvider{script: []ai.ChatResponse{
 		{ToolCalls: []ai.ToolCall{toolCall("call_1", "o1_get_recent_checks", `{"monitor_id":"m"}`)}},

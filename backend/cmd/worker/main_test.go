@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"o1/internal/config"
 )
 
 func TestProbeLimiterFractionalRPSAllowsProbes(t *testing.T) {
@@ -26,5 +28,35 @@ func TestInvestigationModelUsesCopilotModel(t *testing.T) {
 	// hand-built config from recording an empty model.
 	if got := investigationModel("", "insights"); got != "insights" {
 		t.Fatalf("investigationModel fallback = %q, want insights", got)
+	}
+}
+
+func TestCopilotProviderSettingsUseCopilotTimeoutAndModel(t *testing.T) {
+	settings := copilotProviderSettings(config.Config{
+		AIProvider:         "openai",
+		AIBaseURL:          "https://example.test/v1",
+		AIAPIKey:           "key",
+		AIModel:            "insights-model",
+		AITimeout:          15 * time.Second,
+		CopilotModel:       "copilot-model",
+		CopilotCallTimeout: 30 * time.Second,
+	})
+	if settings.Timeout != 30*time.Second {
+		t.Fatalf("timeout = %s, want the copilot call timeout", settings.Timeout)
+	}
+	if settings.Model != "copilot-model" {
+		t.Fatalf("model = %q, want copilot-model", settings.Model)
+	}
+
+	fallback := copilotProviderSettings(config.Config{
+		AIModel:            "insights-model",
+		AITimeout:          15 * time.Second,
+		CopilotCallTimeout: 30 * time.Second,
+	})
+	if fallback.Model != "insights-model" {
+		t.Fatalf("fallback model = %q, want insights-model", fallback.Model)
+	}
+	if fallback.Timeout != 30*time.Second {
+		t.Fatalf("fallback timeout = %s, want the copilot call timeout", fallback.Timeout)
 	}
 }

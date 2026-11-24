@@ -12,10 +12,10 @@ import (
 	"o1/internal/observability"
 )
 
-// investigationJobTimeout bounds one attempt, including the model and tool
-// calls. The runner has its own shorter wall clock, so this only protects the
-// worker from a stuck database or provider transport.
-const investigationJobTimeout = 2 * time.Minute
+// defaultInvestigationJobTimeout bounds one attempt when the caller does not
+// supply a budget. The runner has its own shorter wall clock, so this only
+// protects the worker from a stuck database or provider transport.
+const defaultInvestigationJobTimeout = 2 * time.Minute
 
 // InvestigationWorker runs one copilot investigation per job. The service
 // owns all persistence and retry semantics; the worker only maps the job fields
@@ -23,24 +23,29 @@ const investigationJobTimeout = 2 * time.Minute
 type InvestigationWorker struct {
 	river.WorkerDefaults[jobs.InvestigationArgs]
 
-	svc    *copilot.Service
-	logger *slog.Logger
+	svc     *copilot.Service
+	logger  *slog.Logger
+	timeout time.Duration
 }
 
 // NewInvestigationWorker builds a worker. svc may be nil when the copilot is
 // off; logger and metrics may be nil. The service records the investigation
 // metrics itself, so the worker only keeps the metrics argument for wiring
-// symmetry with the other workers.
-func NewInvestigationWorker(svc *copilot.Service, logger *slog.Logger, _ *observability.Metrics) *InvestigationWorker {
+// symmetry with the other workers. A zero timeout uses the two-minute default;
+// the worker binary passes the configured run deadline plus a margin.
+func NewInvestigationWorker(svc *copilot.Service, logger *slog.Logger, _ *observability.Metrics, timeout time.Duration) *InvestigationWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &InvestigationWorker{svc: svc, logger: logger}
+	if timeout <= 0 {
+		timeout = defaultInvestigationJobTimeout
+	}
+	return &InvestigationWorker{svc: svc, logger: logger, timeout: timeout}
 }
 
 // Timeout bounds each job run.
 func (w *InvestigationWorker) Timeout(*river.Job[jobs.InvestigationArgs]) time.Duration {
-	return investigationJobTimeout
+	return w.timeout
 }
 
 // Work runs one investigation attempt. A disabled service ignores the job so a

@@ -21,6 +21,7 @@ import (
 	"o1/internal/ai"
 	"o1/internal/alerts"
 	"o1/internal/app"
+	"o1/internal/config"
 	"o1/internal/copilot"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
@@ -48,6 +49,20 @@ func investigationModel(copilotModel, aiModel string) string {
 		return copilotModel
 	}
 	return aiModel
+}
+
+// copilotProviderSettings builds the copilot transport. It uses the copilot
+// call timeout and model rather than the insights ones, because O1_AI_TIMEOUT
+// is the insights deadline and must not cap an agent call.
+func copilotProviderSettings(cfg config.Config) ai.Settings {
+	return ai.Settings{
+		Provider: cfg.AIProvider,
+		BaseURL:  cfg.AIBaseURL,
+		APIKey:   cfg.AIAPIKey,
+		Model:    investigationModel(cfg.CopilotModel, cfg.AIModel),
+		Timeout:  cfg.CopilotCallTimeout,
+		Headers:  cfg.AIExtraHeaders,
+	}
 }
 
 func run() error {
@@ -86,50 +101,55 @@ func run() error {
 	}
 	alertWorker := worker.NewAlertWorker(rt.Pool, q, sender, box, alerts.NewNotifier(guard, ""), rt.Config, rt.Logger, obs.Metrics)
 
-	// The copilot is optional: a misconfigured or absent provider leaves the
-	// service nil and the worker registered as a no-op, so the rest of the
-	// worker fleet still starts.
+	// The copilot is optional and gated by its own switch. A disabled or
+	// misconfigured provider leaves the investigation worker unregistered, so
+	// the rest of the worker fleet still starts. The provider gets the copilot
+	// call timeout and model: O1_AI_TIMEOUT stays the insights timeout and must
+	// not cap the agent.
 	wsSvc := workspaces.NewService(rt.Pool, q)
-	var investigationSvc *copilot.Service
-	provider, providerErr := ai.New(ai.Settings{
-		Provider: rt.Config.AIProvider,
-		BaseURL:  rt.Config.AIBaseURL,
-		APIKey:   rt.Config.AIAPIKey,
-		Model:    rt.Config.AIModel,
-		Timeout:  rt.Config.AITimeout,
-		Headers:  rt.Config.AIExtraHeaders,
-	})
-	switch {
-	case providerErr != nil:
-		rt.Logger.Warn("copilot disabled: provider misconfigured",
-			"provider", rt.Config.AIProvider, "error", providerErr)
-	case provider == nil:
-		rt.Logger.Info("copilot disabled", "provider", rt.Config.AIProvider)
-	default:
-		toolProvider, ok := provider.(ai.ToolProvider)
-		if !ok {
-			rt.Logger.Warn("copilot disabled: provider does not support tool calls",
-				"provider", rt.Config.AIProvider)
-			break
+	var investigationWorker *worker.InvestigationWorker
+	if !rt.Config.CopilotEnabled {
+		rt.Logger.Info("copilot disabled", "reason", "O1_COPILOT_ENABLED is false")
+	} else {
+		copilotModel := investigationModel(rt.Config.CopilotModel, rt.Config.AIModel)
+		provider, providerErr := ai.New(copilotProviderSettings(rt.Config))
+		switch {
+		case providerErr != nil:
+			rt.Logger.Warn("copilot disabled: provider misconfigured",
+				"provider", rt.Config.AIProvider, "error", providerErr)
+		case provider == nil:
+			rt.Logger.Info("copilot disabled", "provider", rt.Config.AIProvider)
+		default:
+			toolProvider, ok := provider.(ai.ToolProvider)
+			if !ok {
+				rt.Logger.Warn("copilot disabled: provider does not support tool calls",
+					"provider", rt.Config.AIProvider)
+				break
+			}
+			investigationSvc := copilot.NewService(copilot.Options{
+				Store:      copilot.NewPostgresStore(rt.Pool),
+				Incidents:  incidents.NewService(rt.Pool, q, wsSvc),
+				Monitors:   monitors.NewService(rt.Pool, q, wsSvc, box, guard, rt.Config),
+				Workspaces: wsSvc,
+				Provider:   toolProvider,
+				Pool:       rt.Pool,
+				Queries:    q,
+				Model:      copilotModel,
+				Limits:     copilot.LimitsFromConfig(rt.Config),
+				Now:        time.Now,
+				Logger:     rt.Logger,
+				Metrics:    obs.Metrics,
+			})
+			// River's job timeout covers persistence and transport around the
+			// runner's own deadline, so it gets a fixed margin above it.
+			investigationWorker = worker.NewInvestigationWorker(
+				investigationSvc, rt.Logger, obs.Metrics,
+				rt.Config.CopilotTimeout+30*time.Second,
+			)
+			rt.Logger.Info("copilot enabled", "provider", rt.Config.AIProvider,
+				"model", copilotModel)
 		}
-		investigationSvc = copilot.NewService(copilot.Options{
-			Store:      copilot.NewPostgresStore(rt.Pool),
-			Incidents:  incidents.NewService(rt.Pool, q, wsSvc),
-			Monitors:   monitors.NewService(rt.Pool, q, wsSvc, box, guard, rt.Config),
-			Workspaces: wsSvc,
-			Provider:   toolProvider,
-			Pool:       rt.Pool,
-			Queries:    q,
-			Model:      investigationModel(rt.Config.CopilotModel, rt.Config.AIModel),
-			Limits:     copilot.DefaultLimits(),
-			Now:        time.Now,
-			Logger:     rt.Logger,
-			Metrics:    obs.Metrics,
-		})
-		rt.Logger.Info("copilot enabled", "provider", rt.Config.AIProvider,
-			"model", investigationModel(rt.Config.CopilotModel, rt.Config.AIModel))
 	}
-	investigationWorker := worker.NewInvestigationWorker(investigationSvc, rt.Logger, obs.Metrics)
 
 	// Queue and incident gauges are shared across the environment, so they are
 	// refreshed by exactly one process: the worker. Other processes expose
@@ -141,7 +161,9 @@ func run() error {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, probeWorker)
 	river.AddWorker(workers, alertWorker)
-	river.AddWorker(workers, investigationWorker)
+	if investigationWorker != nil {
+		river.AddWorker(workers, investigationWorker)
+	}
 
 	client, err := river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{
 		Logger:       rt.Logger,

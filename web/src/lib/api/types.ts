@@ -226,7 +226,11 @@ export interface Incident {
 
 export interface IncidentEvent {
 	id: string;
-	kind: 'opened' | 'acknowledged' | 'resolved';
+	kind:
+		| 'opened'
+		| 'acknowledged'
+		| 'resolved'
+		| 'investigation_completed';
 	actor_user_id: string | null;
 	detail: unknown;
 	created_at: string;

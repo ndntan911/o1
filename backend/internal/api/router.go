@@ -292,8 +292,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	if incidentSvc == nil && deps.Pool != nil {
 		incidentSvc = incidents.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
 	}
-	// Build the model transport once. Insights and the copilot share it, but
-	// each feature decides independently whether it is configured.
+	// Build the insights model transport once. The copilot builds its own
+	// provider below so O1_AI_TIMEOUT, which bounds insights, never caps the
+	// agent call.
 	var provider ai.Provider
 	if deps.Pool != nil {
 		built, err := ai.New(ai.Settings{
@@ -336,41 +337,30 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	investigationSvc := deps.InvestigationService
 	if investigationSvc == nil && deps.Config.CopilotEnabled && deps.Pool != nil && deps.RiverInserter != nil {
+		model := deps.Config.CopilotModel
+		if model == "" {
+			model = deps.Config.AIModel
+		}
+		copilotProvider, err := ai.New(ai.Settings{
+			Provider: deps.Config.AIProvider,
+			BaseURL:  deps.Config.AIBaseURL,
+			APIKey:   deps.Config.AIAPIKey,
+			Model:    model,
+			Timeout:  deps.Config.CopilotCallTimeout,
+			Headers:  deps.Config.AIExtraHeaders,
+		})
 		switch {
-		case provider == nil:
+		case err != nil:
+			logger.Warn("copilot disabled: provider misconfigured",
+				"provider", deps.Config.AIProvider, "error", err)
+		case copilotProvider == nil:
 			logger.Info("copilot disabled", "provider", deps.Config.AIProvider)
 		default:
-			toolProvider, ok := provider.(ai.ToolProvider)
+			toolProvider, ok := copilotProvider.(ai.ToolProvider)
 			if !ok {
 				logger.Warn("copilot disabled: provider does not support tool calls",
 					"provider", deps.Config.AIProvider)
 				break
-			}
-			model := deps.Config.CopilotModel
-			if model == "" {
-				model = deps.Config.AIModel
-			}
-			limits := copilot.DefaultLimits()
-			if v := deps.Config.CopilotMaxModelCalls; v > 0 {
-				limits.MaxModelCalls = v
-			}
-			if v := deps.Config.CopilotMaxToolCalls; v > 0 {
-				limits.MaxToolCalls = v
-			}
-			if v := deps.Config.CopilotMaxResultBytes; v > 0 {
-				limits.MaxResultBytes = v
-			}
-			if v := deps.Config.CopilotMaxOutputTokens; v > 0 {
-				limits.MaxOutputTokens = v
-			}
-			if v := deps.Config.CopilotMaxInputTokens; v > 0 {
-				limits.MaxInputTokens = v
-			}
-			if v := deps.Config.CopilotTimeout; v > 0 {
-				limits.Timeout = v
-			}
-			if v := deps.Config.CopilotCallTimeout; v > 0 {
-				limits.CallTimeout = v
 			}
 			investigationSvc = copilot.NewService(copilot.Options{
 				Store:              copilot.NewPostgresStore(deps.Pool),
@@ -382,7 +372,7 @@ func NewRouter(deps Dependencies) http.Handler {
 				Pool:               deps.Pool,
 				Queries:            sqlc.New(deps.Pool),
 				Model:              model,
-				Limits:             limits,
+				Limits:             copilot.LimitsFromConfig(deps.Config),
 				PerIncidentPerHour: deps.Config.CopilotPerIncidentPerHour,
 				PerWorkspacePerDay: deps.Config.CopilotPerWorkspacePerDay,
 				Logger:             logger,
@@ -467,9 +457,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	authLimiter := httpx.RateLimit(authRPS(deps.Config), authBurst(deps.Config), true)
 	// Insight generation is expensive; keep it to a handful per minute.
 	insightLimiter := httpx.RateLimit(6, 2, true)
-	// Starting an investigation enqueues a provider-backed run, so it shares
-	// the same cheap burst as insight generation.
-	investigationLimiter := httpx.RateLimit(6, 2, true)
+	// Starting an investigation enqueues a provider-backed run. The cap is per
+	// workspace, not per IP: six requests per minute with a burst of two.
+	investigationLimiter := httpx.KeyedRateLimit(func(r *http.Request) string {
+		return r.PathValue("workspaceID")
+	}, 0.1, 2)
 
 	mux.Handle("POST /api/v1/auth/register", authLimiter(http.HandlerFunc(auth.RegisterHandler(authSvc))))
 	mux.Handle("POST /api/v1/auth/verify-email", authLimiter(http.HandlerFunc(auth.VerifyEmailHandler(authSvc))))

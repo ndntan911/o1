@@ -230,7 +230,7 @@ func TestInvestigationWorker_SuccessAndRetry(t *testing.T) {
 
 	metrics := observability.NewMetrics("o1-worker", "test")
 	svc := newInvestigationService(t, pool, provider, metrics)
-	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), metrics)
+	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), metrics, 0)
 	if err := w.Work(ctx, investigationJob(inv.ID, 1, 3)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestInvestigationWorker_TransientFailureRetriesThenFails(t *testing.T) {
 
 	provider := &ai.Stub{Err: &ai.HTTPError{StatusCode: 503, Body: "provider unavailable"}}
 	svc := newInvestigationService(t, pool, provider, nil)
-	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil)
+	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil, 0)
 
 	err := w.Work(ctx, investigationJob(inv.ID, 1, 3))
 	if err == nil {
@@ -428,7 +428,7 @@ func TestInvestigationWorker_EventInsertRollsBackAndRetries(t *testing.T) {
 
 	// The stub's deterministic demo trajectory can run again on the retry.
 	svc := newInvestigationService(t, pool, &ai.Stub{}, nil)
-	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil)
+	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil, 0)
 
 	err := w.Work(ctx, investigationJob(inv.ID, 1, 3))
 	if err == nil {
@@ -487,7 +487,7 @@ func TestInvestigationWorker_NonMemberFailsAsActorRemoved(t *testing.T) {
 
 	provider := &ai.Stub{}
 	svc := newInvestigationService(t, pool, provider, nil)
-	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil)
+	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil, 0)
 	if err := w.Work(ctx, investigationJob(inv.ID, 1, 3)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestInvestigationWorker_NilCreatorFailsAsActorRemoved(t *testing.T) {
 	inv := createQueuedInvestigation(t, pool, fixture, nil)
 
 	svc := newInvestigationService(t, pool, &ai.Stub{}, nil)
-	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil)
+	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil, 0)
 	if err := w.Work(ctx, investigationJob(inv.ID, 1, 3)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestInvestigationWorker_NilServiceIsNoOp(t *testing.T) {
 	createdBy := fixture.userID
 	inv := createQueuedInvestigation(t, pool, fixture, &createdBy)
 
-	w := NewInvestigationWorker(nil, newInvestigationWorkerLogger(), nil)
+	w := NewInvestigationWorker(nil, newInvestigationWorkerLogger(), nil, 0)
 	if err := w.Work(context.Background(), investigationJob(inv.ID, 1, 3)); err != nil {
 		t.Fatalf("Work with a nil service: %v", err)
 	}
@@ -550,18 +550,20 @@ func TestInvestigationWorker_NilServiceIsNoOp(t *testing.T) {
 func TestInvestigationWorker_MissingRowIsNoOp(t *testing.T) {
 	pool, _ := testutil.NewPostgres(t)
 	svc := newInvestigationService(t, pool, &ai.Stub{}, nil)
-	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil)
+	w := NewInvestigationWorker(svc, newInvestigationWorkerLogger(), nil, 0)
 	if err := w.Work(context.Background(), investigationJob(uuid.New(), 1, 3)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 }
 
-// TestInvestigationWorker_Timeout ensures the worker advertises the two-minute
-// budget that the River client uses for the ai queue.
+// TestInvestigationWorker_Timeout covers the two-minute default and a
+// configured budget. The worker binary passes CopilotTimeout plus a margin.
 func TestInvestigationWorker_Timeout(t *testing.T) {
-	w := NewInvestigationWorker(nil, nil, nil)
-	if got := w.Timeout(nil); got != 2*time.Minute {
-		t.Fatalf("timeout = %s, want 2m", got)
+	if got := NewInvestigationWorker(nil, nil, nil, 0).Timeout(nil); got != 2*time.Minute {
+		t.Fatalf("default timeout = %s, want 2m", got)
+	}
+	if got := NewInvestigationWorker(nil, nil, nil, 3*time.Minute).Timeout(nil); got != 3*time.Minute {
+		t.Fatalf("configured timeout = %s, want 3m", got)
 	}
 }
 

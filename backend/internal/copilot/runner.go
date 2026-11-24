@@ -32,6 +32,10 @@ const (
 	errorCodeInvalidOutput    = "invalid_output"
 	errorCodeInternal         = "internal"
 
+	// finishReasonLength means the provider stopped at the output-token cap.
+	// Truncated text is a limit, not malformed model output.
+	finishReasonLength = "length"
+
 	maxArgsSummaryRunes = 200
 )
 
@@ -290,10 +294,16 @@ func (r *Runner) Run(ctx context.Context, workspaceID uuid.UUID, seed Seed) Outc
 		}
 
 		if strings.TrimSpace(response.Text) == "" {
+			if response.FinishReason == finishReasonLength {
+				return incomplete()
+			}
 			return failed(errorCodeInvalidOutput)
 		}
 		parsed, parseErr := Parse(response.Text)
 		if parseErr != nil {
+			if response.FinishReason == finishReasonLength {
+				return incomplete()
+			}
 			return failed(errorCodeInvalidOutput)
 		}
 		verified, count := Verify(parsed, trace)

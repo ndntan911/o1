@@ -27,6 +27,7 @@ const FAILURE_MESSAGES: Record<string, string> = {
 	invalid_output: "The model's answer could not be read.",
 	actor_removed:
 		'The investigation stopped because its author left the workspace.',
+	stale: 'The investigation timed out before a worker could finish it.',
 	internal: 'The investigation could not be completed.',
 };
 
@@ -148,7 +149,8 @@ function PanelFrame({
 					<h3 className="text-sm font-semibold">Investigate this incident</h3>
 					<p className="text-xs text-muted-foreground">
 						An agent reads this incident&apos;s own data and cites what it finds.
-						Treat the result as a starting point, not a verdict.
+						The agent is read-only. Treat the result as a starting point, not a
+						verdict.
 					</p>
 				</div>
 				{action}
@@ -200,6 +202,11 @@ function RunningBody({
 					{Math.max(1, investigation.attempts)}
 				</span>
 			</p>
+			{investigation.attempts > 1 ? (
+				<p className="text-xs text-muted-foreground">
+					The provider call is being retried.
+				</p>
+			) : null}
 			{steps.length > 0 ? (
 				<ol className="space-y-1 text-xs text-muted-foreground">
 					{steps.map((step) => (

@@ -19,6 +19,7 @@ const EVENT_LABELS: Record<IncidentEvent['kind'], string> = {
 	opened: 'Opened',
 	acknowledged: 'Acknowledged',
 	resolved: 'Resolved',
+	investigation_completed: 'Investigated',
 };
 
 export function incidentStatusLabel(status: Incident['status']): string {

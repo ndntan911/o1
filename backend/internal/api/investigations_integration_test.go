@@ -107,12 +107,11 @@ func (e *investigationAPIEnv) createIncident(owner *apiClient, workspaceID strin
 	return incidentID
 }
 
-// postInvestigation issues POST .../investigations, spacing calls out so the
-// per-IP start limiter (6/s, burst 2) does not turn an intended assertion into
-// a 429.
+// postInvestigation issues POST .../investigations. The start limiter allows a
+// burst of two per workspace, so a test that needs more than two starts uses a
+// separate workspace for the additional assertions.
 func (e *investigationAPIEnv) postInvestigation(c *apiClient, workspaceID string, incidentID uuid.UUID) (*http.Response, []byte) {
 	e.t.Helper()
-	time.Sleep(250 * time.Millisecond)
 	return c.do(http.MethodPost,
 		"/api/v1/workspaces/"+workspaceID+"/incidents/"+incidentID.String()+"/investigations", nil)
 }
@@ -158,6 +157,12 @@ func TestInvestigations_MemberStartsViewerReads(t *testing.T) {
 	incidentID := env.createIncident(owner, workspaceID)
 	otherWorkspaceID := other.createWorkspace(t, "Other")
 	otherIncidentID := env.createIncident(other, otherWorkspaceID)
+	// Extra workspaces keep each start-limiter bucket under its burst of two.
+	viewerWorkspaceID := owner.createWorkspace(t, "Viewer Only")
+	memberResp, _ := owner.do(http.MethodPost, "/api/v1/workspaces/"+viewerWorkspaceID+"/members",
+		map[string]string{"email": viewerEmail, "role": "viewer"})
+	requireStatus(t, memberResp, http.StatusNoContent)
+	crossWorkspaceID := owner.createWorkspace(t, "Cross Tenant")
 
 	// A member starts a run: 202 with the queued public row.
 	resp, raw := env.postInvestigation(owner, workspaceID, incidentID)
@@ -215,11 +220,11 @@ func TestInvestigations_MemberStartsViewerReads(t *testing.T) {
 	}
 
 	// Viewers can read but not start.
-	resp, _ = env.postInvestigation(viewer, workspaceID, incidentID)
+	resp, _ = env.postInvestigation(viewer, viewerWorkspaceID, incidentID)
 	requireStatus(t, resp, http.StatusForbidden)
 
 	// An incident from another workspace is not found through this path.
-	resp, _ = env.postInvestigation(owner, workspaceID, otherIncidentID)
+	resp, _ = env.postInvestigation(owner, crossWorkspaceID, otherIncidentID)
 	requireStatus(t, resp, http.StatusNotFound)
 
 	// Complete the run directly so the read surface has a result and a trace

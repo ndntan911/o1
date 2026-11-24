@@ -37,7 +37,7 @@ exists for local demos and tests; it is not a model.
 | `O1_COPILOT_CALL_TIMEOUT` | `30s` | One provider or tool call |
 | `O1_COPILOT_MAX_MODEL_CALLS` | `5` | Model turns per run |
 | `O1_COPILOT_MAX_TOOL_CALLS` | `6` | Tool calls per run |
-| `O1_COPILOT_MAX_RESULT_BYTES` | `8192` | Stored result cap per tool call |
+| `O1_COPILOT_MAX_RESULT_BYTES` | `8192` | Runner marker threshold per tool call; the registry's structural cap stays 8 KB |
 | `O1_COPILOT_MAX_OUTPUT_TOKENS` | `1200` | Output tokens per model call |
 | `O1_COPILOT_MAX_INPUT_TOKENS` | `40000` | Total input-token budget |
 | `O1_COPILOT_PER_INCIDENT_PER_HOUR` | `3` | Manual investigations per incident |
@@ -78,10 +78,14 @@ returned. Every tool result is wrapped:
 {"data": {}, "meta": {"as_of": "...", "count": 0, "returned": 0, "total": 0, "truncated": false}}
 ```
 
-Truncation is structural: arrays are shortened and the wrapper survives, so a
-JSON Pointer into a returned item still resolves. A result that is still over
-the 8 KB cap is replaced by a marker carrying its SHA-256 and size, and
-`meta.truncated` is set — the model is told the data was truncated.
+Truncation is structural: the registry caps every result at a fixed 8 KB,
+shortening arrays (and oversized string fields) and keeping the `{data, meta}`
+wrapper, so a JSON Pointer into a returned item still resolves.
+`O1_COPILOT_MAX_RESULT_BYTES` sets a second, runner-side threshold. A marshaled
+result that is still over that threshold is replaced by a marker carrying its
+SHA-256 and size, and `meta.truncated` is set — the model is told the data was
+truncated. Lowering the setting can only replace a result the registry already
+made fit; it does not change the registry's fixed 8 KB structural cap.
 
 A tool failure is data. It comes back as `is_error: true` with a bounded code
 (`not_found`, `invalid_argument`, `rate_limited`, `forbidden`, `internal`); the
@@ -139,7 +143,7 @@ prompt is only the first line of defence.
 | Model calls per investigation | 5 |
 | Tool calls per investigation | 6 |
 | Wall clock | 90 s |
-| Tool result | 8 KB, structurally truncated or replaced by a marker |
+| Tool result | 8 KB fixed structural cap in the registry, then the `O1_COPILOT_MAX_RESULT_BYTES` runner marker threshold |
 | Output tokens per model call | 1,200 |
 | Total input tokens | 40,000 |
 | Investigations per incident per hour | 3 |
@@ -153,7 +157,7 @@ the run as **incomplete** with `limit_exceeded`; a manual retry is the recovery.
 
 | Case | Status | Retry |
 |---|---|---|
-| Provider timeout, 408/429/5xx, transport error before a final answer | Row stays `running`; the last attempt sets `failed` with `provider_unavailable` | River retries at most twice; `attempts` and the trace show each try |
+| Provider timeout, 408/429/5xx, transport error before a final answer | Row stays `running`; the last attempt sets `failed` with `provider_unavailable` | River retries at most twice; the row records the attempts and the stored trace is the last attempt |
 | Provider 4xx or a rejected tool schema | `failed` with `provider_rejected` | No automatic retry |
 | Output is not the contract | `failed` with `invalid_output` | No automatic retry |
 | The deadline or a cap is reached | `incomplete` with `limit_exceeded` | Manual retry |

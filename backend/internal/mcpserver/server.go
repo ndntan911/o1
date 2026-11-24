@@ -213,14 +213,25 @@ func (s *Server) callTool(ctx context.Context, name string, req *mcp.CallToolReq
 		status = "error"
 	}
 
-	s.recordToolCalled(ctx, key, principal, name, status)
+	// Marshal once: the audit records the exact result size the client sees.
+	raw, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		raw = []byte(`{"is_error":true,"error_code":"internal"}`)
+		result.IsError = true
+		status = "error"
+	}
+	s.recordToolCalled(ctx, key, principal, name, status, time.Since(start), len(raw))
 	s.observe(name, status, start)
-	return textResult(result)
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}},
+		IsError: result.IsError,
+	}
 }
 
-// recordToolCalled writes mcp.tool_called best-effort. The detail carries only
-// the tool name and bounded status; the key id is a column, never the secret.
-func (s *Server) recordToolCalled(ctx context.Context, key auth.APIKeyPrincipal, principal auth.Principal, name, status string) {
+// recordToolCalled writes mcp.tool_called best-effort. The detail carries the
+// tool name, bounded status, measured duration, and result size; the key id is
+// a column, never the secret.
+func (s *Server) recordToolCalled(ctx context.Context, key auth.APIKeyPrincipal, principal auth.Principal, name, status string, duration time.Duration, resultBytes int) {
 	if s.queries == nil {
 		return
 	}
@@ -232,7 +243,12 @@ func (s *Server) recordToolCalled(ctx context.Context, key auth.APIKeyPrincipal,
 		ActorUserID:   &userID,
 		ActorAPIKeyID: &keyID,
 		Kind:          auditKindToolCalled,
-		Detail:        map[string]any{"tool": name, "status": status},
+		Detail: map[string]any{
+			"tool":         name,
+			"status":       status,
+			"duration_ms":  duration.Milliseconds(),
+			"result_bytes": resultBytes,
+		},
 	})
 }
 

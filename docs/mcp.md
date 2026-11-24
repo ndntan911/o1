@@ -95,8 +95,9 @@ result is serialized.
 | `o1_get_alert_deliveries` | member | Delivery outcomes for one incident: channel kind, event, status, attempts, timestamps. Never recipients, channel names, or error text. |
 
 Every tool call writes a best-effort `mcp.tool_called` security event with the
-workspace, actor, API key id, and tool name. No key material, target URL,
-recipient, or raw error is stored in that event.
+workspace, actor, API key id, tool name, status, measured duration, and result
+size. No key material, target URL, recipient, or raw error is stored in that
+event.
 
 ## Unsupported: OAuth
 

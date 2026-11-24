@@ -118,10 +118,20 @@ carry admin or global rights.
 | `GET .../incidents*`, `GET .../incidents/{id}` | no | read | read | read | viewer read | `incidents` handler tests |
 | `POST .../incidents/{id}/acknowledge` | no | denied | acknowledge | acknowledge | member acknowledge | `incidents` handler tests |
 | `GET .../incidents/{id}/deliveries` | no | denied | denied | admin | no | `incidents` handler tests |
+| `POST /mcp` | no (401, never falls back to a cookie) | no (session cookie rejected) | no (session cookie rejected) | no (session cookie rejected) | viewer key: five tools; member key: six | `mcpserver` conformance tests |
+| `POST .../incidents/{id}/investigations` | no | denied (403) | start (202) | start (202) | no; session only | `copilot` handler + `api` integration tests |
+| `GET .../incidents/{id}/investigations/latest`, `GET .../investigations/{id}` | no | read | read | read | viewer read; a key scoped to another workspace gets 404 | `copilot` handler + `api` integration tests |
 | `.../alert-channels*`, `.../alert-channels/email`, `.../test` | no | denied | denied | admin | no | `alerts` handler tests |
 | `.../monitors/{id}/alert-channels*` (per-monitor switches) | no | denied | read and toggle | read and toggle | member | `alerts` handler tests |
 | `/admin/*` | no | denied | denied | **global admin only** (`requireAdmin`) | no | `backend/internal/api/admin_integration_test.go` |
 | `GET /healthz`, `GET /readyz` | yes | — | — | — | no | `httpx` health tests |
+
+Cross-workspace ids return `404`, never `403`, on every route; a `403` means the
+caller is authenticated in the path workspace but lacks the role. `/mcp` and the
+investigation routes are registered while their feature switch is off and answer
+`501 Not Implemented` with `not_implemented`; `O1_MCP_ENABLED` and
+`O1_COPILOT_ENABLED` are independent. Starting an investigation is also limited
+to six requests per minute per workspace, with a burst of two.
 
 ## 7. Residual risks
 
