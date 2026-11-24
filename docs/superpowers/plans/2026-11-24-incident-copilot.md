@@ -1054,6 +1054,11 @@ test('hides the action from viewers but still shows a stored result', async () =
 test('shows a retry after a failed run and hides when disabled', async () => {
     // failed -> Retry; latest 501 -> nothing rendered.
 });
+
+test('keeps a stored result when a later refetch fails', async () => {
+    // First GET latest returns ok; a subsequent GET returns 500.
+    // The stored assessment must remain visible, with no Investigate blank-out.
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1067,7 +1072,7 @@ Expected: FAIL — module missing.
 
 - [ ] **Step 4: Implement the panel and mount it**
 
-Render the panel under `IncidentInsightPanel` in `IncidentDetailScreen` with `canStart={canInvestigateIncidents(workspace.role)}`. The panel: 404 + no start -> null; 501 -> null; queued/running -> `role="status"` with elapsed/attempts and the step list; ok/insufficient -> assessment, up to 3 hypotheses with confidence, evidence chips (pointer/value), an `Unverified` badge on a hypothesis that lost all its citations, next checks, model/time; if every hypothesis was unverified the status is insufficient and the panel shows the refusal rather than a cause; failed/incomplete -> error text and Retry. Use `aria-live="polite"` for the running state.
+Render the panel under `IncidentInsightPanel` in `IncidentDetailScreen` with `canStart={canInvestigateIncidents(workspace.role)}`. The panel: 404 + no start -> null; 501 -> null; queued/running -> `role="status"` with elapsed/attempts and the step list; ok/insufficient -> assessment, up to 3 hypotheses with confidence, evidence chips (pointer/value), an `Unverified` badge on a hypothesis that lost all its citations, next checks, model/time; if every hypothesis was unverified the status is insufficient and the panel shows the refusal rather than a cause; failed/incomplete -> error text and Retry. Retained data wins: a failed refetch after a successful load keeps the stored result visible; only hide when there is no data and the query is 404/501. Use `aria-live="polite"` for the running state.
 
 - [ ] **Step 5: Run the tests**
 
