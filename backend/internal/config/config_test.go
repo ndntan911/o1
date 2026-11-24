@@ -873,3 +873,114 @@ func TestLoad_RejectsUnimplementedBillingProvider(t *testing.T) {
 		t.Fatal("lemonsqueezy should fail until the adapter exists")
 	}
 }
+
+// setCopilotEnv applies a minimal valid environment for copilot configuration
+// tests. Individual tests override the variables they exercise.
+func setCopilotEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("O1_DATABASE_URL", "postgres://example")
+	t.Setenv("O1_SECRET_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("O1_ENV", "development")
+	for _, key := range []string{
+		"O1_MCP_ENABLED", "O1_COPILOT_ENABLED", "O1_COPILOT_MODEL",
+		"O1_COPILOT_TIMEOUT", "O1_COPILOT_CALL_TIMEOUT",
+		"O1_COPILOT_MAX_MODEL_CALLS", "O1_COPILOT_MAX_TOOL_CALLS",
+		"O1_COPILOT_MAX_RESULT_BYTES", "O1_COPILOT_MAX_OUTPUT_TOKENS",
+		"O1_COPILOT_MAX_INPUT_TOKENS", "O1_COPILOT_PER_INCIDENT_PER_HOUR",
+		"O1_COPILOT_PER_WORKSPACE_PER_DAY",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestLoad_CopilotDefaults(t *testing.T) {
+	setCopilotEnv(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MCPEnabled || cfg.CopilotEnabled {
+		t.Fatalf("MCPEnabled/CopilotEnabled = %v/%v, want false/false", cfg.MCPEnabled, cfg.CopilotEnabled)
+	}
+	if cfg.CopilotModel != cfg.AIModel {
+		t.Fatalf("CopilotModel = %q, want the AI model %q", cfg.CopilotModel, cfg.AIModel)
+	}
+	if cfg.CopilotTimeout != 90*time.Second || cfg.CopilotCallTimeout != 30*time.Second {
+		t.Fatalf("timeouts = %v/%v, want 90s/30s", cfg.CopilotTimeout, cfg.CopilotCallTimeout)
+	}
+	if cfg.CopilotMaxModelCalls != 5 || cfg.CopilotMaxToolCalls != 6 ||
+		cfg.CopilotMaxResultBytes != 8192 || cfg.CopilotMaxOutputTokens != 1200 ||
+		cfg.CopilotMaxInputTokens != 40000 {
+		t.Fatalf("copilot caps = %+v", cfg)
+	}
+	if cfg.CopilotPerIncidentPerHour != 3 || cfg.CopilotPerWorkspacePerDay != 20 {
+		t.Fatalf("copilot quotas = %d/%d, want 3/20",
+			cfg.CopilotPerIncidentPerHour, cfg.CopilotPerWorkspacePerDay)
+	}
+}
+
+func TestLoad_CopilotOverrides(t *testing.T) {
+	setCopilotEnv(t)
+	t.Setenv("O1_MCP_ENABLED", "true")
+	t.Setenv("O1_COPILOT_ENABLED", "true")
+	t.Setenv("O1_COPILOT_MODEL", "investigator-1")
+	t.Setenv("O1_COPILOT_TIMEOUT", "2m")
+	t.Setenv("O1_COPILOT_CALL_TIMEOUT", "1s")
+	t.Setenv("O1_COPILOT_MAX_MODEL_CALLS", "7")
+	t.Setenv("O1_COPILOT_MAX_TOOL_CALLS", "8")
+	t.Setenv("O1_COPILOT_MAX_RESULT_BYTES", "1024")
+	t.Setenv("O1_COPILOT_MAX_OUTPUT_TOKENS", "4000")
+	t.Setenv("O1_COPILOT_MAX_INPUT_TOKENS", "50000")
+	t.Setenv("O1_COPILOT_PER_INCIDENT_PER_HOUR", "4")
+	t.Setenv("O1_COPILOT_PER_WORKSPACE_PER_DAY", "25")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.MCPEnabled || !cfg.CopilotEnabled {
+		t.Fatalf("MCPEnabled/CopilotEnabled = %v/%v, want true/true", cfg.MCPEnabled, cfg.CopilotEnabled)
+	}
+	if cfg.CopilotModel != "investigator-1" {
+		t.Fatalf("CopilotModel = %q", cfg.CopilotModel)
+	}
+	if cfg.CopilotTimeout != 2*time.Minute || cfg.CopilotCallTimeout != time.Second {
+		t.Fatalf("timeouts = %v/%v", cfg.CopilotTimeout, cfg.CopilotCallTimeout)
+	}
+	if cfg.CopilotMaxModelCalls != 7 || cfg.CopilotMaxToolCalls != 8 ||
+		cfg.CopilotMaxResultBytes != 1024 || cfg.CopilotMaxOutputTokens != 4000 ||
+		cfg.CopilotMaxInputTokens != 50000 {
+		t.Fatalf("copilot caps = %+v", cfg)
+	}
+	if cfg.CopilotPerIncidentPerHour != 4 || cfg.CopilotPerWorkspacePerDay != 25 {
+		t.Fatalf("copilot quotas = %d/%d", cfg.CopilotPerIncidentPerHour, cfg.CopilotPerWorkspacePerDay)
+	}
+}
+
+func TestLoad_RejectsInvalidCopilotConfig(t *testing.T) {
+	cases := []struct{ key, value string }{
+		{"O1_COPILOT_TIMEOUT", "500ms"},
+		{"O1_COPILOT_TIMEOUT", "3m"},
+		{"O1_COPILOT_CALL_TIMEOUT", "500ms"},
+		{"O1_COPILOT_CALL_TIMEOUT", "3m"},
+		{"O1_COPILOT_MAX_MODEL_CALLS", "0"},
+		{"O1_COPILOT_MAX_TOOL_CALLS", "0"},
+		{"O1_COPILOT_MAX_RESULT_BYTES", "512"},
+		{"O1_COPILOT_MAX_RESULT_BYTES", "65537"},
+		{"O1_COPILOT_MAX_OUTPUT_TOKENS", "0"},
+		{"O1_COPILOT_MAX_OUTPUT_TOKENS", "4001"},
+		{"O1_COPILOT_MAX_INPUT_TOKENS", "0"},
+		{"O1_COPILOT_PER_INCIDENT_PER_HOUR", "0"},
+		{"O1_COPILOT_PER_WORKSPACE_PER_DAY", "0"},
+		{"O1_COPILOT_ENABLED", "sometimes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			setCopilotEnv(t)
+			t.Setenv(tc.key, tc.value)
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load accepted %s=%s", tc.key, tc.value)
+			}
+		})
+	}
+}

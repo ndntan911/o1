@@ -86,6 +86,27 @@ type Config struct {
 	// authentication headers the client sets itself.
 	AIExtraHeaders map[string]string
 
+	// MCPEnabled and CopilotEnabled gate the MCP endpoint and the
+	// investigation API. Both are off by default.
+	MCPEnabled     bool
+	CopilotEnabled bool
+	// CopilotModel defaults to AIModel so one model setting configures both
+	// insights and the copilot.
+	CopilotModel string
+	// CopilotTimeout bounds a whole run; CopilotCallTimeout bounds one model
+	// call.
+	CopilotTimeout     time.Duration
+	CopilotCallTimeout time.Duration
+	// Copilot caps bound one run.
+	CopilotMaxModelCalls   int
+	CopilotMaxToolCalls    int
+	CopilotMaxResultBytes  int
+	CopilotMaxOutputTokens int
+	CopilotMaxInputTokens  int
+	// CopilotPerIncidentPerHour and CopilotPerWorkspacePerDay bound Start.
+	CopilotPerIncidentPerHour int
+	CopilotPerWorkspacePerDay int
+
 	// PublicRatePerMinute and PublicRateBurst configure the per-IP token
 	// bucket on the public status page. Defaults keep 1 rps with a burst of 20.
 	PublicRatePerMinute int
@@ -386,6 +407,40 @@ func Load() (Config, error) {
 	if cfg.AIExtraHeaders, err = envHeaders("O1_AI_EXTRA_HEADERS"); err != nil {
 		return Config{}, err
 	}
+	if cfg.MCPEnabled, err = envBool("O1_MCP_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotEnabled, err = envBool("O1_COPILOT_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	cfg.CopilotModel = strings.TrimSpace(env("O1_COPILOT_MODEL", cfg.AIModel))
+	if cfg.CopilotTimeout, err = envDuration("O1_COPILOT_TIMEOUT", 90*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotCallTimeout, err = envDuration("O1_COPILOT_CALL_TIMEOUT", 30*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotMaxModelCalls, err = envInt("O1_COPILOT_MAX_MODEL_CALLS", 5); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotMaxToolCalls, err = envInt("O1_COPILOT_MAX_TOOL_CALLS", 6); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotMaxResultBytes, err = envInt("O1_COPILOT_MAX_RESULT_BYTES", 8192); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotMaxOutputTokens, err = envInt("O1_COPILOT_MAX_OUTPUT_TOKENS", 1200); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotMaxInputTokens, err = envInt("O1_COPILOT_MAX_INPUT_TOKENS", 40000); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotPerIncidentPerHour, err = envInt("O1_COPILOT_PER_INCIDENT_PER_HOUR", 3); err != nil {
+		return Config{}, err
+	}
+	if cfg.CopilotPerWorkspacePerDay, err = envInt("O1_COPILOT_PER_WORKSPACE_PER_DAY", 20); err != nil {
+		return Config{}, err
+	}
 	if cfg.BillingWebhookSecret == "" {
 		// A 32-byte secret key already protects sessions and key derivation;
 		// derive a domain-separated webhook secret from it rather than making
@@ -506,6 +561,37 @@ func (cfg *Config) validate() error {
 	}
 	if cfg.AIMaxTokens <= 0 || cfg.AIMaxTokens > 4000 {
 		return fmt.Errorf("invalid O1_AI_MAX_TOKENS: must be between 1 and 4000")
+	}
+	if cfg.CopilotTimeout < time.Second || cfg.CopilotTimeout > 2*time.Minute {
+		return fmt.Errorf("invalid O1_COPILOT_TIMEOUT: must be between 1s and 2m")
+	}
+	if cfg.CopilotCallTimeout < time.Second || cfg.CopilotCallTimeout > 2*time.Minute {
+		return fmt.Errorf("invalid O1_COPILOT_CALL_TIMEOUT: must be between 1s and 2m")
+	}
+	if cfg.CopilotCallTimeout > cfg.CopilotTimeout {
+		return fmt.Errorf("invalid copilot timeouts: call timeout %v exceeds run timeout %v",
+			cfg.CopilotCallTimeout, cfg.CopilotTimeout)
+	}
+	if cfg.CopilotMaxModelCalls <= 0 {
+		return fmt.Errorf("invalid O1_COPILOT_MAX_MODEL_CALLS: must be positive")
+	}
+	if cfg.CopilotMaxToolCalls <= 0 {
+		return fmt.Errorf("invalid O1_COPILOT_MAX_TOOL_CALLS: must be positive")
+	}
+	if cfg.CopilotMaxResultBytes < 1024 || cfg.CopilotMaxResultBytes > 64*1024 {
+		return fmt.Errorf("invalid O1_COPILOT_MAX_RESULT_BYTES: must be between 1024 and 65536")
+	}
+	if cfg.CopilotMaxOutputTokens <= 0 || cfg.CopilotMaxOutputTokens > 4000 {
+		return fmt.Errorf("invalid O1_COPILOT_MAX_OUTPUT_TOKENS: must be between 1 and 4000")
+	}
+	if cfg.CopilotMaxInputTokens <= 0 {
+		return fmt.Errorf("invalid O1_COPILOT_MAX_INPUT_TOKENS: must be positive")
+	}
+	if cfg.CopilotPerIncidentPerHour <= 0 {
+		return fmt.Errorf("invalid O1_COPILOT_PER_INCIDENT_PER_HOUR: must be positive")
+	}
+	if cfg.CopilotPerWorkspacePerDay <= 0 {
+		return fmt.Errorf("invalid O1_COPILOT_PER_WORKSPACE_PER_DAY: must be positive")
 	}
 	if cfg.MonitorMinInterval < 60*time.Second || cfg.MonitorMaxInterval > 24*time.Hour {
 		return fmt.Errorf("invalid monitor intervals: must be between 60s and 24h")

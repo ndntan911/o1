@@ -19,6 +19,7 @@ import (
 	"o1/internal/copilot/tools"
 	"o1/internal/db/sqlc"
 	"o1/internal/incidents"
+	"o1/internal/jobs"
 	"o1/internal/monitors"
 	"o1/internal/observability"
 	"o1/internal/workspaces"
@@ -36,6 +37,29 @@ const (
 // auditKindInvestigationCompleted is the security event written for every
 // terminal run. Failed runs carry their error code in the detail.
 const auditKindInvestigationCompleted = "investigation_completed"
+
+// auditKindInvestigationStarted is the security event written when a member
+// enqueues a run. It is best-effort and never blocks the start.
+const auditKindInvestigationStarted = "investigation_started"
+
+const (
+	// defaultPerIncidentPerHour and defaultPerWorkspacePerDay bound how many
+	// runs one incident or workspace may start. Failed runs count, so a broken
+	// provider cannot be hammered for free.
+	defaultPerIncidentPerHour = 3
+	defaultPerWorkspacePerDay = 20
+	// staleAfter is how old a queued or running row must be before a new start
+	// treats it as abandoned and fails it.
+	staleAfter = 5 * time.Minute
+	// investigationQueue is the River queue the worker consumes.
+	investigationQueue = "ai"
+	// investigationMaxAttempts matches the worker's retry budget.
+	investigationMaxAttempts = 3
+)
+
+// ErrLimit means the incident's hourly or the workspace's daily start cap has
+// been reached.
+var ErrLimit = errors.New("copilot: investigation limit reached")
 
 // JobInserter inserts River jobs inside the caller's transaction.
 // river.Client[pgx.Tx] satisfies this interface.
@@ -56,28 +80,34 @@ type Options struct {
 	Queries    *sqlc.Queries
 	Model      string
 	Limits     Limits
-	Now        func() time.Time
-	Logger     *slog.Logger
-	Metrics    *observability.Metrics
+	// PerIncidentPerHour and PerWorkspacePerDay bound Start. Values below one
+	// fall back to the production defaults.
+	PerIncidentPerHour int
+	PerWorkspacePerDay int
+	Now                func() time.Time
+	Logger             *slog.Logger
+	Metrics            *observability.Metrics
 }
 
 // Service runs investigations and owns the read surface used by the API. The
 // worker calls Run; the API handlers call Start, Latest, and Get.
 type Service struct {
-	store      *Store
-	incidents  *incidents.Service
-	monitors   *monitors.Service
-	workspaces *workspaces.Service
-	provider   ai.ToolProvider
-	inserter   JobInserter
-	pool       *pgxpool.Pool
-	queries    *sqlc.Queries
-	model      string
-	limits     Limits
-	runner     *Runner
-	now        func() time.Time
-	logger     *slog.Logger
-	metrics    *observability.Metrics
+	store              *Store
+	incidents          *incidents.Service
+	monitors           *monitors.Service
+	workspaces         *workspaces.Service
+	provider           ai.ToolProvider
+	inserter           JobInserter
+	pool               *pgxpool.Pool
+	queries            *sqlc.Queries
+	model              string
+	limits             Limits
+	perIncidentPerHour int
+	perWorkspacePerDay int
+	runner             *Runner
+	now                func() time.Time
+	logger             *slog.Logger
+	metrics            *observability.Metrics
 }
 
 // NewService builds the tool registry and the bounded runner once. A nil
@@ -96,21 +126,31 @@ func NewService(opts Options) *Service {
 	if limits == (Limits{}) {
 		limits = DefaultLimits()
 	}
+	perIncident := opts.PerIncidentPerHour
+	if perIncident < 1 {
+		perIncident = defaultPerIncidentPerHour
+	}
+	perWorkspace := opts.PerWorkspacePerDay
+	if perWorkspace < 1 {
+		perWorkspace = defaultPerWorkspacePerDay
+	}
 
 	svc := &Service{
-		store:      opts.Store,
-		incidents:  opts.Incidents,
-		monitors:   opts.Monitors,
-		workspaces: opts.Workspaces,
-		provider:   opts.Provider,
-		inserter:   opts.Inserter,
-		pool:       opts.Pool,
-		queries:    opts.Queries,
-		model:      opts.Model,
-		limits:     limits,
-		now:        now,
-		logger:     logger,
-		metrics:    opts.Metrics,
+		store:              opts.Store,
+		incidents:          opts.Incidents,
+		monitors:           opts.Monitors,
+		workspaces:         opts.Workspaces,
+		provider:           opts.Provider,
+		inserter:           opts.Inserter,
+		pool:               opts.Pool,
+		queries:            opts.Queries,
+		model:              opts.Model,
+		limits:             limits,
+		perIncidentPerHour: perIncident,
+		perWorkspacePerDay: perWorkspace,
+		now:                now,
+		logger:             logger,
+		metrics:            opts.Metrics,
 	}
 	if opts.Provider != nil {
 		registry := tools.NewRegistry(opts.Incidents, opts.Monitors, now)
@@ -123,6 +163,160 @@ func NewService(opts Options) *Service {
 // disabled, so the worker can be built before the copilot is configured.
 func (s *Service) Enabled() bool {
 	return s != nil && s.provider != nil && s.runner != nil
+}
+
+// Start authorizes a member, verifies that the incident belongs to the path
+// workspace, reaps abandoned rows, enforces the per-incident and per-workspace
+// start caps, and writes the queued row together with its River job in one
+// transaction. A nil provider does not matter here: Start only enqueues work.
+//
+// ErrActive means the incident already has an active run; the returned
+// investigation is that run. ErrLimit means a cap was reached. Authorization
+// failures are passed through from workspaces and incidents, so a viewer gets
+// workspaces.ErrForbidden and an incident outside the workspace gets
+// workspaces.ErrNotFound.
+func (s *Service) Start(ctx context.Context, actorID, workspaceID, incidentID uuid.UUID) (Investigation, error) {
+	if s == nil || s.store == nil || s.incidents == nil || s.workspaces == nil || s.inserter == nil {
+		return Investigation{}, errors.New("copilot: investigation service is not configured")
+	}
+	if _, err := s.workspaces.Authorize(ctx, actorID, workspaceID, workspaces.RoleMember); err != nil {
+		return Investigation{}, err
+	}
+	// Authorizing the member above is not enough: the incident id must belong
+	// to this workspace, and incidents.Get reports a cross-workspace id as not
+	// found.
+	if _, err := s.incidents.Get(ctx, actorID, workspaceID, incidentID); err != nil {
+		return Investigation{}, err
+	}
+
+	pool := s.pool
+	if pool == nil {
+		pool = s.store.pool
+	}
+	if pool == nil {
+		return Investigation{}, errors.New("copilot: start investigation: no database pool")
+	}
+	queries := s.queries
+	if queries == nil {
+		queries = sqlc.New(pool)
+	}
+
+	now := s.now().UTC()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return Investigation{}, fmt.Errorf("copilot: begin investigation start: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	qtx := queries.WithTx(tx)
+	if _, err := qtx.ReapStaleInvestigations(ctx, sqlc.ReapStaleInvestigationsParams{
+		IncidentID: incidentID,
+		CreatedAt:  now.Add(-staleAfter),
+	}); err != nil {
+		return Investigation{}, fmt.Errorf("copilot: reap stale investigations: %w", err)
+	}
+
+	incidentCount, err := qtx.CountInvestigationsForIncidentSince(ctx, sqlc.CountInvestigationsForIncidentSinceParams{
+		IncidentID: incidentID,
+		CreatedAt:  now.Add(-time.Hour),
+	})
+	if err != nil {
+		return Investigation{}, fmt.Errorf("copilot: count investigations for incident: %w", err)
+	}
+	if incidentCount >= int64(s.perIncidentPerHour) {
+		return Investigation{}, ErrLimit
+	}
+
+	workspaceCount, err := qtx.CountInvestigationsForWorkspaceSince(ctx, sqlc.CountInvestigationsForWorkspaceSinceParams{
+		WorkspaceID: workspaceID,
+		CreatedAt:   now.Add(-24 * time.Hour),
+	})
+	if err != nil {
+		return Investigation{}, fmt.Errorf("copilot: count investigations for workspace: %w", err)
+	}
+	if workspaceCount >= int64(s.perWorkspacePerDay) {
+		return Investigation{}, ErrLimit
+	}
+
+	model := s.model
+	if model == "" {
+		model = "unknown"
+	}
+	created, err := s.store.CreateTx(ctx, tx, Investigation{
+		WorkspaceID:   workspaceID,
+		IncidentID:    incidentID,
+		Status:        StatusQueued,
+		Model:         model,
+		PromptVersion: PromptVersion,
+		CreatedBy:     &actorID,
+		CreatedAt:     now,
+	})
+	if err != nil {
+		if errors.Is(err, ErrActive) {
+			// The failed insert aborted this transaction, so the active row
+			// must be read after rolling it back.
+			_ = tx.Rollback(ctx)
+			active, lookupErr := s.store.Latest(ctx, workspaceID, incidentID)
+			if lookupErr != nil || active == nil {
+				return Investigation{}, ErrActive
+			}
+			return *active, ErrActive
+		}
+		return Investigation{}, err
+	}
+
+	if _, err := s.inserter.InsertTx(ctx, tx, jobs.InvestigationArgs{InvestigationID: created.ID}, &river.InsertOpts{
+		Queue:       investigationQueue,
+		MaxAttempts: investigationMaxAttempts,
+	}); err != nil {
+		return Investigation{}, fmt.Errorf("copilot: enqueue investigation %s: %w", created.ID, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Investigation{}, fmt.Errorf("copilot: commit investigation start: %w", err)
+	}
+
+	audit.RecordBestEffort(ctx, queries, audit.Event{
+		WorkspaceID: &workspaceID,
+		ActorUserID: &actorID,
+		Kind:        auditKindInvestigationStarted,
+		Detail: map[string]any{
+			"investigation_id": created.ID.String(),
+			"incident_id":      incidentID.String(),
+			"model":            created.Model,
+			"status":           string(created.Status),
+		},
+	})
+	return created, nil
+}
+
+// Latest returns the most recent investigation for an incident, or nil when
+// none exists. It authorizes a viewer against the path workspace before the
+// scoped lookup, so a key scoped to another workspace cannot read the row.
+func (s *Service) Latest(ctx context.Context, actorID, workspaceID, incidentID uuid.UUID) (*Investigation, error) {
+	if s == nil || s.store == nil || s.workspaces == nil {
+		return nil, errors.New("copilot: investigation service is not configured")
+	}
+	if _, err := s.workspaces.Authorize(ctx, actorID, workspaceID, workspaces.RoleViewer); err != nil {
+		return nil, err
+	}
+	return s.store.Latest(ctx, workspaceID, incidentID)
+}
+
+// Get returns one investigation scoped to its workspace and incident. It
+// authorizes a viewer against the path workspace first, so a key scoped to
+// another workspace gets ErrNotFound rather than another tenant's data.
+func (s *Service) Get(ctx context.Context, actorID, workspaceID, incidentID, id uuid.UUID) (Investigation, error) {
+	if s == nil || s.store == nil || s.workspaces == nil {
+		return Investigation{}, errors.New("copilot: investigation service is not configured")
+	}
+	if _, err := s.workspaces.Authorize(ctx, actorID, workspaceID, workspaces.RoleViewer); err != nil {
+		return Investigation{}, err
+	}
+	return s.store.Get(ctx, workspaceID, incidentID, id)
 }
 
 // Run executes one River attempt for an investigation. It loads the row so a

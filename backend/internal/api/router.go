@@ -20,6 +20,7 @@ import (
 	"o1/internal/auth"
 	"o1/internal/billing"
 	"o1/internal/config"
+	"o1/internal/copilot"
 	"o1/internal/db/sqlc"
 	"o1/internal/email"
 	"o1/internal/httpx"
@@ -52,8 +53,17 @@ type Dependencies struct {
 	StatusPageService *statuspage.Service
 	APIKeyService     *apikeys.Service
 	BillingService    *billing.Service
-	Metrics           *observability.Metrics
-	Tracer            *observability.Tracer
+	// InvestigationService is the copilot read/start surface. When nil and
+	// CopilotEnabled is true, the router builds one from the pool.
+	InvestigationService *copilot.Service
+	// RiverInserter enqueues investigation jobs. It is an insert-only client,
+	// so the API process does not consume the "ai" queue.
+	RiverInserter copilot.JobInserter
+	// MCPHandler serves POST /mcp when the MCP feature is enabled. Task 11
+	// registers the route; the API process only assembles the handler here.
+	MCPHandler http.Handler
+	Metrics    *observability.Metrics
+	Tracer     *observability.Tracer
 }
 
 // maxBodyBytes limits the size of request bodies (1 MiB).
@@ -279,9 +289,11 @@ func NewRouter(deps Dependencies) http.Handler {
 	if incidentSvc == nil && deps.Pool != nil {
 		incidentSvc = incidents.NewService(deps.Pool, sqlc.New(deps.Pool), wsSvc)
 	}
-	insightSvc := deps.InsightService
-	if insightSvc == nil && deps.Pool != nil {
-		provider, err := ai.New(ai.Settings{
+	// Build the model transport once. Insights and the copilot share it, but
+	// each feature decides independently whether it is configured.
+	var provider ai.Provider
+	if deps.Pool != nil {
+		built, err := ai.New(ai.Settings{
 			Provider: deps.Config.AIProvider,
 			BaseURL:  deps.Config.AIBaseURL,
 			APIKey:   deps.Config.AIAPIKey,
@@ -289,14 +301,19 @@ func NewRouter(deps Dependencies) http.Handler {
 			Timeout:  deps.Config.AITimeout,
 			Headers:  deps.Config.AIExtraHeaders,
 		})
-		switch {
-		case err != nil:
+		if err != nil {
 			// A misconfigured provider must not take the API down, but it must
 			// not be silent either: this is the only place that explains a 501
-			// from the insights endpoints.
-			logger.Warn("incident insights disabled: provider misconfigured",
+			// from the model-backed endpoints.
+			logger.Warn("ai provider misconfigured",
 				"provider", deps.Config.AIProvider, "error", err)
-			provider = nil
+		} else {
+			provider = built
+		}
+	}
+	insightSvc := deps.InsightService
+	if insightSvc == nil && deps.Pool != nil {
+		switch {
 		case provider == nil:
 			logger.Info("incident insights disabled", "provider", deps.Config.AIProvider)
 		default:
@@ -313,6 +330,64 @@ func NewRouter(deps Dependencies) http.Handler {
 			Timeout:   deps.Config.AITimeout,
 			MaxTokens: deps.Config.AIMaxTokens,
 		})
+	}
+	investigationSvc := deps.InvestigationService
+	if investigationSvc == nil && deps.Config.CopilotEnabled && deps.Pool != nil && deps.RiverInserter != nil {
+		switch {
+		case provider == nil:
+			logger.Info("copilot disabled", "provider", deps.Config.AIProvider)
+		default:
+			toolProvider, ok := provider.(ai.ToolProvider)
+			if !ok {
+				logger.Warn("copilot disabled: provider does not support tool calls",
+					"provider", deps.Config.AIProvider)
+				break
+			}
+			model := deps.Config.CopilotModel
+			if model == "" {
+				model = deps.Config.AIModel
+			}
+			limits := copilot.DefaultLimits()
+			if v := deps.Config.CopilotMaxModelCalls; v > 0 {
+				limits.MaxModelCalls = v
+			}
+			if v := deps.Config.CopilotMaxToolCalls; v > 0 {
+				limits.MaxToolCalls = v
+			}
+			if v := deps.Config.CopilotMaxResultBytes; v > 0 {
+				limits.MaxResultBytes = v
+			}
+			if v := deps.Config.CopilotMaxOutputTokens; v > 0 {
+				limits.MaxOutputTokens = v
+			}
+			if v := deps.Config.CopilotMaxInputTokens; v > 0 {
+				limits.MaxInputTokens = v
+			}
+			if v := deps.Config.CopilotTimeout; v > 0 {
+				limits.Timeout = v
+			}
+			if v := deps.Config.CopilotCallTimeout; v > 0 {
+				limits.CallTimeout = v
+			}
+			investigationSvc = copilot.NewService(copilot.Options{
+				Store:              copilot.NewPostgresStore(deps.Pool),
+				Incidents:          incidentSvc,
+				Monitors:           monitorSvc,
+				Workspaces:         wsSvc,
+				Provider:           toolProvider,
+				Inserter:           deps.RiverInserter,
+				Pool:               deps.Pool,
+				Queries:            sqlc.New(deps.Pool),
+				Model:              model,
+				Limits:             limits,
+				PerIncidentPerHour: deps.Config.CopilotPerIncidentPerHour,
+				PerWorkspacePerDay: deps.Config.CopilotPerWorkspacePerDay,
+				Logger:             logger,
+				Metrics:            deps.Metrics,
+			})
+			logger.Info("copilot enabled",
+				"provider", deps.Config.AIProvider, "model", model)
+		}
 	}
 	alertSvc := deps.AlertService
 	if alertSvc == nil && deps.Pool != nil && len(deps.Config.EncryptionKey) == 32 {
@@ -364,6 +439,9 @@ func NewRouter(deps Dependencies) http.Handler {
 	authLimiter := httpx.RateLimit(authRPS(deps.Config), authBurst(deps.Config), true)
 	// Insight generation is expensive; keep it to a handful per minute.
 	insightLimiter := httpx.RateLimit(6, 2, true)
+	// Starting an investigation enqueues a provider-backed run, so it shares
+	// the same cheap burst as insight generation.
+	investigationLimiter := httpx.RateLimit(6, 2, true)
 
 	mux.Handle("POST /api/v1/auth/register", authLimiter(http.HandlerFunc(auth.RegisterHandler(authSvc))))
 	mux.Handle("POST /api/v1/auth/verify-email", authLimiter(http.HandlerFunc(auth.VerifyEmailHandler(authSvc))))
@@ -424,6 +502,13 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/deliveries", withKeyAuth(http.HandlerFunc(incidents.DeliveriesHandler(incidentSvc))))
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/insights/latest", withKeyAuth(http.HandlerFunc(insights.LatestHandler(insightSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/insights", requireSession(insightLimiter(http.HandlerFunc(insights.GenerateHandler(insightSvc)))))
+
+	mux.Handle("POST /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/investigations",
+		requireSession(investigationLimiter(http.HandlerFunc(copilot.StartHandler(investigationSvc)))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/investigations/latest",
+		withKeyAuth(http.HandlerFunc(copilot.LatestHandler(investigationSvc))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceID}/incidents/{incidentID}/investigations/{investigationID}",
+		withKeyAuth(http.HandlerFunc(copilot.GetHandler(investigationSvc))))
 
 	mux.Handle("GET /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.ListChannelsHandler(alertSvc))))
 	mux.Handle("POST /api/v1/workspaces/{workspaceID}/alert-channels", requireSession(http.HandlerFunc(alerts.CreateChannelHandler(alertSvc))))

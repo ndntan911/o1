@@ -12,6 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
 	"o1/internal/api"
 	"o1/internal/app"
 	"o1/internal/auth"
@@ -57,6 +60,14 @@ func run() error {
 	defer authSvc.Close()
 	wsSvc := workspaces.NewService(rt.Pool, q)
 
+	// The API process only inserts investigation jobs; the worker fleet owns
+	// the "ai" queue. The client is never started here, matching the
+	// scheduler's insert-only use.
+	riverInserter, err := river.NewClient(riverpgxv5.New(rt.Pool), &river.Config{Logger: rt.Logger})
+	if err != nil {
+		return fmt.Errorf("create river client: %w", err)
+	}
+
 	handler := api.NewRouter(api.Dependencies{
 		Logger:           rt.Logger,
 		Pool:             rt.Pool,
@@ -64,6 +75,7 @@ func run() error {
 		EmailSender:      sender,
 		AuthService:      authSvc,
 		WorkspaceService: wsSvc,
+		RiverInserter:    riverInserter,
 		Metrics:          obs.Metrics,
 		Tracer:           obs.Tracer,
 	})
