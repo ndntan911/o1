@@ -320,8 +320,9 @@ is what actually prevents it from becoming a claim.
 
 - **Endpoint:** `POST /mcp`. One path, no workspace in the URL. Caddy routes it
   to the API alongside `/api/*`.
-- **Protocol:** Streamable HTTP, stateless, JSON responses. Support protocol
-  versions `2026-07-28` and `2025-11-25`; the SDK handles negotiation,
+- **Protocol:** Streamable HTTP, stateless, JSON responses. Support at least
+  versions `2026-07-28` and `2025-11-25`; SDK v1.7.0 negotiates its full known
+  list, so older versions may also work. The SDK handles negotiation,
   `tools/list`, `tools/call`, and the protocol headers. Stateless is required for
   `2026-07-28`, and it matches o1's per-request API-key model.
 - **Authentication:** `Authorization: Bearer o1_<prefix>_<secret>`. The endpoint
