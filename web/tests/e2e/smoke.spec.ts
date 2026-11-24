@@ -453,6 +453,36 @@ test('register, verify, create a monitor, and administer the workspace', async (
 	// the page in a fresh logged-out context exactly as visitors would.
 	seedProbeResults(MONITOR_NAME_EDITED);
 
+	// Incident copilot. The stub provider reads the seeded failing check and
+	// answers deterministically, so this asserts the stored-result path, not a
+	// model. The panel must never reveal the monitor URL.
+	await page.goto(`/w/${workspaceSlug}/incidents/${seeded.incidentId}`);
+	await expect(
+		page.getByRole('heading', {
+			name: `Incident: ${MONITOR_NAME_EDITED}`,
+			exact: true,
+		}),
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Investigate', exact: true }).click();
+	await expect(
+		page.getByText(
+			'The monitor returned failing checks in the queried window, so the incident has a concrete cause to investigate.',
+			{ exact: true },
+		),
+	).toBeVisible({ timeout: 30_000 });
+	await expect(
+		page.getByText("The monitor's probe failed in the queried window.", {
+			exact: true,
+		}),
+	).toBeVisible();
+	const investigationPanel = page.locator('div.rounded-lg.border').filter({
+		has: page.getByRole('heading', { name: 'Investigate this incident' }),
+	});
+	await expect(investigationPanel).toHaveCount(1);
+	const investigationText = await investigationPanel.innerText();
+	expect(investigationText).not.toContain('https://example.com');
+
+	await page.goto(`/w/${workspaceSlug}/monitors`);
 	await page.getByRole('link', { name: 'Status page', exact: true }).click();
 	await expect(
 		page.getByRole('heading', { name: 'Status page', exact: true }),
@@ -614,6 +644,40 @@ test('register, verify, create a monitor, and administer the workspace', async (
 		{ headers: memberHeaders },
 	);
 	expect(memberDelete.status()).toBe(204);
+
+	// The MCP endpoint accepts only a bearer key and exposes the member surface.
+	// This is one raw stateless JSON-RPC call with the Streamable HTTP headers
+	// and the 2026-07-28 per-request protocol metadata the SDK requires.
+	const mcpHeaders = {
+		'Content-Type': 'application/json',
+		Accept: 'application/json, text/event-stream',
+		'MCP-Protocol-Version': '2026-07-28',
+		'Mcp-Method': 'tools/list',
+	};
+	const mcpBody = {
+		jsonrpc: '2.0',
+		id: 1,
+		method: 'tools/list',
+		params: {
+			_meta: {
+				'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+				'io.modelcontextprotocol/clientCapabilities': {},
+			},
+		},
+	};
+	const unauthenticatedMCP = await request.post('/mcp', {
+		headers: mcpHeaders,
+		data: mcpBody,
+	});
+	expect(unauthenticatedMCP.status()).toBe(401);
+	const memberMCP = await request.post('/mcp', {
+		headers: { ...mcpHeaders, Authorization: `Bearer ${memberSecret}` },
+		data: mcpBody,
+	});
+	expect(memberMCP.status()).toBe(200);
+	const memberMCPText = await memberMCP.text();
+	expect(memberMCPText).toContain('o1_list_monitors');
+	expect(memberMCPText).toContain('o1_get_alert_deliveries');
 
 	// Revoking the viewer key stops it immediately.
 	await page.getByRole('button', { name: 'Revoke Viewer key' }).click();

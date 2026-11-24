@@ -42,6 +42,15 @@
 		}
 	}
 
+	# MCP is a separate, API-key-authenticated endpoint. It is proxied on the
+	# same origin so agent clients use one host, and it must fall through before
+	# the SPA so a missing key gets a real 401 instead of index.html.
+	handle /mcp {
+		reverse_proxy api:8080 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
 	handle {
 		try_files {path} /index.html
 		file_server

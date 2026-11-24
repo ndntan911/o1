@@ -68,7 +68,32 @@ for the engineer who will change the system next, not for an auditor.
 | CI ↔ GHCR ↔ host | Tampering | Digest-pinned images, Trivy and govulncheck gates, reviewed production Environment, no `--build` in deploy | A compromised GitHub account can publish a malicious digest |
 | CI ↔ GHCR ↔ host | Spoofing | `StrictHostKeyChecking=yes` with pinned known hosts; dedicated SSH key | Key theft is not detectable by the deploy script |
 
-## 5. Access-control matrix
+## 5. Incident copilot and MCP
+
+The copilot and the MCP endpoint reuse the same read-only tool layer and add
+two boundaries: **API ↔ model provider** and **MCP client ↔ API**.
+
+| Boundary | Threat | Control | Residual risk |
+|---|---|---|---|
+| API ↔ model provider | Information disclosure | The model sees an incident seed and bounded tool results only: no monitor URL, request headers or body, recipient, secret, or raw probe error. Tool results are truncated and redacted before serialization. | The provider's own retention and logging are outside our control |
+| Model output ↔ dashboard | Tampering / elevation | Every hypothesis claim must resolve to a recorded tool result; unsupported causes are dropped. The agent has no write tool and no outbound HTTP except the provider call. | A verified-looking claim can still be wrong, so the UI presents it as a starting point |
+| MCP client ↔ API | Spoofing | Static bearer API key only, with no cookie fallback; `Origin` is checked when present. | A leaked key works until revoked; there is no OAuth, consent, or per-client binding |
+| MCP client ↔ API | Elevation / tenant escape | The workspace comes from the key, never from tool arguments. Cross-tenant ids return `not_found`, and a viewer key cannot see the delivery tool. | A static key carries the key's whole role for its workspace |
+
+- The **model boundary is read-only and evidence-bounded**. Tools read
+  incidents, monitors, checks, and delivery outcomes; the agent cannot probe,
+  mutate, or fetch arbitrary URLs. The run trace and validated answer store
+  redacted results, never key material, URLs, or raw errors.
+- The **tool boundary is shared** by the in-app copilot and the MCP adapter, so
+  both paths enforce the same role and tenant checks.
+- **Tenant scope** always comes from the session or API key. No tool accepts a
+  workspace id, and the tool list is rebuilt per request from the key's role.
+- **Static bearer keys are a deliberate tradeoff.** They are simple for CLI and
+  agent clients but have no OAuth discovery, consent, expiry, or rotation beyond
+  revoke and recreate. Treat a key like a password and give it the smallest
+  role that works.
+
+## 6. Access-control matrix
 
 Enforcement is in the service layer (`workspaces.Authorize`) unless noted.
 `/healthz` and `/readyz` are unauthenticated and not tenant-scoped; every other
@@ -98,7 +123,7 @@ carry admin or global rights.
 | `/admin/*` | no | denied | denied | **global admin only** (`requireAdmin`) | no | `backend/internal/api/admin_integration_test.go` |
 | `GET /healthz`, `GET /readyz` | yes | — | — | — | no | `httpx` health tests |
 
-## 6. Residual risks
+## 7. Residual risks
 
 Ranked by what a reasonable user would notice first.
 
@@ -124,7 +149,7 @@ Ranked by what a reasonable user would notice first.
 9. **No external penetration test.** This model and the automated gates are the
    substitute; a paid test remains on the follow-up list.
 
-## 7. Review cadence
+## 8. Review cadence
 
 - The maintainer re-reads this model and the review checklist quarterly and
   after any change to authentication, tenancy, probing, alert delivery, or the

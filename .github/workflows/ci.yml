@@ -114,7 +114,7 @@ jobs:
         working-directory: web
       - run: npx playwright install --with-deps chromium
         working-directory: web
-      - run: docker compose up -d --build
+      - run: O1_MCP_ENABLED=true O1_COPILOT_ENABLED=true O1_AI_PROVIDER=stub docker compose up -d --build
       - name: Wait for the stack
         run: |
           for _ in $(seq 1 60); do

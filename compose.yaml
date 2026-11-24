@@ -74,6 +74,15 @@ services:
       O1_AI_TIMEOUT: ${O1_AI_TIMEOUT:-15s}
       O1_AI_MAX_TOKENS: ${O1_AI_MAX_TOKENS:-700}
       O1_AI_EXTRA_HEADERS: ${O1_AI_EXTRA_HEADERS:-}
+      # Incident copilot and MCP server. Both are off by default; turn them on
+      # only for a deployment that wants them. The timeout values bound one
+      # investigation and one model call. See docs/ai/copilot.md and
+      # docs/mcp.md.
+      O1_MCP_ENABLED: ${O1_MCP_ENABLED:-false}
+      O1_COPILOT_ENABLED: ${O1_COPILOT_ENABLED:-false}
+      O1_COPILOT_MODEL: ${O1_COPILOT_MODEL:-}
+      O1_COPILOT_TIMEOUT: ${O1_COPILOT_TIMEOUT:-90s}
+      O1_COPILOT_CALL_TIMEOUT: ${O1_COPILOT_CALL_TIMEOUT:-30s}
       O1_SMTP_ADDR: ${O1_SMTP_ADDR:-mailpit:1025}
       O1_SMTP_USERNAME: ${O1_SMTP_USERNAME:-}
       O1_SMTP_PASSWORD: ${O1_SMTP_PASSWORD:-}

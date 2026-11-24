@@ -240,6 +240,24 @@ tier has daily and monthly quotas; size the plan for incident volume. See
 Paging integrations, Slack OAuth, custom webhook headers, maintenance
 windows, and per-channel reminder schedules are outside the current scope.
 
+## Incident copilot and MCP
+
+Two opt-in features share one read-only tool layer. Both are off by default:
+
+- **Incident copilot** adds an **Investigate** action to an incident. An agent
+  reads that incident's monitor, checks, and timeline, then returns an
+  assessment whose hypotheses must cite recorded tool results. Enable it with
+  `O1_COPILOT_ENABLED=true` and a model provider via `O1_AI_PROVIDER`. See
+  [docs/ai/copilot.md](docs/ai/copilot.md).
+- **MCP server** exposes the same tools to external MCP clients at `POST /mcp`,
+  authenticated with a workspace API key (never a session cookie). Enable it
+  with `O1_MCP_ENABLED=true`. See [docs/mcp.md](docs/mcp.md).
+
+`O1_COPILOT_MODEL` defaults to `O1_AI_MODEL`, `O1_COPILOT_TIMEOUT` (default
+`90s`) bounds one investigation, and `O1_COPILOT_CALL_TIMEOUT` (default `30s`)
+bounds one model call. Viewer keys see five tools; member keys add redacted
+delivery outcomes. Neither feature can write, probe, or read another workspace.
+
 ## Public status pages
 
 **Settings → Status page** enables one public page per workspace, sets its
