@@ -400,8 +400,11 @@ one-minute sweep. The partial unique index keeps one active row per incident.
 
 On `ok` or `insufficient`, the worker appends one incident timeline event,
 `investigation_completed`, with the investigation id, model, status, tool-call
-count, and hypothesis count. Failed and incomplete runs do not write a timeline
-event; the panel shows them and offers a retry.
+count, and hypothesis count, in the same transaction as the terminal row; a
+failed insert rolls the status back for a retry. Failed and incomplete runs do
+not write a timeline event; the panel shows them and offers a retry. Migration
+`00014` widens the inline `incident_events.kind` check with the new kind; no
+applied migration is edited.
 
 ## API
 

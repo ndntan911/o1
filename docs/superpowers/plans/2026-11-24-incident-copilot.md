@@ -38,6 +38,7 @@ These are the failure modes most likely to make the feature unsafe or untrustwor
 
 **Backend, new**
 - `backend/internal/db/migrations/00013_incident_investigations.sql` — table, indexes, partial unique active row.
+- `backend/internal/db/migrations/00014_investigation_events.sql` — widen the `incident_events.kind` check with `investigation_completed` (the original check was inline).
 - `backend/internal/db/queries/investigations.sql` — investigation CRUD and caps.
 - `backend/internal/copilot/types.go` — statuses, result, evidence, trace, investigation.
 - `backend/internal/copilot/store.go` — Postgres store and generated-query mapping.
@@ -745,8 +746,10 @@ git commit -m "feat: add the bounded copilot agent runner"
 **Files:**
 - Create: `backend/internal/jobs/investigation.go`
 - Create: `backend/internal/copilot/service.go`
+- Modify: `backend/internal/copilot/store.go` — add `CompleteTx`.
+- Create: `backend/internal/db/migrations/00014_investigation_events.sql`
 - Create: `backend/internal/worker/investigation_worker.go`
-- Modify: `backend/internal/incidents/service.go` — add `RecordInvestigationEvent`.
+- Modify: `backend/internal/incidents/service.go` — add `RecordInvestigationEventTx` and keep the authorized wrapper.
 - Modify: `backend/internal/observability/metrics.go` — add `ObserveInvestigation`.
 - Modify: `backend/cmd/worker/main.go`
 - Test: `backend/internal/worker/investigation_worker_test.go`
@@ -755,6 +758,8 @@ git commit -m "feat: add the bounded copilot agent runner"
 - Consumes: Task 1 store, Task 5 registry, Task 7 runner, `incidents.Service`, `monitors.Service`.
 - Produces:
   - `func (s *incidents.Service) RecordInvestigationEvent(ctx context.Context, workspaceID, incidentID, investigationID uuid.UUID, status, model string, toolCalls, hypotheses int) error` — requires `RoleMember`, appends one `investigation_completed` event with a bounded detail object.
+  - `func (s *incidents.Service) RecordInvestigationEventTx(ctx context.Context, tx pgx.Tx, workspaceID, incidentID, investigationID uuid.UUID, status, model string, toolCalls, hypotheses int) error` — the same insert on the caller's transaction; the caller has already authorized the actor.
+  - `func (s *Store) CompleteTx(ctx context.Context, tx pgx.Tx, inv Investigation) error` — the active-only terminal update on the caller's transaction; `Complete` keeps its wrapper behavior.
   - `func (m *observability.Metrics) ObserveInvestigation(status string, d time.Duration, toolCalls, inputTokens, outputTokens int)` — counter plus duration/token histograms; nil receiver is safe.
   - `type InvestigationArgs struct { InvestigationID uuid.UUID }`; `func (InvestigationArgs) Kind() string { return "investigation" }`.
   - `type JobInserter interface { InsertTx(ctx context.Context, tx pgx.Tx, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error) }`
@@ -792,7 +797,7 @@ Expected: FAIL — `copilot.NewService`, worker undefined.
 
 - [ ] **Step 3: Implement `Service.Run`**
 
-`NewService` builds the tool registry with `tools.NewRegistry(opts.Incidents, opts.Monitors, opts.Now)` and the runner with `NewRunner(opts.Provider, registry, opts.Model, opts.Limits, opts.Now)`; it stores `opts.Workspaces`, `opts.Queries`, and `opts.Pool` for `Start`. `auth.ContextWithPrincipal` is available from Task 5. Load the row; terminal statuses are no-ops. Build the actor context with `auth.ContextWithPrincipal(ctx, auth.Principal{UserID: *inv.CreatedBy})`; if `CreatedBy` is nil or no longer a member, complete `failed/actor_removed`. Build the seed; on error complete `failed/internal`. `MarkRunning` with `attempt` and `HashSeed`. Run the runner. On `Outcome.Err` transient and `attempt < maxAttempts`, `SaveProgress` and return the error for River; otherwise complete `failed/provider_unavailable` on the final attempt. On `StatusOK` or `StatusInsufficient`, complete, append one `investigation_completed` timeline event via `RecordInvestigationEvent`, and write an `investigation_completed` audit row with the model, status, tool calls, hypotheses, and token counts. On other statuses, complete without a timeline event and write the same audit row with the error code. Record `ObserveInvestigation(status, duration, toolCalls, inputTokens, outputTokens)` when non-nil. If `MarkRunning`, `SaveProgress`, or `Complete` returns `ErrNotActive`, the stale reaper or another worker won the race: return nil without reviving the row, writing a timeline event, or overwriting the stale error code.
+`NewService` builds the tool registry with `tools.NewRegistry(opts.Incidents, opts.Monitors, opts.Now)` and the runner with `NewRunner(opts.Provider, registry, opts.Model, opts.Limits, opts.Now)`; it stores `opts.Workspaces`, `opts.Queries`, and `opts.Pool` for `Start`. `auth.ContextWithPrincipal` is available from Task 5. Load the row; terminal statuses are no-ops. Build the actor context with `auth.ContextWithPrincipal(ctx, auth.Principal{UserID: *inv.CreatedBy})`; if `CreatedBy` is nil or no longer a member, complete `failed/actor_removed`. Build the seed; on error complete `failed/internal`. `MarkRunning` with `attempt` and `HashSeed`. Run the runner. On `Outcome.Err` transient and `attempt < maxAttempts`, `SaveProgress` and return the error for River; otherwise complete `failed/provider_unavailable` on the final attempt. On `StatusOK` or `StatusInsufficient`, open one transaction, call `Store.CompleteTx` and `RecordInvestigationEventTx` in it, and commit; the terminal row and its timeline event are atomic, so a failed event insert rolls the status back for a River retry. On other statuses, use the same transaction for `CompleteTx` with no event. Write the `investigation_completed` audit row after commit (best-effort) with the model, status, tool calls, hypotheses, token counts, and error code. Record `ObserveInvestigation(status, duration, toolCalls, inputTokens, outputTokens)` when non-nil. If `MarkRunning`, `SaveProgress`, or `CompleteTx` returns `ErrNotActive`, the stale reaper or another worker won the race: roll back, return nil, and write no timeline event or stale-code overwrite.
 
 - [ ] **Step 4: Wire the worker**
 
