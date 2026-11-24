@@ -29,8 +29,10 @@ Content-Type: application/problem+json
 
 Create keys in the dashboard or with `POST
 /api/v1/workspaces/{workspaceID}/api-keys`. The raw secret is shown once; store
-it like any other credential. The API logs only the parsed prefix and key id on
-authentication failures and never logs or audits the secret.
+it like any other credential. Authentication failures log only the parsed key
+prefix: the key id is unknown until a key resolves. Origin-rejection and
+success logs may also include the key id. No log or audit row contains the
+secret.
 
 ### Origin check
 
@@ -47,10 +49,12 @@ over the limit return `429 Too Many Requests` with `Retry-After`.
 
 ## Transport and protocol
 
-The server is stateless and returns JSON responses (not SSE). It supports MCP
-protocol versions **2026-07-28** and **2025-11-25**. Every request is
-authenticated and scoped independently; there is no `Mcp-Session-Id` state to
-carry between requests. `GET` and `DELETE` on the endpoint are not needed.
+The server is stateless and returns JSON responses (not SSE). The target MCP
+protocol versions are **2026-07-28** and **2025-11-25**. SDK v1.7.0 exposes no
+supported-version option and negotiates its full known version list, so older
+protocol versions may also work; the server does not refuse them. Every request
+is authenticated and scoped independently; there is no `Mcp-Session-Id` state
+to carry between requests. `GET` and `DELETE` on the endpoint are not needed.
 
 The server sends these instructions during discovery/initialization:
 
@@ -70,9 +74,10 @@ another tenant. Ids from another workspace are reported as a bounded
 | `viewer` | 5 | No |
 | `member` | 6 | Yes |
 
-The tool list is built per request from the key's current role. A viewer does
-not see `o1_get_alert_deliveries` at all; invoking it directly is rejected
-without returning delivery data.
+The tool list is built per request from the key's current role. A viewer key
+does not see `o1_get_alert_deliveries` and the tool is not registered on that
+key's server. A direct call is rejected by the MCP SDK before any tool handler
+runs; no delivery data is returned.
 
 ## Tools
 
