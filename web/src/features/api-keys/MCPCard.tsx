@@ -6,7 +6,8 @@ import {
 	CardTitle,
 } from '@/components/ui/card';
 
-export const MCP_DOCS_URL = '/docs/mcp.md';
+export const MCP_DOCS_URL =
+	'https://github.com/ndntan911/o1/blob/main/docs/mcp.md';
 
 export interface MCPCardProps {
 	endpoint: string;
@@ -31,6 +32,8 @@ export function MCPCard({ endpoint }: MCPCardProps) {
 				</p>
 				<a
 					href={MCP_DOCS_URL}
+					target="_blank"
+					rel="noreferrer"
 					className="text-sm font-medium text-primary underline-offset-4 hover:underline"
 				>
 					Read the MCP docs

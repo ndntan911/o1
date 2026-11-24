@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithProviders } from '@/test/render';
-import { MCPCard } from './MCPCard';
+import { MCP_DOCS_URL, MCPCard } from './MCPCard';
 
 describe('MCPCard', () => {
 	test('shows the MCP endpoint and the key-role rule', () => {
@@ -17,7 +17,11 @@ describe('MCPCard', () => {
 
 		expect(screen.getByRole('link', { name: /mcp docs/i })).toHaveAttribute(
 			'href',
-			'/docs/mcp.md',
+			MCP_DOCS_URL,
+		);
+		expect(screen.getByRole('link', { name: /mcp docs/i })).toHaveAttribute(
+			'target',
+			'_blank',
 		);
 	});
 });
