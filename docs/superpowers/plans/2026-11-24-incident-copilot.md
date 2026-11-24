@@ -652,7 +652,7 @@ Expected: FAIL — functions undefined.
 
 - [ ] **Step 5: Implement parse and verify**
 
-Parse accepts a raw JSON object or a fenced ```json block. Enforce: at most 3 hypotheses, renumber ranks, confidence in `high|medium|low` else `low`, at most 5 evidence items per hypothesis, strings trimmed and capped (assessment 1200, cause 300, note 300, falsified 300, next_checks 3). `Verify` resolves RFC 6901 pointers with `~0`/`~1` unescaping, compares decoded JSON values with `reflect.DeepEqual`, drops evidence for unknown or failed calls, marks hypotheses with no surviving evidence `Unverified`, and returns the verified count.
+Parse accepts a raw JSON object or a fenced ```json block. Enforce: at most 3 hypotheses, renumber ranks, confidence in `high|medium|low` else `low`, at most 5 evidence items per hypothesis, strings trimmed and capped (assessment 1200, cause 300, note 300, falsified 300, next_checks 3). A missing `sufficient` is malformed and returns an error; an explicit `sufficient:false` clears hypotheses. `Verify` resolves RFC 6901 pointers with `~0`/`~1` unescaping, compares decoded JSON values with `reflect.DeepEqual`, drops evidence for unknown or failed calls, marks hypotheses with no surviving evidence `Unverified`, and returns the verified count. After verification set `Sufficient = verifiedCount > 0`; when it is false, clear hypotheses so the stored shape can never say `sufficient:false` with a list of causes. A partially verified result keeps its hypotheses, with the unverified ones badged.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1051,7 +1051,7 @@ Expected: FAIL — module missing.
 
 - [ ] **Step 4: Implement the panel and mount it**
 
-Render the panel under `IncidentInsightPanel` in `IncidentDetailScreen` with `canStart={canInvestigateIncidents(workspace.role)}`. The panel: 404 + no start -> null; 501 -> null; queued/running -> `role="status"` with elapsed/attempts and the step list; ok/insufficient -> assessment, up to 3 hypotheses with confidence, evidence chips (pointer/value), `Unverified` badge, next checks, model/time; failed/incomplete -> error text and Retry. Use `aria-live="polite"` for the running state.
+Render the panel under `IncidentInsightPanel` in `IncidentDetailScreen` with `canStart={canInvestigateIncidents(workspace.role)}`. The panel: 404 + no start -> null; 501 -> null; queued/running -> `role="status"` with elapsed/attempts and the step list; ok/insufficient -> assessment, up to 3 hypotheses with confidence, evidence chips (pointer/value), an `Unverified` badge on a hypothesis that lost all its citations, next checks, model/time; if every hypothesis was unverified the status is insufficient and the panel shows the refusal rather than a cause; failed/incomplete -> error text and Retry. Use `aria-live="polite"` for the running state.
 
 - [ ] **Step 5: Run the tests**
 
