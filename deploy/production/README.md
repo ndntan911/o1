@@ -4,18 +4,19 @@ This directory holds the standalone production stack for o1:
 
 | File | Purpose |
 |------|---------|
-| `compose.yaml` | API, scheduler, worker, web (Caddy), and an optional Alloy profile. PostgreSQL is a managed service reached through `O1_DATABASE_URL`, not a container. |
+| `compose.yaml` | API, scheduler, worker, web (Caddy), the bundled `postgres` service, and an optional Alloy profile. |
 | `compose.build.yaml` | Local-build override: builds the app images from this checkout instead of pulling registry images. |
 | `env.example` | Every required and optional production variable, with placeholders. |
 | `images.env.example` | Fixture showing the digest-pinned image refs a deploy writes to the host. |
 | `README.md` | This runbook. |
 
 The stack is intentionally separate from the development `compose.yaml` at the
-repository root. It has no Mailpit, no database container, no published
-database/API/metrics ports, no development keys, and no raised auth rate
-limits. Only the web container publishes ports `80` and `443`; Caddy serves the
-SPA, proxies the API on the same origin, and obtains the TLS certificate. The
-database is a managed PostgreSQL service supplied as `O1_DATABASE_URL`.
+repository root. It has no Mailpit, no published database/API/metrics ports, no
+development keys, and no raised auth rate limits. Only the web container
+publishes ports `80` and `443`; Caddy serves the SPA, proxies the API on the
+same origin, and obtains the TLS certificate. PostgreSQL 18 runs as the
+`postgres` service inside this stack, stores its data on the `o1-postgres-data`
+volume, and is reachable only on the private Compose network.
 
 All commands below run from the repository root unless they use an absolute
 path. Each Compose command names the production compose file and environment
@@ -64,13 +65,14 @@ they exercise the same compose file the deploy script uses.
 ## Prerequisites
 
 - A Linux host with Docker Engine 24+ and the Compose v2 plugin, plus `git`,
-  `curl`, `psql`, and `openssl`.
-- A managed PostgreSQL 16-compatible database with a role that owns the `o1`
-  database, reachable over TLS. See [Managed PostgreSQL](#3-managed-postgresql).
+  `curl`, and `openssl`.
+- 43 GB free on the boot volume, measured: the database, its images, the
+  restic cache, and release bundles share that disk. See
+  [Bundled PostgreSQL](#3-bundled-postgresql).
 - A domain or subdomain you control, for example `o1.example.com`.
 - Inbound TCP `80` and `443` reachable from the internet, and SSH for
-  administration. Do not expose `5432` (the database is not on this host),
-  `8080`, `8081`, `8082`, or `8083`.
+  administration. Do not expose `5432` (the bundled database publishes no
+  port), `8080`, `8081`, `8082`, or `8083`.
 - A Resend account with a verified sending domain and an API key, **or** an
   SMTP relay with sender credentials. See [Email provider](#2-email-provider).
 
@@ -162,117 +164,172 @@ Authentication uses PLAIN over TLS 1.2+. Certificate verification is always on;
 there is no skip-verify switch. A 5xx relay response is a permanent failure and
 is not retried; 4xx, TLS, and timeout errors are retried with backoff.
 
-## 3. Managed PostgreSQL
+## 3. Bundled PostgreSQL
 
-The production stack runs no database of its own. Provision a managed
-PostgreSQL service before the first deploy.
+The production stack runs its own PostgreSQL 18 as the `postgres` service on
+the private Compose network. It uses the `postgres:18-alpine` image, owns the
+named volume `o1-postgres-data`, and publishes no host port. The application
+never receives an operator-supplied DSN: Compose derives `O1_DATABASE_URL` from
+`POSTGRES_PASSWORD`.
 
 ### Requirements
 
-- PostgreSQL 16-compatible, with a database named `o1` and a role that **owns**
-  that database. Migrations install the `citext` extension, create the River
-  queue schema, and create and drop `probe_results` partitions; a bare
-  non-owner role fails at startup.
-- TLS enforced. Use `sslmode=verify-full` when the provider has a publicly
-  trusted CA. For a provider with a private CA, use `sslmode=require` and supply
-  the provider's CA material (`sslrootcert` or the documented mount).
-- A **direct (session) endpoint**, not a transaction pooler. Startup migrations
-  take PostgreSQL advisory locks and River needs session semantics; Neon's
-  `-pooler` host and Supabase's `6543` port are transaction pools and will not
-  work.
-- A region close to the deploy host. Every probe writes a row over this link.
-- Enough connections: `api`, `scheduler`, and `worker` each hold up to
-  `O1_DB_MAX_CONNS` (default `10`), so the tier must allow at least 30
-  connections plus migration headroom.
+- The existing host requirements: Docker Engine 24+ and the Compose v2 plugin.
+  The database adds no extra host daemon, package, or external account.
+- 43 GB free on the boot volume, measured before the cutover. The Neon source
+  measured about 30 MB, but images, the volume, restic's cache, and retained
+  release bundles share the disk.
+- Enough memory and CPU for a 3 GB / 2 CPU container: the stack caps
+  `shared_buffers` at 1 GB and `max_connections` at 100.
+- `POSTGRES_PASSWORD` is baked into the cluster by the first `initdb`. Changing
+  it in `.env` later does not change the role password; run
+  `ALTER ROLE o1 PASSWORD '...'` inside the container and update `.env` in the
+  same change, then recreate `api`, `scheduler`, and `worker`.
 
-OCI Database with PostgreSQL in the VPS region, Neon's direct endpoint,
-Supabase's direct connection, RDS, and Aiven all satisfy this.
-
-### Connection string
+### Connection
 
 ```dotenv
-O1_DATABASE_URL='postgres://o1:PASSWORD@db.example.com:5432/o1?sslmode=verify-full'
+POSTGRES_PASSWORD=<output of openssl rand -hex 32>
 ```
 
-Wrap the value in single quotes. In an unquoted `.env` value, Compose expands
-`$` as a variable reference, so a password containing `$` silently loses part
-of itself; quoting avoids that, and percent-encoding `$` as `%24` is the
-alternative. Percent-encode `@`, `:`, `/`, `?`, and `#` in the password too.
-The API refuses to start when `O1_DATABASE_URL` is empty, and Compose refuses
-to render the stack without it.
+Compose derives the one supported production DSN:
 
-Backup responsibility moves to the host with the self-hosted cutover: after it,
-Plan 12's daily restic backup and manual restore apply (see
-[Backups and restore](#backups-and-restore)) and provider point-in-time recovery
-no longer applies. Until the cutover, the managed provider's backup retention
-window still governs the live database, so confirm it before setting
-`O1_RETENTION_DRY_RUN=false`; rollups are aggregates, not a backup of raw probe
-rows.
-
-### One-time cutover from the bundled database
-
-This applies only to a host that already ran a release with the local
-PostgreSQL container. Steps 1–4 run against the compose file that is **still
-running**, before you update the checkout or deploy the new release, because the
-new file no longer defines the `postgres` service. On a registry-deployed host
-that is the active release's copy:
-
-```sh
-COMPOSE_FILE=/opt/o1/current/deploy/production/compose.yaml
-ENV_FILE=/opt/o1/.env
-
-# Export the managed DSN in this shell. Use the same value you will write to
-# .env in step 5; the restore and the spot check read this variable.
-export O1_DATABASE_URL='postgres://o1:PASSWORD@db.example.com:5432/o1?sslmode=verify-full'
+```text
+postgres://o1:<POSTGRES_PASSWORD>@postgres:5432/o1?sslmode=disable
 ```
 
-On a checkout-based host, run these steps before `git pull` and keep using
-`deploy/production/compose.yaml`.
+`5432` is not published; the DSN resolves only on the Compose bridge, where
+TLS is unnecessary and `sslmode=disable` is deliberate. Do not set
+`O1_DATABASE_URL` in `.env`: Compose sets it for every backend service, and a
+stray value is not passed to the containers. The one exception is the retained
+pre-cutover bundle in [Rollback](#rollback): its managed compose file
+interpolates `O1_DATABASE_URL`.
 
-1. Stop the writers and leave PostgreSQL running:
+### Startup
+
+`api`, `scheduler`, and `worker` declare `depends_on: postgres` with
+`condition: service_healthy`, so they do not start until the image's
+`pg_isready` healthcheck passes. Each process then runs goose and River
+migrations at startup; a PostgreSQL advisory lock serializes them, so
+concurrent starts are safe.
+
+### Extensions
+
+`citext` and `plpgsql` ship with `postgres:18-alpine`. The migrations create
+`citext` themselves; there is no package install and no provider extension
+list to maintain.
+
+### Cutover from Neon
+
+The cutover from Neon is a one-time, maintenance-window operation: freeze
+writes, dump Neon, restore into a temporary container on `o1-postgres-data`,
+then deploy the bundled stack. The full command sequence with expected output is
+Task 6 of
+[docs/superpowers/plans/2026-11-25-self-hosted-postgres.md](../../docs/superpowers/plans/2026-11-25-self-hosted-postgres.md).
+In short, on the host:
+
+1. Confirm the preflight: at least 40 GB free (43 GB measured), no
+   `o1-postgres-data` volume yet, and no legacy `postgres-data` volume.
+2. Generate `openssl rand -hex 32`, store it in the password manager, and add
+   `POSTGRES_PASSWORD=<value>` to `/opt/o1/.env` (mode `0600`). Do not start
+   any container with the new stack yet.
+3. Freeze writes on the running release. Stop `worker` first and let River
+   drain, then `scheduler`, then `api`; leave `web` up:
 
    ```sh
-   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-     stop api scheduler worker
+   docker compose --env-file /opt/o1/.env \
+     -f /opt/o1/current/deploy/production/compose.yaml stop worker
+   docker compose --env-file /opt/o1/.env \
+     -f /opt/o1/current/deploy/production/compose.yaml stop scheduler api
    ```
 
-2. Dump the old database:
+4. Create the volume and seed it with a temporary container. Mount the volume
+   at `/var/lib/postgresql`, where the PostgreSQL 18 image keeps `PGDATA`
+   (`/var/lib/postgresql/18/docker`); the old `/var/lib/postgresql/data` path
+   would leave the restored dump outside the volume:
 
    ```sh
-   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-     exec -T postgres pg_dump -U o1 -d o1 -Fc > o1-pre-managed.dump
+   export POSTGRES_PASSWORD=$(grep '^POSTGRES_PASSWORD=' /opt/o1/.env | cut -d= -f2-)
+   docker volume create o1-postgres-data
+   docker run -d --name o1-cutover-pg \
+     -e POSTGRES_USER=o1 -e POSTGRES_DB=o1 \
+     -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+     -v o1-postgres-data:/var/lib/postgresql \
+     postgres:18-alpine
    ```
 
-3. Restore into the managed database:
+   Wait until `docker exec o1-cutover-pg pg_isready -U o1 -d o1` reports
+   `accepting connections` (roughly 10–30 seconds).
+
+5. Dump Neon's **direct** (non-pooled) endpoint to
+   `/opt/o1/state/o1-pre-local.dump`, push it to restic with `--tag o1-db
+   --tag pre-cutover`, restore it into the temporary container with
+   `pg_restore -U o1 -d o1 --no-owner --no-privileges`, and compare row counts
+   on `users`, `workspaces`, `monitors`, `probe_results`, `incidents`,
+   `goose_db_version`, and `river_job`.
+6. Remove the temporary container with `docker rm -f o1-cutover-pg`, deploy
+   the new release, and confirm `/healthz`, `/readyz`, login, a monitor with
+   encrypted headers, and one alert email.
+7. Soak for 7 days: keep the Neon project, the restic `pre-cutover` snapshot,
+   and the pre-cutover release bundles. Delete the plaintext dump as soon as
+   the local database is verified.
+
+### Rollback
+
+During the 7-day soak, rolling back to Neon is allowed. Keep the last
+managed-aware release bundle, which has no `postgres` service and reads its DSN
+from `O1_DATABASE_URL`. To roll back:
+
+1. Add the Neon **direct** DSN to `/opt/o1/.env` as `O1_DATABASE_URL`. The
+   bundled stack ignores it, but the retained pre-cutover compose file
+   interpolates it.
+2. Activate the retained bundle with `/opt/o1/bin/rollback.sh <release-id>`.
+   `up -d --remove-orphans` removes the now-unused `postgres` container,
+   leaves the `o1-postgres-data` volume in place, and verifies `/readyz`.
+3. Pause the backup timers; with no `postgres` service in the active release,
+   the dump and drill would fail:
 
    ```sh
-   pg_restore --no-owner --no-privileges -d "$O1_DATABASE_URL" o1-pre-managed.dump
+   systemctl disable --now o1-backup.timer o1-backup-prune.timer \
+     o1-restore-verify.timer
    ```
 
-4. Spot-check row counts on both sides (`monitors`, `users`, `probe_results`)
-   and confirm the newest `probe_results.checked_at` is current.
+4. Record the data-loss window: everything written to `o1-postgres-data`
+   during the soak is not on Neon. Returning to the local database later needs
+   a fresh dump and restore, not the old one.
 
-5. Set `O1_DATABASE_URL` in `deploy/production/.env`, or `/opt/o1/.env` on a
-   registry-deployed host, then deploy a release built after this change.
+After acceptance, rollback is local-only: `rollback.sh` switches image and
+config bundles, and data recovery is the Plan 12 restore procedure. Prune the
+pre-cutover bundles and delete the Neon project. Never roll back to a release
+that predates the bundled-database Compose shape; it starts an empty database
+and turns `/readyz` green while production data is unreachable.
 
-6. Confirm `/readyz` is healthy and that no `postgres` container is running.
+### Backups
 
-7. Keep the dump and the old `postgres-data` volume until the managed database
-   has served production through a full retention cycle. Then remove the volume
-   manually and prune pre-cutover releases; see
-   [../CICD.md](../CICD.md#7-manual-recovery).
+Backups depend on the bundled stack: the daily restic dump reads the bundled
+`postgres` container, so the timers only work after the cutover. The RPO is up to
+24 hours and there is no point-in-time recovery: restic keeps 30 daily and 12
+monthly snapshots, prunes weekly, and runs a monthly restore drill. `.env` and
+its `POSTGRES_PASSWORD`, `O1_SECRET_KEY`, and `O1_ENCRYPTION_KEY` are not in the
+dump; restore them from the password manager. See
+[Backups and restore](#backups-and-restore) and
+[../backup/README.md](../backup/README.md).
 
 ## 4. Generate secrets
 
-The database password belongs to the managed service: issue and rotate it from
-the provider console, never from the host. The application has two secrets of
-its own; generate each separately and store both in a password manager:
+The database password is generated on the host and stored in the password
+manager; no provider console is involved. Generate each secret separately:
 
 ```sh
+openssl rand -hex 32     # POSTGRES_PASSWORD
 openssl rand -base64 32  # O1_SECRET_KEY
 openssl rand -base64 32  # O1_ENCRYPTION_KEY
 ```
 
+- `POSTGRES_PASSWORD` is 32 random bytes as hex (64 characters). The first
+  `initdb` bakes it into the `o1-postgres-data` volume, so changing `.env`
+  afterwards does not change the role password; see
+  [Bundled PostgreSQL](#3-bundled-postgresql).
 - `O1_SECRET_KEY` and `O1_ENCRYPTION_KEY` each decode to exactly 32 bytes.
 - Never reuse a development key. The API refuses to start in production without
   `O1_ENCRYPTION_KEY`.
@@ -291,7 +348,8 @@ $EDITOR deploy/production/.env
 Fill in at minimum:
 
 - `O1_DOMAIN` — the exact public hostname Caddy should serve.
-- `O1_DATABASE_URL` — the managed database DSN from step 3.
+- `POSTGRES_PASSWORD` — the hex value from step 4. Compose derives the DSN from
+  it; do not set `O1_DATABASE_URL`.
 - `O1_SECRET_KEY` and `O1_ENCRYPTION_KEY` — the base64 values from step 4.
 - `O1_EMAIL_FROM` — a mailbox the selected email provider accepts as a sender.
 - `O1_EMAIL_PROVIDER` — `resend` (default) or `smtp`.
@@ -304,8 +362,9 @@ Fill in at minimum:
 into the build, for example `https://o1.ingest.sentry.io`. Leave the rate
 variables (`O1_PUBLIC_RATE_*`, `O1_APIKEY_RATE_*`) unset in production.
 
-`O1_DB_MAX_CONNS` is optional. Leave it unset for the default of `10` unless
-the provider tier cannot handle 30 connections from the three processes.
+`O1_DB_MAX_CONNS` is optional. Leave it unset for the default of `10`: three
+processes use at most 30 connections against the server's
+`max_connections=100`, which leaves room for migrations and `psql`.
 
 Leave `O1_BOOTSTRAP_ADMIN_EMAIL` unset until the first account exists and is
 verified; the promotion runs only at process startup. See
@@ -367,12 +426,14 @@ config validation; never put it on a host as-is.
 
 What happens on first start:
 
-- The stack starts no database container; the API connects to the managed
-  database named by `O1_DATABASE_URL`.
-- The API, scheduler, and worker run migrations against that database at
-  startup. With the build override they are built from `backend/`; a registry
-  deploy pulls them instead. A PostgreSQL advisory lock serializes migrations,
-  so concurrent starts are safe.
+- The stack starts the `postgres` service on `postgres:18-alpine` and waits for
+  its `pg_isready` healthcheck. `api`, `scheduler`, and `worker` connect to
+  `postgres:5432` on the private Compose network; the data lives on the
+  `o1-postgres-data` volume.
+- The API, scheduler, and worker run goose and River migrations against that
+  database at startup. With the build override they are built from `backend/`;
+  a registry deploy pulls them instead. A PostgreSQL advisory lock serializes
+  migrations, so concurrent starts are safe.
 - The web image serves the SPA and Caddy; Caddy obtains a certificate for
   `O1_DOMAIN` and redirects HTTP to HTTPS. The build override builds it from
   `web/`; a registry deploy pulls it.
@@ -476,6 +537,7 @@ docker compose --env-file deploy/production/.env \
 Useful checks:
 
 - `web` logs contain the ACME certificate result and request errors.
+- `postgres` logs show startup, checkpoint, and connection errors.
 - `api` logs show startup configuration errors, migration progress, and request
   failures.
 - `worker` logs show probe jobs, incidents, and email delivery failures. Errors
@@ -535,14 +597,19 @@ The pass summary reports `candidates`, `partitions_dropped`, `skipped_dry_run`,
 `skipped_watermark`, `skipped_mismatch`, `rollup_rows`, and `audit_rows`.
 `skipped_watermark` counts partitions retained because
 `rollup_state.watermark` had not reached the partition end, so coverage could
-not be proven. Inspect the database directly when needed, either with `psql`
-and the managed DSN — export it first, for example with
-`set -a; . /opt/o1/.env; set +a` on a registry host — or from the provider
-console:
+not be proven. Inspect the database directly when needed through the bundled
+container. On a registry-deployed host, `/opt/o1/.env` and the active release's
+compose file apply:
 
 ```sh
-psql "$O1_DATABASE_URL" -c "SELECT watermark FROM rollup_state;"
+docker compose --env-file /opt/o1/.env \
+  -f /opt/o1/current/deploy/production/compose.yaml \
+  exec -T postgres psql -U o1 -d o1 -c "SELECT watermark FROM rollup_state;"
 ```
+
+For a checkout stack, substitute `deploy/production/.env` and
+`deploy/production/compose.yaml`. Run the remaining queries the same way, or in
+one `psql` session:
 
 ```sql
 SELECT max(bucket_start) FROM monitor_hourly_stats;
@@ -743,24 +810,27 @@ schema; see [../CICD.md](../CICD.md#8-migrations). A manual rebuild from a
 checkout bypasses the release symlinks entirely and is replaced by the next
 deploy or rollback.
 
-Rollback does **not** move data either, and the managed database is outside the
-release bundle. An older release built before the managed cutover carries a
-compose file that still defines the bundled `postgres` service, so rolling back
-to it starts an **empty local database** and points the app at it: `/readyz`
-turns green while the real data is unreachable. After the first verified
-managed deploy, prune the pre-cutover release directories so `rollback.sh` can
-only select managed-aware bundles, and keep `o1-pre-managed.dump` until the
-managed database is accepted. See
-[Managed PostgreSQL](#3-managed-postgresql).
+Rollback does **not** move data either. The `postgres` service is part of the
+release's compose file, but the `o1-postgres-data` volume is not: `deploy.sh` and
+`rollback.sh` run `up -d --remove-orphans` and never create, format, or remove
+that volume. An image and config rollback therefore leaves the database and its
+data untouched; use the Plan 12 restore procedure, not a Compose rollback, to
+recover data.
+
+The only cross-database rollback is the 7-day Neon window described in
+[Rollback](#rollback) under Bundled PostgreSQL. A pre-cutover managed release
+has no `postgres` service and reads `O1_DATABASE_URL`; running it is a
+deliberate data move, not an ordinary rollback. After acceptance, prune those
+bundles so `rollback.sh` can only select bundled-database releases.
 
 ## 11. Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
 | Caddy cannot obtain a certificate | DNS `A`/`AAAA` must point at this host; `80` and `443` must be reachable from the internet; no other process may own those ports. Inspect `logs -f web` for the ACME error. Fix DNS/firewall and let Caddy retry; repeated forced retries can hit ACME rate limits. |
-| Browser shows `502 Bad Gateway` | The API is not ready. Check `logs api`; verify the managed database is reachable and `O1_DATABASE_URL` is correct. |
+| Browser shows `502 Bad Gateway` | The API is not ready. Check `logs api`; confirm the `postgres` container is healthy (`docker compose ... ps`) and inspect `logs postgres`. |
 | API exits at startup with a config error | `O1_SECRET_KEY`/`O1_ENCRYPTION_KEY` must be base64 of exactly 32 bytes; `O1_EMAIL_FROM` must be a valid mailbox; the Resend provider requires `O1_RESEND_API_KEY`; production rejects the `mailpit` provider; `O1_DB_MAX_CONNS` must be between 1 and 100. |
-| Database connection fails | Check `sslmode` (`verify-full`, or `require` plus the provider CA), that the host is a direct/session endpoint rather than a transaction pooler, that the password is percent-encoded, that the VPS address passes the provider's IP allowlist or firewall, and that `3 x O1_DB_MAX_CONNS` fits the tier's connection limit. `/readyz` also checks the database. |
+| Database connection fails | Confirm the `postgres` container is healthy, that `POSTGRES_PASSWORD` in `.env` matches the password baked into `o1-postgres-data` at `initdb`, and that nothing on the host listens on `5432`. A password changed only in `.env` after the volume was created does not update the role; run `ALTER ROLE o1 PASSWORD '...'` inside the container, or recreate an empty volume. Check that `3 x O1_DB_MAX_CONNS` fits the server's `max_connections=100`. `/readyz` also checks the database. |
 | Email not delivered | Check the provider's email log and quota. For Resend: domain verification, API key, and from/reply-to on the verified domain. For SMTP: relay reachability, auth pair, TLS mode, and an accepted sender identity. Check the incident delivery status and `logs worker`. |
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |
@@ -795,11 +865,18 @@ remote-write errors.
 
 - Only `80` and `443` are published. The API, the scheduler, the worker, and
   every health/metrics listener stay on the private Compose network; the
-  database runs inside the Compose stack on that network and `5432` is never
-  published.
+  bundled `postgres` service runs on that network, publishes no host port, and
+  `5432` is never published.
+- The `o1-postgres-data` volume is reachable only by the `postgres` container on
+  the Compose network. Nothing else mounts it, and it is not exported over the
+  network.
 - `/metrics` returns `404` through Caddy.
-- All secrets come from `deploy/production/.env` or the host environment.
-  `env.example` contains placeholders only. Never commit `.env`.
+- All secrets come from `deploy/production/.env` or `/opt/o1/.env` on a
+  registry-deployed host. That file lives outside every release directory, is
+  never written by CI, and survives a rollback. `env.example` contains
+  placeholders only. Never commit `.env`, and keep a copy in the password
+  manager: it holds `POSTGRES_PASSWORD`, `O1_SECRET_KEY`, and
+  `O1_ENCRYPTION_KEY`, which a database restore needs.
 - The stack sets `O1_ENV=production`, which requires a real encryption key and
   rejects the development email provider.
 - Keep Caddy's `caddy_data` volume; it holds the certificates and ACME account

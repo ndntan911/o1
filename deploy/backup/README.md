@@ -10,6 +10,11 @@ rollback neither installs nor updates it, and neither one takes a backup.
 `restic backup --stdin`, so the dump never lands on the host's disk. Restic
 encrypts and deduplicates the stream in an S3-compatible repository.
 
+By default the dump source is the production stack's bundled `postgres`
+container, resolved through `O1_COMPOSE_FILE`. Leave `O1_BACKUP_PG_CONTAINER`
+unset for that; set it only to dump from a container outside that Compose
+project.
+
 - **RPO: up to 24 hours.** There is one snapshot per successful daily run. A
   failed, skipped, or delayed run widens the window; the alerting in §9 is how
   you find out.
@@ -59,24 +64,33 @@ The host needs Docker with the Compose v2 plugin, `restic` 0.19.1, `flock`,
 `install` are used during installation; they are part of a standard base
 install.
 
-Install restic from the pinned release (use `arm64` on ARM hosts):
+Install restic from the pinned release. Use the `arm64` asset on ARM hosts such
+as the Ampere A1 shape, and `amd64` on x86_64:
 
 ```sh
+# x86_64
 curl -fsSL -o /tmp/restic.bz2 \
   https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2
+# ARM64 (Ampere A1)
+# curl -fsSL -o /tmp/restic.bz2 \
+#   https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_arm64.bz2
 bunzip2 /tmp/restic.bz2
 sudo install -m 0755 /tmp/restic /usr/local/bin/restic
 restic version
 ```
+
+Confirm that `restic version` reports `linux/arm64` or `linux/amd64` to match
+the host; the wrong asset fails at startup with an exec-format error.
 
 The installer checks for these commands before it changes anything. It does not
 install Docker or restic.
 
 ## 4. Repository and credentials
 
-Use a private S3-compatible bucket (AWS S3, MinIO, Cloudflare R2, or a provider
-exposing the S3 API) with a dedicated prefix, for example `o1`. Versioning and
-lifecycle rules are optional; the scripts do not depend on them.
+Use a private S3-compatible bucket (AWS S3, MinIO, Cloudflare R2, OCI Object
+Storage, or a provider exposing the S3 API) with a dedicated prefix, for
+example `o1`. Versioning and lifecycle rules are optional; the scripts do not
+depend on them.
 
 `RESTIC_REPOSITORY` takes either form:
 
@@ -88,8 +102,30 @@ s3:https://<endpoint>/<bucket>/o1
 Create credentials scoped to that bucket and prefix: list the bucket, and read,
 write, and delete objects under `o1/` only. Nothing else on the account is
 needed. Put the endpoint-specific settings in `backup.env` when the provider
-needs them (for example `AWS_DEFAULT_REGION`); the scheduled units load that
-file.
+needs them; the scheduled units load that file.
+
+Production uses OCI Object Storage in the same region as the host. Its
+repository is:
+
+```text
+s3:https://<namespace>.compat.objectstorage.<region>.oraclecloud.com/<bucket>/o1
+```
+
+`<namespace>` is the Object Storage namespace from the OCI console, `<region>`
+is the region identifier (for example `us-ashburn-1`), and `<bucket>` is a
+private bucket in that region. Create the credentials with **Customer Secret
+Keys** and put the pair in `backup.env`:
+
+```dotenv
+AWS_ACCESS_KEY_ID=<Customer Secret Key access key>
+AWS_SECRET_ACCESS_KEY=<Customer Secret Key secret>
+AWS_DEFAULT_REGION=<region>
+```
+
+A Customer Secret Key authenticates as its OCI user, so scope it with an IAM
+policy that allows object read/write/delete and bucket list on the bucket's
+`o1/` prefix. Do not use an IAM auth token or an API signing key: restic speaks
+the S3 API, not OCI's native API.
 
 `backup.env` is parsed key by key by the scripts; it is never sourced or
 executed. Keep it `0600` root-owned because it contains the S3 secret and the
@@ -211,7 +247,7 @@ sudo systemctl disable --now o1-backup.timer o1-backup-prune.timer \
 | `AWS_SECRET_ACCESS_KEY` | yes | Scoped S3 secret. |
 | `O1_COMPOSE_FILE` | yes | `/opt/o1/current/deploy/production/compose.yaml`. |
 | `O1_ENV_FILE` | yes | `/opt/o1/.env`; used for Compose and Resend alert credentials. |
-| `O1_BACKUP_PG_CONTAINER` | no | Backup only: dump with `docker exec <container> pg_dump` instead of resolving Compose. |
+| `O1_BACKUP_PG_CONTAINER` | no | Backup only: dump from this existing container instead of resolving the bundled `postgres` service through Compose. |
 | `O1_BACKUP_PG_IMAGE` | no | Restore drill only: scratch image; default `postgres:18-alpine`. Its major must be at least the dump major. |
 | `O1_BACKUP_KEEP_DAILY` | no | Daily snapshots to keep; default `30`. |
 | `O1_BACKUP_KEEP_MONTHLY` | no | Monthly snapshots to keep; default `12`. |

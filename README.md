@@ -312,9 +312,10 @@ RPO of up to 24 hours and no point-in-time recovery. Retention is 30 daily plus
 12 monthly snapshots, with a weekly repository prune and a monthly automated
 restore drill. Restic retention is independent of the application retention
 above: restoring a snapshot can reintroduce raw probe rows, rollups, or audit
-events that retention has already deleted. `.env` and `O1_ENCRYPTION_KEY` are
-not part of the database backup; store them separately, or a restored database's
-encrypted headers and bodies cannot be decrypted. See
+events that retention has already deleted. `.env` (including
+`POSTGRES_PASSWORD`) and `O1_ENCRYPTION_KEY` are not part of the database
+backup; store them separately, or a restored database's encrypted headers and
+bodies cannot be decrypted and the database password cannot be recreated. See
 [deploy/backup/README.md](deploy/backup/README.md).
 
 The scheduler catches up rollups every `O1_ROLLUP_INTERVAL` and runs retention
@@ -591,6 +592,11 @@ not inherit the development `compose.yaml`: there is no Mailpit, no published
 PostgreSQL/API/metrics port, no development key, and no raised auth rate limit.
 Only the `web` container publishes ports `80` and `443`; Caddy serves the SPA,
 proxies the API on the same origin, and obtains and renews the TLS certificate.
+The database is the bundled `postgres` service on `postgres:18-alpine`: its data
+lives on the `o1-postgres-data` volume, it publishes no port, and Compose derives
+`O1_DATABASE_URL` from `POSTGRES_PASSWORD`. Backups are the host restic timer
+described below, not a provider snapshot. There is no point-in-time recovery,
+and `.env` plus the keys must be restored from the password manager.
 
 ```sh
 cp deploy/production/env.example deploy/production/.env
@@ -622,9 +628,10 @@ Production email runs through Resend or an authenticated SMTP relay, chosen with
 `O1_EMAIL_PROVIDER=mailpit`. Backups run on the host from a systemd timer, not in
 the deploy pipeline: a daily encrypted `pg_dump` through restic to S3-compatible
 storage, keeping 30 daily and 12 monthly snapshots. The RPO is up to 24 hours and
-there is no point-in-time recovery. `.env` (including `O1_ENCRYPTION_KEY`) and
-the restic password are stored separately from the backup; restoring is a manual
-procedure documented in [deploy/backup/README.md](deploy/backup/README.md). See
+there is no point-in-time recovery. `.env` (including `POSTGRES_PASSWORD` and
+`O1_ENCRYPTION_KEY`) and the restic password are stored separately from the
+backup; restoring is a manual procedure documented in
+[deploy/backup/README.md](deploy/backup/README.md). See
 [Data lifecycle](#data-lifecycle) for how restores interact with retention.
 
 ### CI/CD
@@ -661,7 +668,9 @@ Configuration is read from environment variables prefixed with `O1_`.
 
 Required:
 
-- `O1_DATABASE_URL` — PostgreSQL connection string.
+- `O1_DATABASE_URL` — PostgreSQL connection string. The production Compose
+  stack derives it from `POSTGRES_PASSWORD` and sets it for the backend
+  services; set it directly only when running the binaries outside Compose.
 - `O1_SECRET_KEY` — base64-encoded, exactly 32 bytes. Used for session and
   key-derivation material. Generate with `openssl rand -base64 32`.
 - `O1_ENCRYPTION_KEY` — base64-encoded, exactly 32 bytes. Required in

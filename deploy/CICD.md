@@ -208,8 +208,9 @@ Each environment needs its own host: staging and production both bind `80` and
    Put the deploy public key in `~o1deploy/.ssh/authorized_keys`.
 
 3. Open inbound TCP `80` and `443` (for Caddy and ACME) and SSH. Do not open
-   `5432`, `8080`, `8081`, `8082`, or `8083`; they are internal to Compose or,
-   for `5432`, absent because the database is managed off-host.
+   `5432`, `8080`, `8081`, `8082`, or `8083`: they are internal to the Compose
+   network. The database now runs on the host as the bundled `postgres` service,
+   but it publishes no port, so `5432` stays closed.
 
 4. Run the bootstrap script **from a checkout of the repository**, as the
    deploy user:
@@ -276,7 +277,7 @@ Each environment needs its own host: staging and production both bind `80` and
    chmod 600 /opt/o1/.env
    ```
 
-   Required: `O1_DOMAIN`, `O1_DATABASE_URL`, `O1_SECRET_KEY`,
+   Required: `O1_DOMAIN`, `POSTGRES_PASSWORD`, `O1_SECRET_KEY`,
    `O1_ENCRYPTION_KEY`, `O1_EMAIL_FROM`, and the credentials for the selected
    email provider: `O1_RESEND_API_KEY` for `resend`, or `O1_SMTP_ADDR` plus the
    optional `O1_SMTP_USERNAME`/`O1_SMTP_PASSWORD`/`O1_SMTP_TLS` for `smtp`.
@@ -285,10 +286,19 @@ Each environment needs its own host: staging and production both bind `80` and
    `GHCR_USER`/`GHCR_READ_TOKEN` for private packages, and
    `DEPLOY_HEALTH_TIMEOUT`.
 
-   `O1_DATABASE_URL` points at a managed PostgreSQL service outside the host;
-   no database runs in a release bundle. See
-   [production/README.md](production/README.md#3-managed-postgresql) for
-   provisioning, TLS requirements, and the direct-versus-pooler distinction.
+   `POSTGRES_PASSWORD` is baked into the `o1-postgres-data` volume by the first
+   `initdb`, and Compose derives `O1_DATABASE_URL` from it. Do not set
+   `O1_DATABASE_URL` in `/opt/o1/.env`; production Compose ignores it and sets
+   its own DSN on the private network. The only exception is the 7-day Neon
+   rollback in §7, which reactivates a pre-cutover bundle that reads it.
+   `O1_DB_MAX_CONNS` defaults to `10`, so the three processes use at most 30 of
+   the server's 100 connections. See
+   [production/README.md](production/README.md#3-bundled-postgresql) for the
+   image, volume, extension, and password-rotation details.
+
+   Deploys and rollbacks never take a database backup and never create, format,
+   or remove the `o1-postgres-data` volume; backups are the host timers from
+   Plan 12 (§7).
 
    `deploy.sh` and `rollback.sh` read `O1_DOMAIN`, `GHCR_USER`,
    `GHCR_READ_TOKEN`, and optional `DEPLOY_HEALTH_TIMEOUT` from this file. They
@@ -395,11 +405,12 @@ rollback exits with code `3` and changes nothing.
 
 ### Database backups and restores
 
-Deploys and rollbacks never back up or restore the database. They replace
-images, configuration, and the release bundle only. Backups are host tooling on
-independent systemd timers: a daily encrypted `pg_dump` through restic to
-S3-compatible storage, 30 daily and 12 monthly snapshots, a weekly prune, and a
-monthly restore drill. The RPO is up to 24 hours and there is no PITR.
+Deploys and rollbacks never back up or restore the database, and they never
+touch the `o1-postgres-data` volume. They replace images, configuration, and the
+release bundle only. Backups are host tooling on independent systemd timers: a
+daily encrypted `pg_dump` through restic to S3-compatible storage, 30 daily and
+12 monthly snapshots, a weekly prune, and a monthly restore drill. The RPO is up
+to 24 hours and there is no PITR.
 
 Restoring is a separate manual procedure and is never triggered by a failed
 deploy or a rollback. The backup scripts are not in the release bundle; install
@@ -436,13 +447,16 @@ active, pulls the pinned images, runs `up -d --remove-orphans`, and polls
 `https://$O1_DOMAIN/readyz` with the same timeout as `deploy.sh`. If the target
 is unhealthy it restores the release that was current and exits non-zero.
 
-The managed database is outside every release bundle. A release built before
-the managed cutover still contains the bundled `postgres` service, so rolling
-back to it starts an **empty local database** and points the application at it:
-`/readyz` passes while production data is unreachable. After the first verified
-managed deploy, prune the pre-cutover release directories, and keep the cutover
-`pg_dump` until the managed database is accepted. Only roll back to
-managed-aware releases.
+The database is not part of any release bundle: the `postgres` service ships in
+each release's compose file, but its data lives on `o1-postgres-data`.
+`rollback.sh` switches bundles and runs `up -d --remove-orphans`; it never
+creates, formats, or removes that volume. A release built before the
+bundled-database cutover has no `postgres` service and reads `O1_DATABASE_URL`;
+it is retained only for the 7-day Neon rollback window. After acceptance, prune
+those bundles and never roll back to one: it starts an empty database and
+`/readyz` passes while production data is unreachable. Keep the restic
+`pre-cutover` snapshot until the first successful monthly drill after
+acceptance.
 
 Inspect what is deployed at any time:
 
@@ -512,12 +526,12 @@ containers.
 - Migrations run at process startup from `api`, `scheduler`, and `worker`. A
   PostgreSQL advisory lock serializes them, so concurrent starts are safe.
   There is no separate migration job or container.
-- Migrations run against the managed database over the network. A failed
-  migration still fails `/readyz`; release rollback does not restore data. After
-  the self-hosted cutover, the Plan 12 host backup and manual restore (§7) are
-  the data recovery path and provider point-in-time recovery no longer applies.
-  Until the cutover, confirm the provider's backup retention window before
-  setting `O1_RETENTION_DRY_RUN=false`.
+- Migrations run against the bundled database over the private Compose network.
+  A failed migration still fails `/readyz`; release rollback does not restore
+  data. The Plan 12 host backup and manual restore (§7) are the data recovery
+  path: there is no point-in-time recovery and no provider backup window. The
+  PostgreSQL advisory lock serializes startup migrations, and goose's version
+  table makes a repeated run a no-op.
 - Deploy pipelines do not invoke retention directly, but a deploy or rollback
   recreates the scheduler, and every scheduler restart runs one startup
   maintenance pass. With `O1_RETENTION_DRY_RUN=false`, that pass can drop up to
@@ -583,8 +597,8 @@ Grafana Cloud setup. Point the external dead-man's switch at
 | Deploy fails at readiness | `/readyz` also checks PostgreSQL. Inspect `docker compose ... logs api` and `logs web`; a first deploy includes ACME issuance and migrations, so `DEPLOY_HEALTH_TIMEOUT` (default 300s) may be too short. `deploy.sh` restores the previous release automatically and exits non-zero. |
 | Migration failure | The API exits or `/readyz` fails while the schema is mid-change. Read the migration error in `logs api`. Fix forward with a new release; rolling back code does not reverse the schema (see §8). |
 | Trivy blocks a release | A `HIGH` or `CRITICAL` fixable vulnerability in an image (unfixed findings are ignored), or a repository secret/misconfiguration. Upgrade the base image or dependency, remove the secret, or add a narrowly scoped `.trivyignore` entry with a comment naming the check, the reason it is accepted, and a review date. The current exception is `CVE-2026-78661` (Caddy v2.11.9 links `x/net` v0.60.0; no HTML parsing in this deployment; re-review 2027-01-12). The web container runs as uid 1000 with `NET_BIND_SERVICE`, so `DS-0002` is gone. |
-| `deploy: missing /opt/o1/.env` | Bootstrap has not run, or the file is at the wrong path. `bootstrap-host.sh` seeds it from `env.example`; edit it before deploying. A missing `O1_DOMAIN`, `O1_DATABASE_URL`, or app key fails production Compose. |
-| Deploy fails because the database is unreachable | Check the managed DSN, `sslmode` and CA material, that the endpoint is direct (not a transaction pooler), the provider firewall/allowlist for the host address, and that `3 x O1_DB_MAX_CONNS` fits the tier's connection limit. `/readyz` checks the database, so a bad DSN fails the deploy and triggers the automatic restore. |
+| `deploy: missing /opt/o1/.env` | Bootstrap has not run, or the file is at the wrong path. `bootstrap-host.sh` seeds it from `env.example`; edit it before deploying. A missing `O1_DOMAIN`, `POSTGRES_PASSWORD`, or app key fails production Compose. |
+| Deploy fails because the database is unreachable | Check `docker compose ... ps` and `logs postgres`: the container should be healthy on `o1-postgres-data` with no published port. Confirm `POSTGRES_PASSWORD` matches the password baked into the volume at `initdb` and that `3 x O1_DB_MAX_CONNS` fits `max_connections=100`. `/readyz` checks the database, so a bad password or a stopped container fails the deploy and triggers the automatic release restore. |
 | `deploy: another deploy or rollback holds ...` | A previous run is still active. Exit code is `3`. The kernel releases the lock when that process exits; do not delete the lock file while a deploy is running. If no deploy exists, check with `fuser /opt/o1/state/deploy.lock` and remove the file only when nothing holds it. |
 | Alloy still scrapes the old config | The deploy does not restart profiled services. Re-run the `--profile observability up -d alloy` command in §9. |
 | API or web version unchanged after a successful deploy | Check `readlink -f /opt/o1/current` and `cat /opt/o1/current/images.env`. A manual build override leaves local `:local` images running; the next deploy replaces them. |
@@ -603,6 +617,11 @@ Grafana Cloud setup. Point the external dead-man's switch at
 - **Least-privilege tokens.** The host PAT needs only `read:packages` and
   should expire. The deploy SSH key is dedicated, per-environment, and stored
   only as an Environment secret. Revoke both when a host is retired.
+- **Closed database port.** `5432` stays closed in the host firewall and any
+  cloud security list. The bundled `postgres` service publishes no host port and
+  is reachable only on the private Compose network; its `o1-postgres-data`
+  volume is mounted by nothing else. Backups leave the host only as restic
+  ciphertext in OCI Object Storage.
 - **Host-key pinning.** The workflow uses
   `StrictHostKeyChecking=yes` with `SSH_KNOWN_HOSTS`; never add
   `StrictHostKeyChecking=no` or `UserKnownHostsFile=/dev/null`.
