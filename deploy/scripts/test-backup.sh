@@ -499,7 +499,7 @@ start_fixture_postgres() {
   local name="o1-backup-test-pg-$$-$RANDOM"
   docker run -d --rm --name "$name" \
     -e POSTGRES_USER=o1 -e POSTGRES_PASSWORD=o1 -e POSTGRES_DB=o1 \
-    postgres:16-alpine >/dev/null || fail "could not start the fixture Postgres"
+    postgres:18-alpine >/dev/null || fail "could not start the fixture Postgres"
   backup_test_container=$name
   for _ in {1..60}; do
     if docker exec "$name" psql -U o1 -d o1 -c 'select 1' >/dev/null 2>&1; then
@@ -957,6 +957,7 @@ run_restore_tests() {
   create_restore_snapshot "$root" "$backup_test_container"
   write_backup_env "$root/restore.env" "$root" "$backup_test_container"
   printf 'O1_BACKUP_DRILL_MIN_FREE_KB=1\n' >>"$root/restore.env"
+  printf 'O1_BACKUP_PG_IMAGE=postgres:19-alpine\n' >>"$root/restore.env"
   hard="$tmp/fake-docker-argv"
   write_fake_docker "$hard"
   reset_curl
@@ -966,6 +967,8 @@ run_restore_tests() {
     >"$tmp/last.out" 2>&1 || status=$?
   [[ $status -eq 0 ]] || fail "the fake-Docker restore drill failed"
   [[ -s $hard/docker.args ]] || fail "the fake Docker wrapper was not called"
+  grep -q -- 'postgres:19-alpine' "$hard/docker.args" ||
+    fail "the drill ignored O1_BACKUP_PG_IMAGE from backup.env"
   grep -q -- '-e POSTGRES_PASSWORD -e POSTGRES_DB=o1_restore' \
     "$hard/docker.args" ||
     fail "the drill did not use the client-environment password form"
@@ -981,7 +984,7 @@ run_restore_tests() {
   if grep -q -- '-p 127.0.0.1' "$hard/docker.args"; then
     fail "the drill published a host port for the scratch database"
   fi
-  pass "the scratch password stays out of Docker argv and no port is published"
+  pass "the scratch password stays out of Docker argv, the image is configurable, and no port is published"
 
   # 7. SIGTERM runs the EXIT cleanup: the scratch container is removed and the
   #    drill exits 143.

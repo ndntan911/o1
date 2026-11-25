@@ -25,6 +25,10 @@ if ! bl_load_env "$BACKUP_ENV"; then
   bl_die "cannot load the backup environment: $BACKUP_ENV"
 fi
 
+# Resolved after bl_load_env so backup.env can override the image. The scratch
+# major must be at least the dump major; the default matches production.
+pg_image=${O1_BACKUP_PG_IMAGE:-postgres:18-alpine}
+
 bl_require_var RESTIC_REPOSITORY RESTIC_PASSWORD_FILE O1_COMPOSE_FILE O1_ENV_FILE
 if [[ -z ${O1_BACKUP_ALERT_EMAIL:-} && -z ${O1_BACKUP_FAILURE_URL:-} ]]; then
   bl_die "set O1_BACKUP_ALERT_EMAIL or O1_BACKUP_FAILURE_URL"
@@ -162,7 +166,7 @@ password=$(openssl rand -hex 16) ||
 # never an argument, so it cannot appear in a process listing.
 POSTGRES_PASSWORD="$password" docker run -d --name "$name" \
   -e POSTGRES_USER=o1 -e POSTGRES_PASSWORD -e POSTGRES_DB=o1_restore \
-  postgres:16-alpine >/dev/null ||
+  "$pg_image" >/dev/null ||
   fail "could not start the scratch Postgres"
 bl_log info "scratch Postgres started: container=$name"
 

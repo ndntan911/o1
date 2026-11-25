@@ -212,6 +212,7 @@ sudo systemctl disable --now o1-backup.timer o1-backup-prune.timer \
 | `O1_COMPOSE_FILE` | yes | `/opt/o1/current/deploy/production/compose.yaml`. |
 | `O1_ENV_FILE` | yes | `/opt/o1/.env`; used for Compose and Resend alert credentials. |
 | `O1_BACKUP_PG_CONTAINER` | no | Backup only: dump with `docker exec <container> pg_dump` instead of resolving Compose. |
+| `O1_BACKUP_PG_IMAGE` | no | Restore drill only: scratch image; default `postgres:18-alpine`. Its major must be at least the dump major. |
 | `O1_BACKUP_KEEP_DAILY` | no | Daily snapshots to keep; default `30`. |
 | `O1_BACKUP_KEEP_MONTHLY` | no | Monthly snapshots to keep; default `12`. |
 | `O1_BACKUP_TIMEOUT` | no | Backup timeout; default `2h`. Rewrites the unit on install. |
@@ -277,8 +278,9 @@ as an argument) and:
 
 1. Preflights free disk under `RESTIC_CACHE_DIR` for at least twice
    `pg_database_size` and aborts before creating anything if it does not fit.
-2. Starts a scratch `postgres:16-alpine` container with a unique name, a random
-   password, and no published host port.
+2. Starts a scratch `O1_BACKUP_PG_IMAGE` container (default
+   `postgres:18-alpine`, the image the production stack runs) with a unique
+   name, a random password, and no published host port.
 3. Restores with `restic dump <snapshot> o1.dump | docker exec -i <scratch>
    pg_restore -U o1 -d o1_restore --no-owner --no-privileges`.
 4. Checks `goose_db_version` and the core tables (`users`, `workspaces`,
