@@ -32,6 +32,8 @@ services:
       POSTGRES_USER: o1
       POSTGRES_DB: o1
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_INITDB_ARGS: "--locale=C.UTF-8 --encoding=UTF8"
+      LANG: C.UTF-8
       TZ: UTC
       PGTZ: UTC
     command:
@@ -51,9 +53,9 @@ services:
       - -c
       - checkpoint_completion_target=0.9
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U o1 -d o1"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U o1 -d o1"]
       interval: 5s
       timeout: 5s
       retries: 10
