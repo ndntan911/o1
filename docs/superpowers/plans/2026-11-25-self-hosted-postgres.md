@@ -303,11 +303,14 @@ Expected: FAIL at the restore-drill stage, because `restore-verify.sh` still sta
 
 - [ ] **Step 3: Add the variable to `restore-verify.sh`**
 
-Next to the other defaults near the top of the script (after `SNAPSHOT=${1:-}`), add:
+After the successful `bl_load_env` block and before the first use, add:
 
 ```bash
 pg_image=${O1_BACKUP_PG_IMAGE:-postgres:18-alpine}
 ```
+
+It must come after `bl_load_env`; expanding it earlier latches the default before
+the host-side `backup.env` value is loaded, silently ignoring the override.
 
 Replace the hardcoded `postgres:16-alpine` argument in the `docker run` command with `"$pg_image"`.
 
