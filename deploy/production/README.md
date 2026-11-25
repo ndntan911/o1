@@ -282,7 +282,7 @@ In short, on the host:
      docker exec o1-cutover-pg pg_isready -U o1 -d o1 && break
      sleep 1
    done
-   docker exec o1-cutover-pg psql -U o1 -d o1 -Atc 'show lc_collate'
+   docker exec o1-cutover-pg psql -U o1 -d o1 -Atc "select datcollate, datctype, pg_encoding_to_char(encoding) from pg_database where datname = current_database()"
    ```
 
    Wait until the loop reports `accepting connections` (roughly 10–30 seconds),

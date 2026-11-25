@@ -271,7 +271,7 @@ that is the cost this change exists to remove.
 5. **Restore.** Stream the dump into the target container so the host needs no
    PostgreSQL client: `docker compose ... exec -T postgres pg_restore -U o1 -d
    o1 --no-owner --no-privileges < /opt/o1/state/o1-pre-local.dump`. Confirm
-   `show lc_collate` is `C.UTF-8` first, then compare row counts on `users`,
+   the `pg_database` locale columns are `C.UTF-8`/`UTF8` first (PostgreSQL 18 removed the `lc_collate` GUC), then compare row counts on `users`,
    `workspaces`, `monitors`, `probe_results`, `incidents`, `goose_db_version`,
    and `river_job`. On a `pg_restore` error or any count mismatch, stop and
    re-dump rather than proceeding.

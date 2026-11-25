@@ -562,7 +562,7 @@ for i in $(seq 1 60); do
   docker exec o1-cutover-pg pg_isready -U o1 -d o1 && break
   sleep 1
 done
-docker exec o1-cutover-pg psql -U o1 -d o1 -Atc 'show lc_collate'
+docker exec o1-cutover-pg psql -U o1 -d o1 -Atc "select datcollate, datctype, pg_encoding_to_char(encoding) from pg_database where datname = current_database()"
 ```
 Expected: `accepting connections`, then `C.UTF-8`. If `pg_isready` does not
 come up, read `docker logs o1-cutover-pg` before retrying.
