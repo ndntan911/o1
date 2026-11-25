@@ -90,6 +90,22 @@ assert c["services"]["api"]["environment"]["O1_DB_MAX_CONNS"] == "10"
 '
 check "bundled database with a derived DSN, healthy dependency, and no published port"
 
+# A stray O1_DATABASE_URL in the environment cannot override the derived DSN.
+O1_DATABASE_URL=postgres://evil@example/x \
+  env -u O1_COMPOSE_PROJECT -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  docker compose --env-file "$env_file" \
+  --env-file "$images_file" \
+  -f "$compose_file" config --format json \
+  | python3 -c '
+import json, sys
+c = json.load(sys.stdin)
+pg = c["services"]["postgres"]
+pw = pg["environment"]["POSTGRES_PASSWORD"]
+dsn = c["services"]["api"]["environment"]["O1_DATABASE_URL"]
+assert dsn == f"postgres://o1:{pw}@postgres:5432/o1?sslmode=disable", dsn
+'
+check "a stray O1_DATABASE_URL cannot override the derived DSN"
+
 # Rendering without the database password fails before any container starts.
 tmp_env=$(mktemp)
 trap 'rm -f "$tmp_env"' EXIT

@@ -287,10 +287,12 @@ Each environment needs its own host: staging and production both bind `80` and
    `DEPLOY_HEALTH_TIMEOUT`.
 
    `POSTGRES_PASSWORD` is baked into the `o1-postgres-data` volume by the first
-   `initdb`, and Compose derives `O1_DATABASE_URL` from it. Do not set
-   `O1_DATABASE_URL` in `/opt/o1/.env`; production Compose ignores it and sets
-   its own DSN on the private network. The only exception is the 7-day Neon
-   rollback in §7, which reactivates a pre-cutover bundle that reads it.
+   `initdb`, and Compose derives `O1_DATABASE_URL` from it. Do not rely on
+   `O1_DATABASE_URL` for the bundled stack: production Compose ignores it and
+   sets its own DSN on the private network. Keep the Neon **direct** DSN in
+   `/opt/o1/.env` through the 7-day soak; it is required only to render the
+   retained pre-cutover bundle for a Neon rollback, including the automatic
+   rollback after a failed cutover deploy. Remove it in Task 7 after acceptance.
    `O1_DB_MAX_CONNS` defaults to `10`, so the three processes use at most 30 of
    the server's 100 connections. See
    [production/README.md](production/README.md#3-bundled-postgresql) for the

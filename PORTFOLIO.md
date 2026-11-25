@@ -74,7 +74,8 @@ flowchart LR
 Three binaries share one image and one database. All three run migrations on
 startup behind a PostgreSQL advisory lock. Compose runs them with Mailpit,
 Caddy, and the dashboard; the production stack is a separate file with no
-development defaults, only ports 80/443 exposed, and a managed PostgreSQL.
+development defaults, only ports 80/443 exposed, and a bundled
+`postgres:18-alpine` database.
 
 ## Four decisions worth reading
 

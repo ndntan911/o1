@@ -199,11 +199,13 @@ postgres://o1:<POSTGRES_PASSWORD>@postgres:5432/o1?sslmode=disable
 ```
 
 `5432` is not published; the DSN resolves only on the Compose bridge, where
-TLS is unnecessary and `sslmode=disable` is deliberate. Do not set
-`O1_DATABASE_URL` in `.env`: Compose sets it for every backend service, and a
-stray value is not passed to the containers. The one exception is the retained
-pre-cutover bundle in [Rollback](#rollback): its managed compose file
-interpolates `O1_DATABASE_URL`.
+TLS is unnecessary and `sslmode=disable` is deliberate. The bundled Compose
+ignores `O1_DATABASE_URL`: it sets its own for every backend service, so a
+stray value never reaches the containers. During the 7-day soak keep the Neon
+**direct** DSN in `/opt/o1/.env` anyway: the retained pre-cutover bundle in
+[Rollback](#rollback) reads it, and an automatic rollback after a failed
+cutover deploy needs it to render. Remove it in Task 7 after acceptance.
+Outside the soak, do not set `O1_DATABASE_URL` at all.
 
 ### Startup
 
@@ -233,46 +235,102 @@ In short, on the host:
 2. Generate `openssl rand -hex 32`, store it in the password manager, and add
    `POSTGRES_PASSWORD=<value>` to `/opt/o1/.env` (mode `0600`). Do not start
    any container with the new stack yet.
-3. Freeze writes on the running release. Stop `worker` first and let River
-   drain, then `scheduler`, then `api`; leave `web` up:
+3. Freeze writes on the running release and record the Neon row counts. Stop
+   `worker` first and let River drain, then `scheduler`, then `api`; leave `web`
+   up. Export the Neon **direct** (non-pooled) DSN first:
 
    ```sh
+   export NEON_DIRECT_URL='postgres://...@ep-...neon.tech/neondb?sslmode=require'
+   install -d -m 0700 /opt/o1/state
    docker compose --env-file /opt/o1/.env \
      -f /opt/o1/current/deploy/production/compose.yaml stop worker
    docker compose --env-file /opt/o1/.env \
      -f /opt/o1/current/deploy/production/compose.yaml stop scheduler api
+   docker run --rm postgres:18-alpine psql "$NEON_DIRECT_URL" -Atc \
+     "select 'users', count(*) from users union all
+      select 'workspaces', count(*) from workspaces union all
+      select 'monitors', count(*) from monitors union all
+      select 'probe_results', count(*) from probe_results union all
+      select 'incidents', count(*) from incidents union all
+      select 'goose_db_version', count(*) from goose_db_version union all
+      select 'river_job', count(*) from river_job;" \
+     | tee /opt/o1/state/neon-counts.txt
    ```
+
+   Run the count query only after the freeze; its output is the comparison
+   baseline.
 
 4. Create the volume and seed it with a temporary container. Mount the volume
    at `/var/lib/postgresql`, where the PostgreSQL 18 image keeps `PGDATA`
    (`/var/lib/postgresql/18/docker`); the old `/var/lib/postgresql/data` path
-   would leave the restored dump outside the volume:
+   would leave the restored dump outside the volume. `POSTGRES_PASSWORD` is
+   hex only, never quoted: the validation rejects a quoted or non-hex value
+   before the volume is created.
 
    ```sh
-   export POSTGRES_PASSWORD=$(grep '^POSTGRES_PASSWORD=' /opt/o1/.env | cut -d= -f2-)
+   POSTGRES_PASSWORD=$(sed -n 's/^POSTGRES_PASSWORD=//p' /opt/o1/.env | tr -d "\"'" | tr -d '[:space:]')
+   [[ $POSTGRES_PASSWORD =~ ^[0-9a-fA-F]{64}$ ]] || { echo "POSTGRES_PASSWORD must be 64 hex chars, unquoted"; exit 1; }
    docker volume create o1-postgres-data
    docker run -d --name o1-cutover-pg \
      -e POSTGRES_USER=o1 -e POSTGRES_DB=o1 \
      -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+     -e POSTGRES_INITDB_ARGS='--locale=C.UTF-8 --encoding=UTF8' \
+     -e LANG=C.UTF-8 \
      -v o1-postgres-data:/var/lib/postgresql \
      postgres:18-alpine
+   for i in $(seq 1 60); do
+     docker exec o1-cutover-pg pg_isready -U o1 -d o1 && break
+     sleep 1
+   done
+   docker exec -T o1-cutover-pg psql -U o1 -d o1 -Atc 'show lc_collate'
    ```
 
-   Wait until `docker exec o1-cutover-pg pg_isready -U o1 -d o1` reports
-   `accepting connections` (roughly 10–30 seconds).
+   Wait until the loop reports `accepting connections` (roughly 10–30 seconds),
+   then confirm the locale is `C.UTF-8`. If `pg_isready` does not come up, read
+   `docker logs o1-cutover-pg` before retrying.
 
-5. Dump Neon's **direct** (non-pooled) endpoint to
-   `/opt/o1/state/o1-pre-local.dump`, push it to restic with `--tag o1-db
-   --tag pre-cutover`, restore it into the temporary container with
-   `pg_restore -U o1 -d o1 --no-owner --no-privileges`, and compare row counts
-   on `users`, `workspaces`, `monitors`, `probe_results`, `incidents`,
-   `goose_db_version`, and `river_job`.
+5. Dump Neon's **direct** (non-pooled) endpoint, push it to restic, restore it
+   into the temporary container, and compare the counts:
+
+   ```sh
+   docker run --rm postgres:18-alpine pg_dump -Fc -Z 6 -d "$NEON_DIRECT_URL" -f - \
+     > /opt/o1/state/o1-pre-local.dump
+   chmod 0600 /opt/o1/state/o1-pre-local.dump
+   sudo bash -c 'set -a; . /opt/o1/backup/backup.env; set +a; restic backup --stdin --stdin-filename o1.dump --host o1-prod --tag o1-db --tag pre-cutover < /opt/o1/state/o1-pre-local.dump'
+
+   if ! docker exec -i o1-cutover-pg pg_restore -U o1 -d o1 --no-owner --no-privileges \
+     < /opt/o1/state/o1-pre-local.dump; then
+     echo "pg_restore failed: stop, fix the cause, re-dump Neon, and restore again" >&2
+     exit 1
+   fi
+   docker exec -T o1-cutover-pg psql -U o1 -d o1 -Atc \
+     "select 'users', count(*) from users union all
+      select 'workspaces', count(*) from workspaces union all
+      select 'monitors', count(*) from monitors union all
+      select 'probe_results', count(*) from probe_results union all
+      select 'incidents', count(*) from incidents union all
+      select 'goose_db_version', count(*) from goose_db_version union all
+      select 'river_job', count(*) from river_job;" \
+     | tee /opt/o1/state/local-counts.txt
+   diff -u /opt/o1/state/neon-counts.txt /opt/o1/state/local-counts.txt || {
+     echo "row counts differ: stop, fix the cause, re-dump Neon, and restore again" >&2
+     exit 1
+   }
+   ```
+
+   The snapshot contains `o1.dump` because it was pushed through stdin, not as
+   a host path. `restic` runs as root because `/opt/o1/backup` is `0700`
+   root-owned. `diff` must exit 0 and print nothing; on any mismatch or any
+   `pg_restore` error, stop and re-dump rather than proceeding.
 6. Remove the temporary container with `docker rm -f o1-cutover-pg`, deploy
    the new release, and confirm `/healthz`, `/readyz`, login, a monitor with
-   encrypted headers, and one alert email.
-7. Soak for 7 days: keep the Neon project, the restic `pre-cutover` snapshot,
-   and the pre-cutover release bundles. Delete the plaintext dump as soon as
-   the local database is verified.
+   encrypted headers, and one alert email. Leave `O1_DATABASE_URL=<Neon direct
+   DSN>` in `/opt/o1/.env` through the soak: the bundled Compose ignores it,
+   but a failed cutover deploy automatically restores the previous pre-cutover
+   release, which needs it to render.
+7. Soak for 7 days: keep the Neon project, the `O1_DATABASE_URL` entry, the
+   restic `pre-cutover` snapshot, and the pre-cutover release bundles. Delete
+   the plaintext dump as soon as the local database is verified.
 
 ### Rollback
 
@@ -280,30 +338,42 @@ During the 7-day soak, rolling back to Neon is allowed. Keep the last
 managed-aware release bundle, which has no `postgres` service and reads its DSN
 from `O1_DATABASE_URL`. To roll back:
 
-1. Add the Neon **direct** DSN to `/opt/o1/.env` as `O1_DATABASE_URL`. The
+1. The Neon **direct** DSN is already in `/opt/o1/.env` as
+   `O1_DATABASE_URL` from the cutover. If it was removed, add it back. The
    bundled stack ignores it, but the retained pre-cutover compose file
    interpolates it.
 2. Activate the retained bundle with `/opt/o1/bin/rollback.sh <release-id>`.
    `up -d --remove-orphans` removes the now-unused `postgres` container,
    leaves the `o1-postgres-data` volume in place, and verifies `/readyz`.
+   The same DSN is required for an automatic rollback after a failed cutover
+   deploy, because that path re-renders the previous managed release.
 3. Pause the backup timers; with no `postgres` service in the active release,
    the dump and drill would fail:
 
    ```sh
-   systemctl disable --now o1-backup.timer o1-backup-prune.timer \
+   sudo systemctl disable --now o1-backup.timer o1-backup-prune.timer \
      o1-restore-verify.timer
    ```
 
 4. Record the data-loss window: everything written to `o1-postgres-data`
    during the soak is not on Neon. Returning to the local database later needs
    a fresh dump and restore, not the old one.
+5. To return to the local database, verify a fresh Neon dump first, then
+   discard the stale local state. Either remove the volume with
+   `docker volume rm o1-postgres-data` (**this destroys the only local copy**;
+   acceptable only because Neon is authoritative for this window) or, through
+   the running container, run `DROP DATABASE o1; CREATE DATABASE o1`. Then
+   restore the fresh dump and check the exit status and row counts. Never
+   reuse the stale volume/database as-is: it can hold a partially diverged
+   copy.
 
 After acceptance, rollback is local-only: `rollback.sh` switches image and
 config bundles, and data recovery is the Plan 12 restore procedure. Prune the
-pre-cutover bundles and delete the Neon project. A pre-cutover release has no
-`postgres` service and reads `O1_DATABASE_URL`, so running one is a deliberate
-move back to Neon, not an ordinary rollback; it would strand the writes made to
-`o1-postgres-data` since the cutover.
+pre-cutover bundles, delete the Neon project, and remove `O1_DATABASE_URL` from
+`/opt/o1/.env`. A pre-cutover release has no `postgres` service and reads
+`O1_DATABASE_URL`, so running one is a deliberate move back to Neon, not an
+ordinary rollback; it re-points the application at Neon and strands the writes
+made to `o1-postgres-data` since the cutover.
 
 ### Backups
 
@@ -350,7 +420,9 @@ Fill in at minimum:
 
 - `O1_DOMAIN` — the exact public hostname Caddy should serve.
 - `POSTGRES_PASSWORD` — the hex value from step 4. Compose derives the DSN from
-  it; do not set `O1_DATABASE_URL`.
+  it. Do not set `O1_DATABASE_URL` on a fresh install; on a cutover host keep
+  the Neon DSN through the soak as described in
+  [Cutover from Neon](#cutover-from-neon).
 - `O1_SECRET_KEY` and `O1_ENCRYPTION_KEY` — the base64 values from step 4.
 - `O1_EMAIL_FROM` — a mailbox the selected email provider accepts as a sender.
 - `O1_EMAIL_PROVIDER` — `resend` (default) or `smtp`.
@@ -831,7 +903,7 @@ bundles so `rollback.sh` can only select bundled-database releases.
 | Caddy cannot obtain a certificate | DNS `A`/`AAAA` must point at this host; `80` and `443` must be reachable from the internet; no other process may own those ports. Inspect `logs -f web` for the ACME error. Fix DNS/firewall and let Caddy retry; repeated forced retries can hit ACME rate limits. |
 | Browser shows `502 Bad Gateway` | The API is not ready. Check `logs api`; confirm the `postgres` container is healthy (`docker compose ... ps`) and inspect `logs postgres`. |
 | API exits at startup with a config error | `O1_SECRET_KEY`/`O1_ENCRYPTION_KEY` must be base64 of exactly 32 bytes; `O1_EMAIL_FROM` must be a valid mailbox; the Resend provider requires `O1_RESEND_API_KEY`; production rejects the `mailpit` provider; `O1_DB_MAX_CONNS` must be between 1 and 100. |
-| Database connection fails | Confirm the `postgres` container is healthy, that `POSTGRES_PASSWORD` in `.env` matches the password baked into `o1-postgres-data` at `initdb`, and that nothing on the host listens on `5432`. A password changed only in `.env` after the volume was created does not update the role; run `ALTER ROLE o1 PASSWORD '...'` inside the container, or recreate an empty volume. Check that `3 x O1_DB_MAX_CONNS` fits the server's `max_connections=100`. `/readyz` also checks the database. |
+| Database connection fails | Confirm the `postgres` container is healthy, that nothing on the host listens on `5432`, and that `3 x O1_DB_MAX_CONNS` fits the server's `max_connections=100`; `/readyz` also checks the database. The role password cannot be recovered from `.env`: the volume keeps the password from first `initdb`, so a value changed only in `.env` does not update the role. Reset it with `ALTER ROLE` through `docker compose --env-file /opt/o1/.env -f /opt/o1/current/deploy/production/compose.yaml exec -T postgres psql -U o1 -d o1`, update `.env` to match, and recreate `api`, `scheduler`, and `worker`. Never remove `o1-postgres-data` to fix an auth error: the volume is the only live copy. |
 | Email not delivered | Check the provider's email log and quota. For Resend: domain verification, API key, and from/reply-to on the verified domain. For SMTP: relay reachability, auth pair, TLS mode, and an accepted sender identity. Check the incident delivery status and `logs worker`. |
 | `X-Forwarded-For` warning in Caddy logs | Caddy prints an "Unnecessary header_up X-Forwarded-For" warning at startup. It is informational: the explicit setting overwrites client-supplied values so the API sees the proxy peer. |
 | Ports already in use | Stop the development stack (`docker compose down` at the repository root) or any other service on `80`/`443`. |
@@ -864,6 +936,11 @@ remote-write errors.
 
 ## 13. Security notes
 
+- `stop`, `down`, and deploys are safe: they leave the `o1-postgres-data`
+  volume and its data in place. `down -v`, `docker volume rm`, and
+  `docker system prune --volumes` destroy the only live copy of the database:
+  never run them against the production compose file. Offsite restic backups
+  are the only recovery path after such a removal.
 - Only `80` and `443` are published. The API, the scheduler, the worker, and
   every health/metrics listener stay on the private Compose network; the
   bundled `postgres` service runs on that network, publishes no host port, and

@@ -501,8 +501,12 @@ On success, `backup.sh` pings `O1_BACKUP_PING_URL`. On failure it sends email
 through Resend (when `O1_BACKUP_ALERT_EMAIL`, `O1_RESEND_API_KEY`, and
 `O1_EMAIL_FROM` are configured) and pings `O1_BACKUP_FAILURE_URL`. The failure
 message names the host, job, UTC time, failing stage, and a bounded log tail. It
-never includes secrets or row contents. A failure of the alert itself is logged
-and does not mask the original error.
+never includes secrets or row contents: `LINE`, `DETAIL`, `CONTEXT`, and `COPY`
+fields that can quote rows are dropped, and credentials in repository URLs are
+redacted. The unredacted tail stays in the systemd journal for diagnosis, and
+restic upload errors are captured in their own tail so an upload-stage failure
+is diagnosable after redaction. A failure of the alert itself is logged and does
+not mask the original error.
 
 - Backup stages: `startup`, `lock`, `verify`, `preflight`, `dump`, `upload`,
   `retention`, `prune`, `state`, `ping`. `upload` is reported when a `pg_dump`/restic

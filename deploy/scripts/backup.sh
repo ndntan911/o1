@@ -44,6 +44,7 @@ min_free_kb=${O1_BACKUP_MIN_FREE_KB:-1048576}
 current_stage=startup
 json_file=
 errlog=
+restic_errlog=
 lock_held=0
 
 cleanup() {
@@ -52,6 +53,9 @@ cleanup() {
   fi
   if [[ -n $errlog ]]; then
     rm -f -- "$errlog"
+  fi
+  if [[ -n $restic_errlog ]]; then
+    rm -f -- "$restic_errlog"
   fi
   if ((lock_held)); then
     bl_release_lock
@@ -62,15 +66,27 @@ trap cleanup EXIT
 # send_failure_alert STAGE MESSAGE: email the failure and ping the failure
 # URL. It disables the ERR trap first so an alert failure cannot recurse.
 send_failure_alert() {
-  local stage=$1 message=$2 body
+  local stage=$1 message=$2 body raw_tail=
   trap - ERR
   set +e
 
+  if [[ -n $errlog && -s $errlog ]]; then
+    raw_tail=$(tail -n 20 -- "$errlog" 2>/dev/null)
+  fi
+  if [[ -n $restic_errlog && -s $restic_errlog ]]; then
+    raw_tail+=$'\n'$(tail -n 20 -- "$restic_errlog" 2>/dev/null)
+  fi
+  if [[ -n $raw_tail ]]; then
+    # The journal keeps the whole tail; the email gets only the redacted form.
+    bl_log info "failure log tail (unredacted, journal only):"
+    printf '%s\n' "$raw_tail" >&2
+  fi
+
   body=$(printf 'host=%s\njob=backup\ntime=%s\nstage=%s\n%s' \
     "$(hostname)" "$(bl_utc_now)" "$stage" "$message")
-  if [[ -n $errlog && -s $errlog ]]; then
+  if [[ -n $raw_tail ]]; then
     body+=$'\n--- log tail ---\n'
-    body+=$(tail -n 20 -- "$errlog" 2>/dev/null)
+    body+=$(printf '%s\n' "$raw_tail" | bl_redact_output)
   fi
 
   # Ping first so a stalled email cannot delay the dead-man's switch.
@@ -173,6 +189,7 @@ bl_log info "disk preflight passed: free=${free_kb}KB required=${min_free_kb}KB"
 
 json_file=$(mktemp "$ROOT/.backup-json.XXXXXX")
 errlog=$(mktemp "$ROOT/.backup-err.XXXXXX")
+restic_errlog=$(mktemp "$ROOT/.backup-restic-err.XXXXXX")
 
 dump=("${pg_exec[@]}" pg_dump -U o1 -d o1 -Fc -Z 6)
 
@@ -192,7 +209,8 @@ bl_log info "dumping and uploading to $redacted_repo"
 trap - ERR
 set +e
 timeout "$backup_timeout" "${dump[@]}" 2>"$errlog" |
-  timeout "$backup_timeout" restic "${restic_args[@]}" >>"$json_file"
+  timeout "$backup_timeout" restic "${restic_args[@]}" \
+    >>"$json_file" 2>"$restic_errlog"
 statuses=("${PIPESTATUS[@]}")
 set -e
 trap on_error ERR

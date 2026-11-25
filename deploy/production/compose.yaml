@@ -9,6 +9,10 @@
 # or an untracked deploy/production/.env. See README.md in this directory for the
 # runbook.
 #
+# The o1-postgres-data volume is the only live copy of the database. `stop`,
+# `down`, and deploys leave it in place; `down -v`, `docker volume rm`, and
+# `docker system prune --volumes` destroy it. Never run those against this file.
+#
 #   # Registry deploy on a provisioned host:
 #   #   /opt/o1/bin/deploy.sh /opt/o1/incoming/<release>
 #   # Local build from a checkout:

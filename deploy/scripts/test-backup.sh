@@ -478,7 +478,8 @@ FAKE_DOCKER
 }
 
 # write_dump_fail_docker DIR: delegate to the real docker except for pg_dump,
-# which fails after the preflight checks pass.
+# which fails after the preflight checks pass. FAKE_DUMP_STDERR overrides the
+# failure text so a test can prove the alert redaction.
 write_dump_fail_docker() {
   local dir=$1 real_docker
   real_docker=$(command -v docker)
@@ -487,12 +488,35 @@ write_dump_fail_docker() {
 #!/usr/bin/env bash
 set -u
 if [[ \${1:-} == exec && "\$*" == *" pg_dump "* ]]; then
-  printf 'fake pg_dump failure\n' >&2
+  if [[ -n \${FAKE_DUMP_STDERR:-} ]]; then
+    printf '%s\n' "\$FAKE_DUMP_STDERR" >&2
+  else
+    printf 'fake pg_dump failure\n' >&2
+  fi
   exit 1
 fi
 exec "$real_docker" "\$@"
 FAKE
   chmod +x "$dir/docker"
+}
+
+# write_restic_fail_upload DIR: delegate to the real restic except for backup,
+# which fails with a credential-bearing diagnostic on stderr.
+write_restic_fail_upload() {
+  local dir=$1 real_restic
+  real_restic=$(command -v restic)
+  mkdir -p "$dir"
+  cat >"$dir/restic" <<FAKE
+#!/usr/bin/env bash
+set -u
+if [[ \${1:-} == backup ]]; then
+  cat >/dev/null
+  printf 'upload failed for s3://user:topsecret@bucket/o1\n' >&2
+  exit 1
+fi
+exec "$real_restic" "\$@"
+FAKE
+  chmod +x "$dir/restic"
 }
 
 start_fixture_postgres() {
@@ -654,6 +678,61 @@ O1ENV
   grep -q 'https://ping.example/failure' "$FAKE_DIR/curl.args" ||
     fail "the dump failure did not ping the failure URL"
   pass "backup.sh removes a partial snapshot and alerts on dump failure"
+
+  # 2b. Postgres error fields and repository credentials are redacted from the
+  #     alert, while the journal keeps the unredacted tail.
+  root="$tmp/backup-redaction"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container"
+  leaky_dump="$tmp/backup-leaky-dump-bin"
+  write_dump_fail_docker "$leaky_dump"
+  reset_curl
+  status=0
+  (
+    export PATH="$leaky_dump:$PATH"
+    export FAKE_DUMP_STDERR=$'pg_dump: error: duplicate key value\nDETAIL: Key (email)=(alice@example.com) already exists.\nCONTEXT: COPY users, line 1: "alice@example.com"\nLINE 1: INSERT INTO users VALUES (\'alice@example.com\')\ns3://user:topsecret@bucket/o1 is unreachable'
+    run_backup_script "$root/backup.env"
+  ) >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh succeeded with a failing dump"
+  grep -q 'stage=dump' "$FAKE_DIR/curl.body" ||
+    fail "the redaction run did not alert on the dump stage"
+  for leaked in 'DETAIL:' 'CONTEXT:' 'LINE 1:' 'alice@example.com' 'topsecret'; do
+    if grep -qF -- "$leaked" "$FAKE_DIR/curl.body"; then
+      fail "the alert body leaked $leaked"
+    fi
+  done
+  grep -qF 's3://bucket/o1' "$FAKE_DIR/curl.body" ||
+    fail "the alert body lost the redacted repository host"
+  grep -qF 'DETAIL:' "$tmp/last.out" ||
+    fail "the journal lost the unredacted tail"
+  pass "failure alerts redact row contents and repository credentials"
+
+  # 2c. restic's own stderr reaches the alert tail, redacted, so an upload
+  #     failure is diagnosable without leaking credentials.
+  root="$tmp/backup-upload-failure"
+  mkdir -p "$root"
+  init_test_repo "$root"
+  write_backup_env "$root/backup.env" "$root" "$backup_test_container"
+  failing_restic="$tmp/backup-restic-fail-bin"
+  write_restic_fail_upload "$failing_restic"
+  reset_curl
+  status=0
+  (
+    export PATH="$failing_restic:$PATH"
+    run_backup_script "$root/backup.env"
+  ) >"$tmp/last.out" 2>&1 || status=$?
+  [[ $status -ne 0 ]] || fail "backup.sh succeeded when restic upload failed"
+  grep -q 'stage=upload' "$FAKE_DIR/curl.body" ||
+    fail "the upload failure alert does not name the upload stage"
+  if grep -qF 'topsecret' "$FAKE_DIR/curl.body"; then
+    fail "the upload alert leaked repository credentials"
+  fi
+  grep -qF 's3://bucket/o1' "$FAKE_DIR/curl.body" ||
+    fail "the upload alert lost the redacted repository host"
+  grep -qF 'topsecret' "$tmp/last.out" ||
+    fail "the journal lost restic's unredacted upload error"
+  pass "upload failures reach the alert tail without leaking credentials"
 
   # 3. Repository verify failure: an uninitialized repository alerts and pings
   #    instead of dying silently, and no snapshot is written.

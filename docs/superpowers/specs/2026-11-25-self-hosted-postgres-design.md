@@ -93,7 +93,8 @@ user chose.
 - A `postgres` container that consumes unbounded RAM/CPU on a shared host, or
   unbounded Docker logs filling the boot volume.
 - Losing the Neon database before the local database is verified and accepted.
-- A rollback that points a pre-cutover release at an empty local database.
+- A rollback that re-points a pre-cutover release at Neon without recording the
+  local writes it strands.
 
 ## 6. Approaches Considered
 
@@ -180,11 +181,12 @@ that is the cost this change exists to remove.
 
 - Required: `POSTGRES_PASSWORD` (32-byte hex), `O1_SECRET_KEY`,
   `O1_ENCRYPTION_KEY`, `O1_DOMAIN`, mail settings.
-- Remove the managed `O1_DATABASE_URL` requirement and its TLS notes. The DSN
-  is derived inside Compose, so a stray `O1_DATABASE_URL` in `.env` cannot
-  override it. The only way to point at an external database again is to run
+- Remove the managed `O1_DATABASE_URL` requirement from `env.example` and its
+  TLS notes. The DSN is derived inside Compose, so a stray `O1_DATABASE_URL` in
+  `.env` cannot override it. Keep the Neon value in `/opt/o1/.env` through the
+  soak because the only way to point at an external database again is to run
   the retained pre-cutover release bundle, whose Compose file still requires
-  `O1_DATABASE_URL` (§7.6).
+  `O1_DATABASE_URL` (§7.6); remove it after acceptance.
 - Keep `O1_DB_MAX_CONNS=10` documented, with the connection budget: three
   processes × 10, plus migration headroom, against `max_connections=100`.
 - `.env` remains untracked; the runbook keeps instructing the operator to store
@@ -253,28 +255,36 @@ that is the cost this change exists to remove.
    and confirm healthy.
 3. **Freeze writes.** `docker compose stop worker`, wait for drain (River's
    graceful stop, bounded by `SoftStopTimeout`), then `stop scheduler`, then
-   `stop api`. Leave Postgres and web up.
+   `stop api`. Leave Postgres and web up. After the freeze, run the row-count
+   union query against Neon with `docker run --rm postgres:18-alpine psql
+   "$NEON_DIRECT_URL" -Atc "<query>"` and save it as the comparison baseline.
 4. **Dump.** Run a one-off `postgres:18-alpine` client container against the
    Neon direct, non-pooled endpoint (`neondb` database):
    `docker run --rm postgres:18-alpine pg_dump -Fc -Z 6 -d
    "$NEON_DIRECT_URL" -f - > /opt/o1/state/o1-pre-local.dump`, mode `0600`, on
    the data disk rather than `/tmp`. The 30 MB database dumps in seconds.
-   Immediately back the file up with restic (`restic backup
-   /opt/o1/state/o1-pre-local.dump --tag o1-db --tag pre-cutover`) so the
-   durable copy is encrypted and offsite. The plaintext file is deleted in
-   step 7.
+   Immediately back the file up with restic through stdin (`restic backup
+   --stdin --stdin-filename o1.dump --host o1-prod --tag o1-db --tag
+   pre-cutover < /opt/o1/state/o1-pre-local.dump`) so the durable copy is
+   encrypted and offsite and restores with `restic dump <snap> o1.dump`. The
+   plaintext file is deleted in step 7.
 5. **Restore.** Stream the dump into the target container so the host needs no
    PostgreSQL client: `docker compose ... exec -T postgres pg_restore -U o1 -d
-   o1 --no-owner --no-privileges < /opt/o1/state/o1-pre-local.dump`. Then
-   compare row counts on `users`, `workspaces`, `monitors`, `probe_results`,
-   `incidents`, `goose_db_version`, and `river_job`.
-6. **Switch.** Confirm `POSTGRES_PASSWORD` is set and no `O1_DATABASE_URL`
-   override is active in `.env`, start `api`, `scheduler`, `worker`, and confirm
-   `/healthz`, `/readyz`, login, a monitor page with encrypted headers, and one
-   alert delivery.
-7. **Soak.** Keep the Neon project and the restic snapshot for at least 7 days.
-   Delete the plaintext dump as soon as the local database is verified. Decide
-   on the legacy volume separately (see §7.6).
+   o1 --no-owner --no-privileges < /opt/o1/state/o1-pre-local.dump`. Confirm
+   `show lc_collate` is `C.UTF-8` first, then compare row counts on `users`,
+   `workspaces`, `monitors`, `probe_results`, `incidents`, `goose_db_version`,
+   and `river_job`. On a `pg_restore` error or any count mismatch, stop and
+   re-dump rather than proceeding.
+6. **Switch.** Keep the Neon **direct** `O1_DATABASE_URL` in `.env` through the
+   soak (the bundled Compose ignores it; the pre-cutover bundle needs it to
+   render for a rollback, including an automatic rollback after a failed
+   cutover deploy). Confirm `POSTGRES_PASSWORD` is set, start `api`,
+   `scheduler`, `worker`, and confirm `/healthz`, `/readyz`, login, a monitor
+   page with encrypted headers, and one alert delivery.
+7. **Soak.** Keep the Neon project, the `O1_DATABASE_URL` entry, and the restic
+   snapshot for at least 7 days. Delete the plaintext dump as soon as the local
+   database is verified. Remove `O1_DATABASE_URL` after acceptance (Task 7).
+   Decide on the legacy volume separately (see §7.6).
 
 Downtime is the dump+restore window — minutes for a <1 GB database — plus
 verification. Jobs running at freeze time are either drained or rescued by
@@ -282,25 +292,34 @@ River's stuck-job maintenance after restart.
 
 ### 7.6 Rollback
 
-The Neon project stays untouched and its DSN stays in the operator's password
-manager for the whole soak. The .env does **not** keep an active
-`${O1_DATABASE_URL:-...}` fallback: deriving the DSN from `POSTGRES_PASSWORD` is
-the only default, so a stale Neon DSN cannot silently win.
+The Neon project stays untouched through the soak. The operator keeps the Neon
+**direct** DSN in `/opt/o1/.env` for the whole soak (and in the password
+manager): the bundled Compose ignores it, and it exists only so a retained
+pre-cutover bundle can render for a rollback, including the automatic rollback
+after a failed cutover deploy. There is no `${O1_DATABASE_URL:-...}` default in
+the bundled Compose: the DSN derived from `POSTGRES_PASSWORD` is the only local
+default, so a stale Neon DSN cannot silently win. Remove `O1_DATABASE_URL`
+after acceptance (Task 7).
 
 - **During the 7-day soak, rollback to Neon is allowed.** Keep the last
   managed-aware release bundle (it has no `postgres` service and accepts the
-  Neon DSN). To roll back: stop the stack, set `O1_DATABASE_URL` explicitly in
+  Neon DSN). To roll back: stop the stack, keep `O1_DATABASE_URL` explicitly in
   `/opt/o1/.env`, start the retained release, verify `/readyz`, and **disable
   the backup, prune, and restore-verify timers** — with no `postgres` service
   in the active release they would fail. Data written locally during the soak
   is lost; note the window in the incident log.
 - **Returning to local after a rollback requires a fresh dump/restore**, because
-  Neon will have accumulated writes in the meantime. Re-run §7.5 rather than
-  replaying an old dump.
+  Neon will have accumulated writes in the meantime. Verify the fresh dump,
+  discard the stale local volume or database (`docker volume rm
+  o1-postgres-data`, which destroys the only local copy, or `DROP DATABASE o1;
+  CREATE DATABASE o1` through the running container), then restore and check
+  the exit status and row counts. Do not replay the old dump.
 - **After acceptance, rollback is local-only.** Prune pre-cutover releases,
   delete the Neon project, and rely on the restic snapshots plus the Plan 12
-  restore runbook. Never roll back to a release that predates the local
-  database's Compose shape; it would start an empty database.
+  restore runbook. A pre-cutover release has no `postgres` service and reads
+  `O1_DATABASE_URL`: running one re-points the application at Neon and strands
+  the writes made to the local volume during the soak; it does not start an
+  empty database.
 - **Legacy volume.** The 2026-11-25 inventory shows no
   `o1-production_postgres-data` volume on the host, so there is nothing to
   preserve or delete. The step is kept in the runbook for a rebuilt host.
@@ -416,7 +435,7 @@ the only default, so a stale Neon DSN cannot silently win.
 | Jobs stuck after the freeze | Graceful worker stop with drain; River rescue on restart; row-count verification before start |
 | Restore drill fills the disk | Plan 12 preflight requires free space ≥2× database size |
 | Password drift between container and DSN | Single `POSTGRES_PASSWORD` source; hex-only password |
-| Rollback to a pre-cutover image starts an empty DB | Prune old releases; keep Neon and the dump until accepted; documented forward-only rule |
+| Rollback to a pre-cutover image re-points at Neon and strands local writes | Prune old releases after acceptance; keep Neon and the dump until accepted; record the data-loss window in the runbook |
 | Backup silently stops | External success ping, failure email/URL, `last-success` file, monthly drill |
 | Restoring without `O1_ENCRYPTION_KEY` | Runbook restores `.env` from the password manager and smoke-tests encrypted headers |
 | `docker compose down -v` destroys data | Runbook warning; offsite backup; volume name is explicit |

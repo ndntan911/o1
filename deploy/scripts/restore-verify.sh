@@ -65,15 +65,22 @@ trap 'exit 143' TERM INT
 # send_failure_alert STAGE MESSAGE: email the failure and ping the failure
 # URL. It disables the ERR trap first so an alert failure cannot recurse.
 send_failure_alert() {
-  local stage=$1 message=$2 body
+  local stage=$1 message=$2 body raw_tail=
   trap - ERR
   set +e
 
+  if [[ -n $errlog && -s $errlog ]]; then
+    raw_tail=$(tail -n 20 -- "$errlog" 2>/dev/null)
+    # The journal keeps the whole tail; the email gets only the redacted form.
+    bl_log info "failure log tail (unredacted, journal only):"
+    printf '%s\n' "$raw_tail" >&2
+  fi
+
   body=$(printf 'host=%s\njob=restore-verify\nsnapshot=%s\ntime=%s\nstage=%s\n%s' \
     "$(hostname)" "${SNAPSHOT:-none}" "$(bl_utc_now)" "$stage" "$message")
-  if [[ -n $errlog && -s $errlog ]]; then
+  if [[ -n $raw_tail ]]; then
     body+=$'\n--- log tail ---\n'
-    body+=$(tail -n 20 -- "$errlog" 2>/dev/null)
+    body+=$(printf '%s\n' "$raw_tail" | bl_redact_output)
   fi
 
   # Ping first so a stalled email cannot delay the dead-man's switch.

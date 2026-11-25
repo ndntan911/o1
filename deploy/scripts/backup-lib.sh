@@ -31,6 +31,20 @@ redact_repository() {
     sed -E 's#(://)([^/@]*@)+#\1#g; s#^(sftp:)([^/@]*@)+#\1#'
 }
 
+# bl_redact_output: read a log tail on stdin and print the subset safe for an
+# email body. PostgreSQL error fields (LINE, DETAIL, CONTEXT, COPY) can quote
+# row contents, and repository URLs can carry credentials, so drop the former
+# and redact the latter. The journal keeps the unredacted tail.
+bl_redact_output() {
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ $line =~ ^[[:space:]]*(LINE|DETAIL|CONTEXT|COPY)([[:space:]:]|$) ]]; then
+      continue
+    fi
+    redact_repository "$line"
+  done
+}
+
 bl_require_var() {
   local name
   for name in "$@"; do

@@ -316,12 +316,14 @@ Replace the hardcoded `postgres:16-alpine` argument in the `docker run` command 
 
 - [ ] **Step 4: Document the variable**
 
-In `deploy/backup/backup.env.example`, under Optional, add:
+In `deploy/backup/backup.env.example`, under Optional, add (commented so an
+installed host follows the script default):
 
 ```
 # Postgres image for the monthly scratch restore. Its major must be at least
-# the dump major; the production default is the image the stack runs.
-O1_BACKUP_PG_IMAGE=postgres:18-alpine
+# the dump major. The script default matches production; uncomment only to
+# override it on an installed host.
+# O1_BACKUP_PG_IMAGE=postgres:18-alpine
 ```
 
 In `deploy/backup/README.md`, add `| O1_BACKUP_PG_IMAGE | no | postgres:18-alpine |` to the configuration table and change the prose "Starts a scratch `postgres:16-alpine` container" to name `O1_BACKUP_PG_IMAGE` with its default.
@@ -366,7 +368,7 @@ Replace the "Managed PostgreSQL" section and its subsections with "Bundled Postg
 - Startup: `api`/`scheduler`/`worker` wait for `pg_isready` and run goose + River migrations under an advisory lock.
 - Extensions: `citext` ships with the image; no package install needed.
 - Remove the old "One-time cutover from the bundled database" subsection.
-- Add "Cutover from Neon" with the Task 6 commands and "Rollback" with the Task 7 rules: Neon is retained for the 7-day soak; rolling back runs the retained pre-cutover bundle and pauses backup timers; after acceptance rollback is local-only.
+- Add "Cutover from Neon" with the Task 6 commands and "Rollback" with the Task 7 rules: Neon is retained for the 7-day soak with its DSN in `/opt/o1/.env`; rolling back runs the retained pre-cutover bundle and pauses backup timers; after acceptance rollback is local-only.
 - Backups: link `deploy/backup/README.md`, state RPO ≤ 24h, no PITR, and that `.env`/`POSTGRES_PASSWORD` are restored from the password manager.
 
 - [ ] **Step 2: Update the rest of the production runbook**
@@ -376,7 +378,7 @@ Replace the "Managed PostgreSQL" section and its subsections with "Bundled Postg
 - §8 "Logs and day-to-day operations": replace every `psql "$O1_DATABASE_URL"` with `docker compose --env-file /opt/o1/.env -f /opt/o1/current/deploy/production/compose.yaml exec -T postgres psql -U o1 -d o1`.
 - Retention section: same container-based `psql` substitution for its queries.
 - §10 "Rollback": point at the new rollback subsection; state that image/config rollback never restores data and that `postgres-data` is untouched by deploys.
-- §13 "Security notes": `5432` unpublished, `.env` held outside releases, volume only reachable by the Compose network, and backups encrypted offsite.
+- §13 "Security notes": `5432` unpublished, `.env` held outside releases, volume only reachable by the Compose network, and backups encrypted offsite. State that `stop`, `down`, and deploys are safe, while `down -v`, `docker volume rm`, and `docker system prune --volumes` destroy the only live copy and must never run against the production compose file.
 
 - [ ] **Step 3: Update `deploy/CICD.md`**
 
@@ -460,7 +462,7 @@ sudo install -d -m 0700 /opt/o1/backup /opt/o1/backup/cache /opt/o1/bin
 sudo install -m 0600 /tmp/o1-deploy/backup/backup.env.example /opt/o1/backup/backup.env
 sudoedit /opt/o1/backup/backup.env
 ```
-Fill in `RESTIC_REPOSITORY` (the URL from Step 1), `RESTIC_PASSWORD_FILE=/opt/o1/backup/restic.pass`, `RESTIC_CACHE_DIR=/opt/o1/backup/cache`, the two AWS credential variables, `O1_COMPOSE_FILE=/opt/o1/current/deploy/production/compose.yaml`, `O1_ENV_FILE=/opt/o1/.env`, `O1_BACKUP_PING_URL`, and either `O1_BACKUP_ALERT_EMAIL` or `O1_BACKUP_FAILURE_URL`.
+Fill in `RESTIC_REPOSITORY` (the URL from Step 1), `RESTIC_PASSWORD_FILE=/opt/o1/backup/restic.pass`, `RESTIC_CACHE_DIR=/opt/o1/backup/cache`, the two AWS credential variables, `AWS_DEFAULT_REGION` (uncomment it and set the OCI region, for example `us-ashburn-1`; leave it unset for AWS S3), `O1_COMPOSE_FILE=/opt/o1/current/deploy/production/compose.yaml`, `O1_ENV_FILE=/opt/o1/.env`, `O1_BACKUP_PING_URL`, and either `O1_BACKUP_ALERT_EMAIL` or `O1_BACKUP_FAILURE_URL`. Leave `O1_BACKUP_PG_IMAGE` commented so an installed host follows the script default (`postgres:18-alpine`); uncomment it only to override the drill image.
 
 - [ ] **Step 4: Install the tooling and initialize the repository**
 
@@ -474,10 +476,9 @@ Store `restic.pass` and the Object Storage keys in the password manager now.
 - [ ] **Step 5: Verify the repository is reachable**
 
 ```bash
-set -a; . /opt/o1/backup/backup.env; set +a
-restic cat config >/dev/null && echo repository-ok
+sudo bash -c 'set -a; . /opt/o1/backup/backup.env; set +a; restic cat config >/dev/null && echo repository-ok'
 ```
-Expected: `repository-ok`. Do not run `backup.sh` yet: the bundled `postgres`
+Expected: `repository-ok`. The whole command runs as root because `/opt/o1/backup` is `0700` root-owned. Do not run `backup.sh` yet: the bundled `postgres`
 service does not exist until Task 6's cutover, so the dump source would fail.
 The timers stay disabled until Task 6 Step 9.
 
@@ -502,21 +503,39 @@ Expected: ≥ 40 GB free, no `o1-postgres-data` volume yet, and no legacy `postg
 Run: `openssl rand -hex 32`
 Expected: 64 hex characters. Store it in the password manager and add `POSTGRES_PASSWORD=<value>` to `/opt/o1/.env` (mode 0600). Do not start any container yet.
 
-- [ ] **Step 3: Freeze writes on the running release**
+- [ ] **Step 3: Freeze writes and record Neon row counts**
+
+Export the Neon **direct** (non-pooled) DSN in this shell first, for example
+`export NEON_DIRECT_URL='postgres://...@ep-...neon.tech/neondb?sslmode=require'`.
 
 ```bash
+install -d -m 0700 /opt/o1/state
 cd /opt/o1/current
 docker compose --env-file /opt/o1/.env -f deploy/production/compose.yaml stop worker
 # wait for the worker container to exit (River graceful stop)
 docker compose --env-file /opt/o1/.env -f deploy/production/compose.yaml stop scheduler api
 docker compose --env-file /opt/o1/.env -f deploy/production/compose.yaml ps
+docker run --rm postgres:18-alpine psql "$NEON_DIRECT_URL" -Atc \
+  "select 'users', count(*) from users union all
+   select 'workspaces', count(*) from workspaces union all
+   select 'monitors', count(*) from monitors union all
+   select 'probe_results', count(*) from probe_results union all
+   select 'incidents', count(*) from incidents union all
+   select 'goose_db_version', count(*) from goose_db_version union all
+   select 'river_job', count(*) from river_job;" \
+  | tee /opt/o1/state/neon-counts.txt
 ```
-Expected: `worker`, `scheduler`, `api` exited; `web` still up.
+Expected: `worker`, `scheduler`, `api` exited; `web` still up. The count query
+runs only after the freeze and its output is the comparison baseline.
 
 - [ ] **Step 4: Initialize the target volume with a temporary container**
 
+`POSTGRES_PASSWORD` is hex only, never quoted: the validation rejects a quoted
+or non-hex value before the volume is created.
+
 ```bash
-export POSTGRES_PASSWORD=$(grep '^POSTGRES_PASSWORD=' /opt/o1/.env | cut -d= -f2-)
+POSTGRES_PASSWORD=$(sed -n 's/^POSTGRES_PASSWORD=//p' /opt/o1/.env | tr -d "\"'" | tr -d '[:space:]')
+[[ $POSTGRES_PASSWORD =~ ^[0-9a-fA-F]{64}$ ]] || { echo "POSTGRES_PASSWORD must be 64 hex chars, unquoted"; exit 1; }
 docker volume create o1-postgres-data
 docker run -d --name o1-cutover-pg \
   -e POSTGRES_USER=o1 -e POSTGRES_DB=o1 \
@@ -529,43 +548,54 @@ for i in $(seq 1 60); do
   docker exec o1-cutover-pg pg_isready -U o1 -d o1 && break
   sleep 1
 done
+docker exec -T o1-cutover-pg psql -U o1 -d o1 -Atc 'show lc_collate'
 ```
-Expected: `accepting connections`.
+Expected: `accepting connections`, then `C.UTF-8`. If `pg_isready` does not
+come up, read `docker logs o1-cutover-pg` before retrying.
 
 - [ ] **Step 5: Dump Neon and push it to restic**
 
-Export the Neon **direct** (non-pooled) DSN in this shell first, for example
-`export NEON_DIRECT_URL='postgres://...@ep-...neon.tech/neondb?sslmode=require'`.
-
 ```bash
-set -a
-. /opt/o1/backup/backup.env
-set +a
-install -d -m 0700 /opt/o1/state
 docker run --rm postgres:18-alpine pg_dump -Fc -Z 6 -d "$NEON_DIRECT_URL" -f - \
   > /opt/o1/state/o1-pre-local.dump
 chmod 0600 /opt/o1/state/o1-pre-local.dump
-restic backup /opt/o1/state/o1-pre-local.dump --tag o1-db --tag pre-cutover
+sudo bash -c 'set -a; . /opt/o1/backup/backup.env; set +a; restic backup --stdin --stdin-filename o1.dump --host o1-prod --tag o1-db --tag pre-cutover < /opt/o1/state/o1-pre-local.dump'
 ```
-Expected: a dump of roughly the 30 MB database and one restic snapshot.
+Expected: a dump of roughly the 30 MB database and one snapshot that contains
+`o1.dump` (pushed through stdin, not as a host path). `restic` runs as root
+because `/opt/o1/backup` is `0700` root-owned.
 
 - [ ] **Step 6: Restore and verify row counts**
 
 ```bash
-docker exec -i o1-cutover-pg pg_restore -U o1 -d o1 --no-owner --no-privileges \
-  < /opt/o1/state/o1-pre-local.dump
-docker exec -T o1-cutover-pg psql -U o1 -d o1 -c \
+if ! docker exec -i o1-cutover-pg pg_restore -U o1 -d o1 --no-owner --no-privileges \
+  < /opt/o1/state/o1-pre-local.dump; then
+  echo "pg_restore failed: stop, fix the cause, re-dump Neon, and restore again" >&2
+  exit 1
+fi
+docker exec -T o1-cutover-pg psql -U o1 -d o1 -Atc \
   "select 'users', count(*) from users union all
    select 'workspaces', count(*) from workspaces union all
    select 'monitors', count(*) from monitors union all
    select 'probe_results', count(*) from probe_results union all
    select 'incidents', count(*) from incidents union all
    select 'goose_db_version', count(*) from goose_db_version union all
-   select 'river_job', count(*) from river_job;"
+   select 'river_job', count(*) from river_job;" \
+  | tee /opt/o1/state/local-counts.txt
+diff -u /opt/o1/state/neon-counts.txt /opt/o1/state/local-counts.txt || {
+  echo "row counts differ: stop, fix the cause, re-dump Neon, and restore again" >&2
+  exit 1
+}
 ```
-Expected: counts match Neon (compare with the same query on Neon before freezing).
+Expected: `diff` exits 0 and prints nothing. On any mismatch or any
+`pg_restore` error, stop and re-dump rather than proceeding.
 
 - [ ] **Step 7: Replace the temporary container with the real stack**
+
+Leave `O1_DATABASE_URL=<Neon direct DSN>` in `/opt/o1/.env` through the soak.
+The bundled Compose ignores it, but a failed cutover deploy automatically
+restores the previous pre-cutover release, which needs the Neon DSN to render.
+Remove it in Task 7 after acceptance.
 
 ```bash
 docker rm -f o1-cutover-pg
@@ -587,18 +617,21 @@ Expected: both 200. Then log in, open a monitor with encrypted headers, and conf
 - [ ] **Step 9: Run one manual backup and one drill, then delete the plaintext dump**
 
 ```bash
-/opt/o1/bin/backup.sh
-/opt/o1/bin/restore-verify.sh
+sudo /opt/o1/bin/backup.sh
+sudo /opt/o1/bin/restore-verify.sh
 sudo /tmp/o1-deploy/scripts/install-backup.sh --source /tmp/o1-deploy --enable
-systemctl list-timers 'o1-backup*' 'o1-restore-verify*'
+sudo systemctl list-timers 'o1-backup*' 'o1-restore-verify*'
 rm -f /opt/o1/state/o1-pre-local.dump
 ```
 Expected: `backup.sh` reports one snapshot; `restore-verify.sh` restores it with
-`postgres:18-alpine`; all three timers are enabled.
+`postgres:18-alpine`; all three timers are enabled. Both scripts run as root
+because `/opt/o1/backup` is `0700` root-owned.
 
 - [ ] **Step 10: Start the soak**
 
-Record the cutover time. Keep the Neon project and the restic `pre-cutover` snapshot; keep the plaintext dump deleted. Do not prune pre-cutover releases for 7 days.
+Record the cutover time. Keep the Neon project, the `O1_DATABASE_URL` entry in
+`/opt/o1/.env`, and the restic `pre-cutover` snapshot; keep the plaintext dump
+deleted. Do not prune pre-cutover releases for 7 days.
 
 ---
 
@@ -614,20 +647,21 @@ Record the cutover time. Keep the Neon project and the restic `pre-cutover` snap
 - [ ] **Step 1: Confirm the soak evidence**
 
 ```bash
-systemctl list-timers 'o1-backup*' 'o1-restore-verify*'
-cat /opt/o1/backup/last-success
-cat /opt/o1/backup/last-restore-verify
-journalctl -u o1-backup.service --since '7 days ago' --no-pager | tail -50
+sudo systemctl list-timers 'o1-backup*' 'o1-restore-verify*'
+sudo cat /opt/o1/backup/last-success
+sudo cat /opt/o1/backup/last-restore-verify
+sudo journalctl -u o1-backup.service --since '7 days ago' --no-pager | tail -50
 ```
 Expected: at least five daily successes, one drill success, no failure alerts.
+The commands run as root because `/opt/o1/backup` is `0700` root-owned.
 
 - [ ] **Step 2: Decide on the Neon rollback window**
 
-If any acceptance check failed during the soak, stop here and follow the rollback subsection in `deploy/production/README.md`: run the retained managed release with the Neon DSN in `/opt/o1/.env`, then `systemctl disable --now o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer`. Returning to local later requires a fresh Task 6 dump/restore.
+If any acceptance check failed during the soak, stop here and follow the rollback subsection in `deploy/production/README.md`: run the retained managed release with the Neon DSN in `/opt/o1/.env`, then `sudo systemctl disable --now o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer`. Returning to local later requires a fresh Task 6 dump/restore, and the stale local volume or database must be discarded first: verify the fresh dump, then `docker volume rm o1-postgres-data` (**this destroys the only local copy**) or `DROP DATABASE o1; CREATE DATABASE o1` through the running container, then restore and check the exit status and row counts.
 
 - [ ] **Step 3: Decommission Neon**
 
-Delete the Neon project from the console and remove its DSN from the password manager only after Step 1 passes. Keep the restic `pre-cutover` snapshot until the first successful monthly drill after acceptance.
+Delete the Neon project from the console, remove its DSN from the password manager, and remove `O1_DATABASE_URL` from `/opt/o1/.env` only after Step 1 passes. Keep the restic `pre-cutover` snapshot until the first successful monthly drill after acceptance.
 
 - [ ] **Step 4: Prune pre-cutover releases**
 
@@ -641,7 +675,7 @@ Expected: at most `current`, `previous`, and one rollback target remain; delete 
 ```bash
 docker volume ls | grep postgres-data
 ss -ltnp | grep -c ':5432' || true
-systemctl is-enabled o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer
+sudo systemctl is-enabled o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer
 ```
 Expected: `o1-postgres-data` present; no `5432` listener on the host; all three timers `enabled`.
 
