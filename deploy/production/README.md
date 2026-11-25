@@ -201,10 +201,13 @@ alternative. Percent-encode `@`, `:`, `/`, `?`, and `#` in the password too.
 The API refuses to start when `O1_DATABASE_URL` is empty, and Compose refuses
 to render the stack without it.
 
-Backups and point-in-time recovery are the provider's responsibility. Confirm
-the backup retention window, and that PITR is enabled on the plan you buy,
-before setting `O1_RETENTION_DRY_RUN=false`; rollups are aggregates, not a
-backup of raw probe rows.
+Backup responsibility moves to the host with the self-hosted cutover: after it,
+Plan 12's daily restic backup and manual restore apply (see
+[Backups and restore](#backups-and-restore)) and provider point-in-time recovery
+no longer applies. Until the cutover, the managed provider's backup retention
+window still governs the live database, so confirm it before setting
+`O1_RETENTION_DRY_RUN=false`; rollups are aggregates, not a backup of raw probe
+rows.
 
 ### One-time cutover from the bundled database
 
@@ -792,7 +795,8 @@ remote-write errors.
 
 - Only `80` and `443` are published. The API, the scheduler, the worker, and
   every health/metrics listener stay on the private Compose network; the
-  managed database is reached outbound over TLS and has no local listener.
+  database runs inside the Compose stack on that network and `5432` is never
+  published.
 - `/metrics` returns `404` through Caddy.
 - All secrets come from `deploy/production/.env` or the host environment.
   `env.example` contains placeholders only. Never commit `.env`.

@@ -513,9 +513,11 @@ containers.
   PostgreSQL advisory lock serializes them, so concurrent starts are safe.
   There is no separate migration job or container.
 - Migrations run against the managed database over the network. A failed
-  migration still fails `/readyz`; provider point-in-time recovery, not release
-  rollback, is the data recovery path. Confirm PITR is enabled before setting
-  `O1_RETENTION_DRY_RUN=false`.
+  migration still fails `/readyz`; release rollback does not restore data. After
+  the self-hosted cutover, the Plan 12 host backup and manual restore (§7) are
+  the data recovery path and provider point-in-time recovery no longer applies.
+  Until the cutover, confirm the provider's backup retention window before
+  setting `O1_RETENTION_DRY_RUN=false`.
 - Deploy pipelines do not invoke retention directly, but a deploy or rollback
   recreates the scheduler, and every scheduler restart runs one startup
   maintenance pass. With `O1_RETENTION_DRY_RUN=false`, that pass can drop up to
