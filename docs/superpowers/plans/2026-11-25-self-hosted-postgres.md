@@ -29,7 +29,7 @@
 - **Password/DSN drift:** the container password and the app DSN must come from the same variable. Pinned by the single-DSN equality assertion in Task 2.
 - **Restore major mismatch:** a dump from 18 must not be restored by a 16 client. Pinned by the `test-backup.sh` fixture bump to `postgres:18-alpine` in Task 3.
 - **Accidental exposure:** the database must have no published port. Pinned by the empty-`ports` assertion in Task 2.
-- **Rollback without a database:** rolling back to a managed release leaves no `postgres` service, so backup timers would fail. Covered by the rollback procedure and timer-pause steps in Tasks 4 and 6.
+- **Rollback without a database:** rolling back to a managed release leaves no `postgres` service, so backup timers would fail. Covered by the rollback procedure and timer-pause steps in Tasks 4 and 7.
 
 ---
 
@@ -344,7 +344,7 @@ Replace the "Managed PostgreSQL" section and its subsections with "Bundled Postg
 - Startup: `api`/`scheduler`/`worker` wait for `pg_isready` and run goose + River migrations under an advisory lock.
 - Extensions: `citext` ships with the image; no package install needed.
 - Remove the old "One-time cutover from the bundled database" subsection.
-- Add "Cutover from Neon" with the Task 5 commands and "Rollback" with the Task 6 rules: Neon is retained for the 7-day soak; rolling back runs the retained pre-cutover bundle and pauses backup timers; after acceptance rollback is local-only.
+- Add "Cutover from Neon" with the Task 6 commands and "Rollback" with the Task 7 rules: Neon is retained for the 7-day soak; rolling back runs the retained pre-cutover bundle and pauses backup timers; after acceptance rollback is local-only.
 - Backups: link `deploy/backup/README.md`, state RPO ≤ 24h, no PITR, and that `.env`/`POSTGRES_PASSWORD` are restored from the password manager.
 
 - [ ] **Step 2: Update the rest of the production runbook**
@@ -398,7 +398,70 @@ git commit -m "docs: document the bundled production database and Neon cutover"
 
 ---
 
-### Task 5: Execute the Neon cutover (operator, maintenance window)
+### Task 5: Provision offsite backups on the host (operator)
+
+**Files:**
+- No repository changes; host setup only. Uses `deploy/backup/` and
+  `deploy/scripts/install-backup.sh` from Task 1.
+
+**Interfaces:**
+- Consumes: the merged Plan 12 tree.
+- Produces: `/opt/o1/bin/{backup.sh,restore-verify.sh,backup-lib.sh}`,
+  `/opt/o1/backup/backup.env`, `/opt/o1/backup/restic.pass`, an initialized
+  restic repository, and the three systemd units (installed, timers disabled).
+  Task 6 enables the timers after the first successful backup and drill.
+
+- [ ] **Step 1: Create the Object Storage bucket and credentials**
+
+In the OCI console, create a bucket in the VM's region and a Customer Secret
+Key scoped to read/write/delete under the `o1/` prefix. Record the namespace,
+region, bucket name, access key, and secret key. Expected repository URL:
+`s3:https://<namespace>.compat.objectstorage.<region>.oraclecloud.com/<bucket>/o1`.
+
+- [ ] **Step 2: Install restic on the ARM host**
+
+```bash
+curl -fsSL -o /tmp/restic.bz2 \
+  https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_arm64.bz2
+bunzip2 -f /tmp/restic.bz2
+sudo install -m 0755 /tmp/restic /usr/local/bin/restic
+restic version
+```
+Expected: `restic 0.19.1`.
+
+- [ ] **Step 3: Copy the deploy tree and seed the backup environment**
+
+```bash
+scp -r deploy <user>@<host>:/tmp/o1-deploy
+ssh <user>@<host>
+sudo install -d -m 0700 /opt/o1/backup /opt/o1/backup/cache /opt/o1/bin
+sudo install -m 0600 /tmp/o1-deploy/backup/backup.env.example /opt/o1/backup/backup.env
+sudoedit /opt/o1/backup/backup.env
+```
+Fill in `RESTIC_REPOSITORY` (the URL from Step 1), `RESTIC_PASSWORD_FILE=/opt/o1/backup/restic.pass`, `RESTIC_CACHE_DIR=/opt/o1/backup/cache`, the two AWS credential variables, `O1_COMPOSE_FILE=/opt/o1/current/deploy/production/compose.yaml`, `O1_ENV_FILE=/opt/o1/.env`, `O1_BACKUP_PING_URL`, and either `O1_BACKUP_ALERT_EMAIL` or `O1_BACKUP_FAILURE_URL`.
+
+- [ ] **Step 4: Install the tooling and initialize the repository**
+
+```bash
+sudo /tmp/o1-deploy/scripts/install-backup.sh --source /tmp/o1-deploy --init-new-repo
+```
+Expected: scripts installed in `/opt/o1/bin`, `restic.pass` generated, repository initialized, timers installed but disabled.
+
+Store `restic.pass` and the Object Storage keys in the password manager now.
+
+- [ ] **Step 5: Verify the repository is reachable**
+
+```bash
+set -a; . /opt/o1/backup/backup.env; set +a
+restic cat config >/dev/null && echo repository-ok
+```
+Expected: `repository-ok`. Do not run `backup.sh` yet: the bundled `postgres`
+service does not exist until Task 6's cutover, so the dump source would fail.
+The timers stay disabled until Task 6 Step 9.
+
+---
+
+### Task 6: Execute the Neon cutover (operator, maintenance window)
 
 **Files:**
 - No repository changes; host operations only.
@@ -502,9 +565,12 @@ Expected: both 200. Then log in, open a monitor with encrypted headers, and conf
 ```bash
 /opt/o1/bin/backup.sh
 /opt/o1/bin/restore-verify.sh
+sudo /tmp/o1-deploy/scripts/install-backup.sh --source /tmp/o1-deploy --enable
+systemctl list-timers 'o1-backup*' 'o1-restore-verify*'
 rm -f /opt/o1/state/o1-pre-local.dump
 ```
-Expected: `backup.sh` reports one snapshot; `restore-verify.sh` restores it with the scratch container and exits 0.
+Expected: `backup.sh` reports one snapshot; `restore-verify.sh` restores it with
+`postgres:18-alpine`; all three timers are enabled.
 
 - [ ] **Step 10: Start the soak**
 
@@ -512,13 +578,13 @@ Record the cutover time. Keep the Neon project and the restic `pre-cutover` snap
 
 ---
 
-### Task 6: Accept, decommission, and prune (operator, after 7 days)
+### Task 7: Accept, decommission, and prune (operator, after 7 days)
 
 **Files:**
 - No repository changes.
 
 **Interfaces:**
-- Consumes: Task 5's soak and the Plan 12 timers.
+- Consumes: Task 6's soak and the Plan 12 timers.
 - Produces: Neon removed, release history pruned, backup timers proven.
 
 - [ ] **Step 1: Confirm the soak evidence**
@@ -533,7 +599,7 @@ Expected: at least five daily successes, one drill success, no failure alerts.
 
 - [ ] **Step 2: Decide on the Neon rollback window**
 
-If any acceptance check failed during the soak, stop here and follow the rollback subsection in `deploy/production/README.md`: run the retained managed release with the Neon DSN in `/opt/o1/.env`, then `systemctl disable --now o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer`. Returning to local later requires a fresh Task 5 dump/restore.
+If any acceptance check failed during the soak, stop here and follow the rollback subsection in `deploy/production/README.md`: run the retained managed release with the Neon DSN in `/opt/o1/.env`, then `systemctl disable --now o1-backup.timer o1-backup-prune.timer o1-restore-verify.timer`. Returning to local later requires a fresh Task 6 dump/restore.
 
 - [ ] **Step 3: Decommission Neon**
 
@@ -559,7 +625,7 @@ Expected: `o1-postgres-data` present; no `5432` listener on the host; all three 
 
 ## Self-Review
 
-- **Spec coverage:** §7.1 compose/env → Task 2; §7.3 backups + OCI specifics → Tasks 1, 3, 4; §7.4 disk → Tasks 2 and 5 preflight; §7.5 cutover → Task 5; §7.6 rollback → Tasks 4 and 6; §7.7 tests → Tasks 2 and 3; §7.8 docs → Task 4; §7.9 shared-VM safety → Tasks 2 and 6.
+- **Spec coverage:** §7.1 compose/env → Task 2; §7.3 backups + OCI specifics → Tasks 1, 3, 4, 5; §7.4 disk → Tasks 2 and 6 preflight; §7.5 cutover → Task 6; §7.6 rollback → Tasks 4 and 7; §7.7 tests → Tasks 2 and 3; §7.8 docs → Task 4; §7.9 shared-VM safety → Tasks 2 and 7.
 - **Step scan:** each step names an exact file, command, or value; no "handle edge cases".
 - **Type consistency:** `POSTGRES_PASSWORD`, `o1-postgres-data`, `postgres:18-alpine`, and `O1_BACKUP_PG_IMAGE` are used identically across tasks.
 - **Review Focus:** each of the five lines is pinned by a named test or an explicit operator check.
