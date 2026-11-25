@@ -117,9 +117,9 @@ for flag in ("shared_buffers=1GB", "effective_cache_size=4GB", "work_mem=16MB",
              "maintenance_work_mem=256MB", "max_connections=100",
              "wal_compression=on", "checkpoint_completion_target=0.9"):
     assert flag in command, (flag, command)
-assert pg["mem_limit"] == 3 * 1024**3, pg["mem_limit"]
+assert int(pg["mem_limit"]) == 3 * 1024**3, pg["mem_limit"]
 assert float(pg["cpus"]) == 2.0, pg["cpus"]
-assert pg["shm_size"] == 256 * 1024**2, pg["shm_size"]
+assert int(pg["shm_size"]) == 256 * 1024**2, pg["shm_size"]
 assert pg["stop_grace_period"] in ("1m0s", "60s", 60000000000), pg["stop_grace_period"]
 assert c["services"]["worker"]["stop_grace_period"] in ("45s", 45000000000), c["services"]["worker"]["stop_grace_period"]
 for name in ("api", "scheduler", "worker"):
