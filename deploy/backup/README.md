@@ -60,9 +60,10 @@ after boot. Backup, prune, and the restore drill share
 ## 3. Host prerequisites
 
 The host needs Docker with the Compose v2 plugin, `restic` 0.19.1, `flock`,
-`curl`, `jq`, `openssl`, `timeout`, and systemd. `bunzip2`, `sed`, `mktemp`, and
-`install` are used during installation; they are part of a standard base
-install.
+`curl`, `jq`, `openssl`, `timeout`, and systemd. `sed`, `mktemp`, and `install`
+are used during installation and are part of a standard base install. `bunzip2`
+is also used during installation but is not guaranteed on minimal images:
+install `bzip2`, or decompress the asset with Python's `bz2` module.
 
 Install restic from the pinned release. Use the `arm64` asset on ARM hosts such
 as the Ampere A1 shape, and `amd64` on x86_64:
@@ -74,7 +75,11 @@ curl -fsSL -o /tmp/restic.bz2 \
 # ARM64 (Ampere A1)
 # curl -fsSL -o /tmp/restic.bz2 \
 #   https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_arm64.bz2
-bunzip2 /tmp/restic.bz2
+if command -v bunzip2 >/dev/null; then
+  bunzip2 -f /tmp/restic.bz2
+else
+  python3 -c "import bz2,shutil; shutil.copyfileobj(bz2.open('/tmp/restic.bz2','rb'), open('/tmp/restic','wb'))"
+fi
 sudo install -m 0755 /tmp/restic /usr/local/bin/restic
 restic version
 ```
