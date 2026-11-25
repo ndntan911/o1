@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily o1 PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=o1-backup.service
+
+[Install]
+WantedBy=timers.target

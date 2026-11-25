@@ -68,6 +68,26 @@ for test in test-compose-config test-deploy test-bootstrap test-workflows; do
 done
 check "$ci_file runs actionlint, shellcheck and the script suites"
 
+# The backup suite needs restic on PATH and a reachable Docker daemon, so the
+# pipeline job installs the pinned release before running it.
+grep -Fq 'restic_0.19.1_linux_amd64.bz2' "$ci_file" ||
+  fail "$ci_file does not download restic 0.19.1"
+grep -Fq 'restic version' "$ci_file" ||
+  fail "$ci_file does not verify the installed restic"
+grep -Fq 'bash deploy/scripts/test-backup.sh' "$ci_file" ||
+  fail "$ci_file does not run test-backup.sh"
+awk '
+  /^  [a-z]+:/ { job = $1 }
+  /restic_0\.19\.1_linux_amd64\.bz2/ { restic_job = job; restic_line = NR }
+  /bash deploy\/scripts\/test-backup\.sh/ { backup_job = job; backup_line = NR }
+  END {
+    exit !(restic_job == "pipeline:" && backup_job == "pipeline:" &&
+      restic_line < backup_line)
+  }
+' "$ci_file" ||
+  fail "restic must be installed before test-backup.sh in the pipeline job"
+check "$ci_file installs restic 0.19.1 before running the backup suite in pipeline"
+
 # govulncheck belongs to the backend job, after go vet.
 awk '
   /^  [a-z]+:/ { job = $1 }

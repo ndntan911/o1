@@ -179,16 +179,20 @@ the door open for a later plan but does not implement it.
   `TimeoutStartSec=2h` by default. The installer rewrites the unit's timeout
   from `O1_BACKUP_TIMEOUT` when set, and the script enforces the same timeout
   internally.
-- `o1-backup-prune.service`/`o1-backup-prune.timer`: weekly, Sunday 03:30 UTC,
+- `o1-backup-prune.service`/`o1-backup-prune.timer`: weekly, Sunday 03:30 UTC
+  with randomized delay up to 10 minutes,
   `ExecStart=/opt/o1/bin/backup.sh --prune-only`.
-- `o1-restore-verify.service`/timer: monthly, first day at 04:00 UTC.
+- `o1-restore-verify.service`/timer: monthly, first day at 06:00 UTC with
+  randomized delay up to 15 minutes, clear of the prune window.
 - Backup, prune, and drill share `repo.lock`; a skipped run logs and exits 0
   (prune/drill) or exits nonzero with an alert (backup).
-- Before dumping, the script checks Postgres health, required variables, restic
-  repository access, database size, free disk for the restic cache, and an
+- Before dumping, the script checks Postgres health (`pg_isready`), required
+  variables, restic repository access, database size (logged), and free disk
+  for the restic cache (`O1_BACKUP_MIN_FREE_KB`, default 1 GiB), plus an
   optional upload limit (`O1_BACKUP_UPLOAD_LIMIT`, restic `--limit-upload`).
-  The timeout is configurable; the install script warns when the database is
-  large enough that the default 2h may be too short.
+  The timeout is configurable; the install script best-effort warns when the
+  database is at or above `O1_BACKUP_LARGE_DB_WARN_KB` (default 10 GiB), where
+  the default 2h may be too short.
 - The restore drill preflights free disk for a scratch restore (at least twice
   `pg_database_size`) and aborts before creating the scratch volume if it does
   not fit. It runs off-peak with `Nice`/`ionice`.
@@ -221,8 +225,10 @@ the door open for a later plan but does not implement it.
    - `SELECT count(*)` succeeds on the core tables; counts are logged.
    - `SELECT 1` succeeds through a representative join used by the app.
 6. Run `restic check --read-data-subset=5%` to detect repository corruption.
-7. Write a drill report to `/opt/o1/backup/last-restore-verify` and send an
-   alert on failure.
+7. Write a drill report to `/opt/o1/backup/last-restore-verify` as
+   `snapshot|timestamp|success` or `failure|timestamp|stage`, and send an alert
+   on failure. A lock-held skip writes `skipped|timestamp|lock` to
+   `/opt/o1/backup/last-restore-attempt` and exits 0.
 8. Always remove the scratch container and volume, even on failure.
 
 The drill never targets the production database. It proves the backup decrypts,
