@@ -450,12 +450,13 @@ is unhealthy it restores the release that was current and exits non-zero.
 The database is not part of any release bundle: the `postgres` service ships in
 each release's compose file, but its data lives on `o1-postgres-data`.
 `rollback.sh` switches bundles and runs `up -d --remove-orphans`; it never
-creates, formats, or removes that volume. A release built before the
-bundled-database cutover has no `postgres` service and reads `O1_DATABASE_URL`;
-it is retained only for the 7-day Neon rollback window. After acceptance, prune
-those bundles and never roll back to one: it starts an empty database and
-`/readyz` passes while production data is unreachable. Keep the restic
-`pre-cutover` snapshot until the first successful monthly drill after
+creates, formats, or removes that volume. During the 7-day soak, the last
+pre-cutover bundle is the rollback target: it has no `postgres` service and
+reads its DSN from `O1_DATABASE_URL`, so rolling back re-points the application
+at Neon and strands the writes made to the local volume during the soak. After
+acceptance, prune those bundles so rollback stays local: only bundled-database
+releases remain and `rollback.sh` can no longer select a managed one. Keep the
+restic `pre-cutover` snapshot until the first successful monthly drill after
 acceptance.
 
 Inspect what is deployed at any time:

@@ -300,9 +300,10 @@ from `O1_DATABASE_URL`. To roll back:
 
 After acceptance, rollback is local-only: `rollback.sh` switches image and
 config bundles, and data recovery is the Plan 12 restore procedure. Prune the
-pre-cutover bundles and delete the Neon project. Never roll back to a release
-that predates the bundled-database Compose shape; it starts an empty database
-and turns `/readyz` green while production data is unreachable.
+pre-cutover bundles and delete the Neon project. A pre-cutover release has no
+`postgres` service and reads `O1_DATABASE_URL`, so running one is a deliberate
+move back to Neon, not an ordinary rollback; it would strand the writes made to
+`o1-postgres-data` since the cutover.
 
 ### Backups
 
@@ -880,7 +881,7 @@ remote-write errors.
 - The stack sets `O1_ENV=production`, which requires a real encryption key and
   rejects the development email provider.
 - Keep Caddy's `caddy_data` volume; it holds the certificates and ACME account
-  material. Application data lives in `postgres-data`.
+  material. Application data lives in `o1-postgres-data`.
 - Plan 12 backups are encrypted and offsite: restic encrypts the repository, and
   the S3 credentials and restic password live only in `/opt/o1/backup/backup.env`
   and `/opt/o1/backup/restic.pass` (both `0600`, root-owned). `.env` and
