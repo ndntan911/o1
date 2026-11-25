@@ -122,66 +122,59 @@ const base = `/api/v1/workspaces/${workspaceId}/incidents/${incidentId}/investig
 const latestPath = `${base}/latest`;
 
 describe('IncidentInvestigationPanel', () => {
-	test(
-		'offers to investigate, shows the running state, then the stored result',
-		async () => {
-			let phase: 'missing' | 'running' | 'ok' = 'missing';
+	test('offers to investigate, shows the running state, then the stored result', async () => {
+		let phase: 'missing' | 'running' | 'ok' = 'missing';
 
-			server.use(
-				http.get(latestPath, () => {
-					if (phase === 'missing') {
-						return new HttpResponse(null, { status: 404 });
-					}
-					if (phase === 'running') {
-						return HttpResponse.json(running());
-					}
-					return HttpResponse.json(investigation());
-				}),
-				http.post(
-					base,
-					() => {
-						phase = 'running';
-						return HttpResponse.json(running(), { status: 202 });
-					},
-				),
-			);
+		server.use(
+			http.get(latestPath, () => {
+				if (phase === 'missing') {
+					return new HttpResponse(null, { status: 404 });
+				}
+				if (phase === 'running') {
+					return HttpResponse.json(running());
+				}
+				return HttpResponse.json(investigation());
+			}),
+			http.post(base, () => {
+				phase = 'running';
+				return HttpResponse.json(running(), { status: 202 });
+			}),
+		);
 
-			renderWithProviders(
-				<IncidentInvestigationPanel
-					workspaceId={workspaceId}
-					incidentId={incidentId}
-					canStart
-				/>,
-			);
+		renderWithProviders(
+			<IncidentInvestigationPanel
+				workspaceId={workspaceId}
+				incidentId={incidentId}
+				canStart
+			/>,
+		);
 
-			await userEvent.click(
-				await screen.findByRole('button', { name: /^investigate$/i }),
-			);
+		await userEvent.click(
+			await screen.findByRole('button', { name: /^investigate$/i }),
+		);
 
-			const runningRegion = await screen.findByRole('status');
-			expect(runningRegion).toHaveAttribute('aria-live', 'polite');
-			expect(runningRegion).toHaveTextContent(/checks\.list/i);
-			expect(runningRegion).toHaveTextContent(/attempt 1/i);
+		const runningRegion = await screen.findByRole('status');
+		expect(runningRegion).toHaveAttribute('aria-live', 'polite');
+		expect(runningRegion).toHaveTextContent(/checks\.list/i);
+		expect(runningRegion).toHaveTextContent(/attempt 1/i);
 
-			phase = 'ok';
+		phase = 'ok';
 
-			expect(
-				await screen.findByText(/timeouts above the limit/i, undefined, {
-					timeout: 5_000,
-				}),
-			).toBeInTheDocument();
-			expect(screen.getByText(/unverified/i)).toBeInTheDocument();
-			expect(screen.getByText(/latency_ms/i)).toBeInTheDocument();
-			expect(screen.getByText(/high confidence/i)).toBeInTheDocument();
-			expect(
-				screen.getByText(/check the tls certificate expiry date/i),
-			).toBeInTheDocument();
-			expect(
-				screen.queryByText(/a fourth cause that must stay hidden/i),
-			).not.toBeInTheDocument();
-		},
-		10_000,
-	);
+		expect(
+			await screen.findByText(/timeouts above the limit/i, undefined, {
+				timeout: 5_000,
+			}),
+		).toBeInTheDocument();
+		expect(screen.getByText(/unverified/i)).toBeInTheDocument();
+		expect(screen.getByText(/latency_ms/i)).toBeInTheDocument();
+		expect(screen.getByText(/high confidence/i)).toBeInTheDocument();
+		expect(
+			screen.getByText(/check the tls certificate expiry date/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/a fourth cause that must stay hidden/i),
+		).not.toBeInTheDocument();
+	}, 10_000);
 
 	test('hides the action from viewers but still shows a stored result', async () => {
 		server.use(http.get(latestPath, () => HttpResponse.json(investigation())));
@@ -200,7 +193,9 @@ describe('IncidentInvestigationPanel', () => {
 		expect(
 			screen.queryByRole('button', { name: /investigate/i }),
 		).not.toBeInTheDocument();
-		expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole('button', { name: /retry/i }),
+		).not.toBeInTheDocument();
 	});
 
 	test('shows a retry after a failed run', async () => {
@@ -265,7 +260,9 @@ describe('IncidentInvestigationPanel', () => {
 		);
 
 		expect(await screen.findByRole('status')).toHaveTextContent(/attempt 2/i);
-		expect(screen.getByText(/provider call is being retried/i)).toBeInTheDocument();
+		expect(
+			screen.getByText(/provider call is being retried/i),
+		).toBeInTheDocument();
 		expect(posts).toBe(1);
 	});
 
@@ -322,10 +319,7 @@ describe('IncidentInvestigationPanel', () => {
 			await screen.findByText(/timeouts above the limit/i),
 		).toBeInTheDocument();
 
-		const key = queryKeys.incidentInvestigationLatest(
-			workspaceId,
-			incidentId,
-		);
+		const key = queryKeys.incidentInvestigationLatest(workspaceId, incidentId);
 
 		await act(async () => {
 			await queryClient.invalidateQueries({ queryKey: key });
@@ -343,11 +337,7 @@ describe('IncidentInvestigationPanel', () => {
 		server.use(
 			http.get(latestPath, () => new HttpResponse(null, { status: 404 })),
 			http.post(base, () =>
-				problem(
-					'quota_exceeded',
-					409,
-					'Investigation Already Running',
-				),
+				problem('quota_exceeded', 409, 'Investigation Already Running'),
 			),
 		);
 
@@ -428,9 +418,7 @@ describe('IncidentInvestigationPanel', () => {
 		expect(
 			await screen.findByText(/too thin to name a cause/i),
 		).toBeInTheDocument();
-		expect(
-			screen.queryByText('Certificate expiry'),
-		).not.toBeInTheDocument();
+		expect(screen.queryByText('Certificate expiry')).not.toBeInTheDocument();
 	});
 
 	test('renders nothing when investigations are not configured', async () => {

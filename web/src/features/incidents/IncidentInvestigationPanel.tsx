@@ -47,10 +47,7 @@ export function IncidentInvestigationPanel({
 	incidentId,
 	canStart,
 }: IncidentInvestigationPanelProps) {
-	const investigationQuery = useIncidentInvestigation(
-		workspaceId,
-		incidentId,
-	);
+	const investigationQuery = useIncidentInvestigation(workspaceId, incidentId);
 	const start = useStartIncidentInvestigation(workspaceId, incidentId);
 
 	const investigation = investigationQuery.data;
@@ -99,11 +96,9 @@ export function IncidentInvestigationPanel({
 	const active =
 		investigation.status === 'queued' || investigation.status === 'running';
 	const terminal =
-		investigation.status === 'ok' ||
-		investigation.status === 'insufficient';
+		investigation.status === 'ok' || investigation.status === 'insufficient';
 	const failed =
-		investigation.status === 'failed' ||
-		investigation.status === 'incomplete';
+		investigation.status === 'failed' || investigation.status === 'incomplete';
 
 	return (
 		<PanelFrame
@@ -148,9 +143,9 @@ function PanelFrame({
 				<div>
 					<h3 className="text-sm font-semibold">Investigate this incident</h3>
 					<p className="text-xs text-muted-foreground">
-						An agent reads this incident&apos;s own data and cites what it finds.
-						The agent is read-only. Treat the result as a starting point, not a
-						verdict.
+						An agent reads this incident&apos;s own data and cites what it
+						finds. The agent is read-only. Treat the result as a starting point,
+						not a verdict.
 					</p>
 				</div>
 				{action}
@@ -231,9 +226,7 @@ function ResultBody({
 	const insufficient = investigation.status === 'insufficient';
 	// Unverified causes are not offered as the answer: the refusal stands on
 	// its own and the unsupported hypotheses stay out of the panel.
-	const hypotheses = insufficient
-		? []
-		: (result?.hypotheses ?? []).slice(0, 3);
+	const hypotheses = insufficient ? [] : (result?.hypotheses ?? []).slice(0, 3);
 	const nextChecks = result?.next_checks ?? [];
 
 	return (
@@ -255,10 +248,7 @@ function ResultBody({
 			{hypotheses.length > 0 ? (
 				<ol className="space-y-3">
 					{hypotheses.map((hypothesis) => (
-						<HypothesisItem
-							key={hypothesis.rank}
-							hypothesis={hypothesis}
-						/>
+						<HypothesisItem key={hypothesis.rank} hypothesis={hypothesis} />
 					))}
 				</ol>
 			) : !insufficient ? (

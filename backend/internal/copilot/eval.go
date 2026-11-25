@@ -91,7 +91,7 @@ func LoadFixtures(dir string) ([]Fixture, error) {
 }
 
 func loadFixture(path string) (Fixture, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // operator-supplied local fixtures path
 	if err != nil {
 		return Fixture{}, err
 	}

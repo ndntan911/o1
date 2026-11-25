@@ -98,11 +98,11 @@ func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, inv Investigation) (Inv
 		SeedHash:      inv.SeedHash,
 		Result:        result,
 		Trace:         trace,
-		Attempts:      int32(inv.Attempts),
-		ToolCalls:     int32(inv.ToolCalls),
-		InputTokens:   int32(inv.InputTokens),
-		OutputTokens:  int32(inv.OutputTokens),
-		DurationMs:    int32(inv.DurationMS),
+		Attempts:      int32(inv.Attempts),     //nolint:gosec // bounded by runner limits
+		ToolCalls:     int32(inv.ToolCalls),    //nolint:gosec // bounded by runner limits
+		InputTokens:   int32(inv.InputTokens),  //nolint:gosec // bounded by runner limits
+		OutputTokens:  int32(inv.OutputTokens), //nolint:gosec // bounded by runner limits
+		DurationMs:    int32(inv.DurationMS),   //nolint:gosec // bounded by runner limits
 		ErrorCode:     nullableString(inv.ErrorCode),
 		CreatedBy:     nullableUUID(inv.CreatedBy),
 		CreatedAt:     inv.CreatedAt,
@@ -172,7 +172,7 @@ func (s *Store) Latest(ctx context.Context, workspaceID, incidentID uuid.UUID) (
 func (s *Store) MarkRunning(ctx context.Context, id uuid.UUID, attempt int, seedHash string) error {
 	affected, err := s.q.MarkInvestigationRunning(ctx, sqlc.MarkInvestigationRunningParams{
 		ID:       id,
-		Attempts: int32(attempt),
+		Attempts: int32(attempt), //nolint:gosec // River attempt is bounded by MaxAttempts
 		SeedHash: seedHash,
 	})
 	if err != nil {
@@ -194,10 +194,10 @@ func (s *Store) SaveProgress(ctx context.Context, id uuid.UUID, trace Trace, att
 	affected, err := s.q.SaveInvestigationProgress(ctx, sqlc.SaveInvestigationProgressParams{
 		ID:           id,
 		Trace:        encoded,
-		Attempts:     int32(attempts),
-		ToolCalls:    int32(toolCalls),
-		InputTokens:  int32(inputTokens),
-		OutputTokens: int32(outputTokens),
+		Attempts:     int32(attempts),     //nolint:gosec // bounded by runner limits
+		ToolCalls:    int32(toolCalls),    //nolint:gosec // bounded by runner limits
+		InputTokens:  int32(inputTokens),  //nolint:gosec // bounded by runner limits
+		OutputTokens: int32(outputTokens), //nolint:gosec // bounded by runner limits
 	})
 	if err != nil {
 		return fmt.Errorf("copilot: save investigation progress: %w", err)
@@ -234,11 +234,11 @@ func completeWith(ctx context.Context, q *sqlc.Queries, inv Investigation) error
 		Status:       string(inv.Status),
 		Result:       result,
 		Trace:        trace,
-		DurationMs:   int32(inv.DurationMS),
+		DurationMs:   int32(inv.DurationMS), //nolint:gosec // bounded by runner limits
 		ErrorCode:    nullableString(inv.ErrorCode),
-		InputTokens:  int32(inv.InputTokens),
-		OutputTokens: int32(inv.OutputTokens),
-		ToolCalls:    int32(inv.ToolCalls),
+		InputTokens:  int32(inv.InputTokens),  //nolint:gosec // bounded by runner limits
+		OutputTokens: int32(inv.OutputTokens), //nolint:gosec // bounded by runner limits
+		ToolCalls:    int32(inv.ToolCalls),    //nolint:gosec // bounded by runner limits
 	})
 	if err != nil {
 		return fmt.Errorf("copilot: complete investigation: %w", err)

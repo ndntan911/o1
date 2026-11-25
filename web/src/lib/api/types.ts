@@ -226,11 +226,7 @@ export interface Incident {
 
 export interface IncidentEvent {
 	id: string;
-	kind:
-		| 'opened'
-		| 'acknowledged'
-		| 'resolved'
-		| 'investigation_completed';
+	kind: 'opened' | 'acknowledged' | 'resolved' | 'investigation_completed';
 	actor_user_id: string | null;
 	detail: unknown;
 	created_at: string;
@@ -415,12 +411,7 @@ export interface IncidentInsight {
 }
 
 export type InvestigationStatus =
-	| 'queued'
-	| 'running'
-	| 'ok'
-	| 'insufficient'
-	| 'incomplete'
-	| 'failed';
+	'queued' | 'running' | 'ok' | 'insufficient' | 'incomplete' | 'failed';
 
 export interface InvestigationEvidence {
 	tool_call_id: string;

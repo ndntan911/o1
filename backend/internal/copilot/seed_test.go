@@ -121,7 +121,7 @@ func seedFixture() (uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, fakeSeedIncident
 	}
 
 	monitorSource := fakeSeedMonitorSource{
-		monitor: monitors.Monitor{
+		monitor: monitors.Monitor{ //nolint:gosec // redaction fixture with fake credentials
 			ID:                    monitorID,
 			WorkspaceID:           workspaceID,
 			Name:                  "api",

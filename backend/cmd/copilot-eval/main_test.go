@@ -32,7 +32,7 @@ func TestRun_StubWritesReport(t *testing.T) {
 		t.Fatalf("run returned %d, want 0; stderr = %s", code, stderr.String())
 	}
 
-	raw, err := os.ReadFile(out)
+	raw, err := os.ReadFile(out) //nolint:gosec // test temp dir path
 	if err != nil {
 		t.Fatalf("read report: %v", err)
 	}

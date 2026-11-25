@@ -92,10 +92,7 @@ export function generateIncidentInsight(
 	);
 }
 
-function investigationsPath(
-	workspaceId: string,
-	incidentId: string,
-): string {
+function investigationsPath(workspaceId: string, incidentId: string): string {
 	return `${incidentPath(workspaceId, incidentId)}/investigations`;
 }
 
@@ -126,9 +123,7 @@ export async function startIncidentInvestigation(
 	workspaceId: string,
 	incidentId: string,
 ): Promise<IncidentInvestigation> {
-	const body = await apiRequest<
-		IncidentInvestigation | ApiProblem | undefined
-	>(
+	const body = await apiRequest<IncidentInvestigation | ApiProblem | undefined>(
 		investigationsPath(workspaceId, incidentId),
 		{
 			method: 'POST',

@@ -16,7 +16,7 @@ import (
 func strPtr(value string) *string { return &value }
 
 func TestProjections_DoNotLeakSecrets(t *testing.T) {
-	m := monitors.Monitor{
+	m := monitors.Monitor{ //nolint:gosec // redaction fixture with fake credentials
 		Name:    "api",
 		URL:     "https://user:pass@example.com/health?token=secret",
 		Headers: map[string]string{"Authorization": "Bearer secret"},

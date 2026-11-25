@@ -317,8 +317,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	insightSvc := deps.InsightService
 	if insightSvc == nil && deps.Pool != nil {
-		switch {
-		case provider == nil:
+		switch provider {
+		case nil:
 			logger.Info("incident insights disabled", "provider", deps.Config.AIProvider)
 		default:
 			logger.Info("incident insights enabled",

@@ -38,7 +38,7 @@ func fixture() (incidents.IncidentDetail, []incidents.Delivery, *monitors.Monito
 		{ID: uuid.New(), ChannelKind: "email", Event: "opened", Status: "sent", Attempts: 1, Recipient: "oncall@example.com"},
 	}
 
-	monitor := &monitors.Monitor{
+	monitor := &monitors.Monitor{ //nolint:gosec // redaction fixture with fake credentials
 		ID:                    monitorID,
 		Name:                  "Checkout API",
 		URL:                   "https://user:pass@internal.example.com/health?token=abc",

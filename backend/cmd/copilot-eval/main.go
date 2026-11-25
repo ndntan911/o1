@@ -35,7 +35,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	providerName := strings.ToLower(strings.TrimSpace(os.Getenv("O1_AI_PROVIDER")))
 	if providerName == "" || providerName == ai.ProviderOff {
-		fmt.Fprintln(stderr, "copilot-eval: O1_AI_PROVIDER is off; set it to openai (or another tool provider) to run the evaluation")
+		_, _ = fmt.Fprintln(stderr, "copilot-eval: O1_AI_PROVIDER is off; set it to openai (or another tool provider) to run the evaluation")
 		return 2
 	}
 
@@ -43,14 +43,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if raw := strings.TrimSpace(os.Getenv("O1_AI_TIMEOUT")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil {
-			fmt.Fprintf(stderr, "copilot-eval: invalid O1_AI_TIMEOUT %q: %v\n", raw, err)
+			_, _ = fmt.Fprintf(stderr, "copilot-eval: invalid O1_AI_TIMEOUT %q: %v\n", raw, err)
 			return 2
 		}
 		timeout = parsed
 	}
 	headers, err := parseHeaders(os.Getenv("O1_AI_EXTRA_HEADERS"))
 	if err != nil {
-		fmt.Fprintf(stderr, "copilot-eval: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: %v\n", err)
 		return 2
 	}
 
@@ -60,7 +60,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if model == "" {
 		if providerName != ai.ProviderStub {
-			fmt.Fprintln(stderr, "copilot-eval: O1_COPILOT_MODEL or O1_AI_MODEL is required")
+			_, _ = fmt.Fprintln(stderr, "copilot-eval: O1_COPILOT_MODEL or O1_AI_MODEL is required")
 			return 2
 		}
 		model = providerName
@@ -76,36 +76,36 @@ func run(args []string, stdout, stderr io.Writer) int {
 	})
 	switch {
 	case errors.Is(err, ai.ErrNotConfigured):
-		fmt.Fprintf(stderr, "copilot-eval: provider %q is not configured: %v\n", providerName, err)
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: provider %q is not configured: %v\n", providerName, err)
 		return 2
 	case err != nil:
-		fmt.Fprintf(stderr, "copilot-eval: build provider: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: build provider: %v\n", err)
 		return 2
 	case provider == nil:
-		fmt.Fprintf(stderr, "copilot-eval: provider %q is off\n", providerName)
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: provider %q is off\n", providerName)
 		return 2
 	}
 	toolProvider, ok := provider.(ai.ToolProvider)
 	if !ok {
-		fmt.Fprintf(stderr, "copilot-eval: provider %q does not support tool calls\n", providerName)
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: provider %q does not support tool calls\n", providerName)
 		return 2
 	}
 
 	fixtures, err := copilot.LoadFixtures(*fixturesDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "copilot-eval: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: %v\n", err)
 		return 1
 	}
 
 	results, err := copilot.RunLive(context.Background(), toolProvider, fixtures, model)
 	if err != nil {
-		fmt.Fprintf(stderr, "copilot-eval: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: %v\n", err)
 		return 1
 	}
 
 	report := renderReport(providerName, model, results)
-	if err := os.WriteFile(*outPath, []byte(report), 0o644); err != nil {
-		fmt.Fprintf(stderr, "copilot-eval: write report: %v\n", err)
+	if err := os.WriteFile(*outPath, []byte(report), 0o600); err != nil {
+		_, _ = fmt.Fprintf(stderr, "copilot-eval: write report: %v\n", err)
 		return 1
 	}
 
@@ -115,7 +115,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			passed++
 		}
 	}
-	fmt.Fprintf(stdout, "wrote %s: %d/%d fixtures passed\n", *outPath, passed, len(results))
+	_, _ = fmt.Fprintf(stdout, "wrote %s: %d/%d fixtures passed\n", *outPath, passed, len(results))
 	return 0
 }
 
