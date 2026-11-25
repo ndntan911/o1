@@ -444,14 +444,28 @@ region, bucket name, access key, and secret key. Expected repository URL:
 
 - [ ] **Step 2: Install restic on the ARM host**
 
+Pick the release asset that matches the host (`uname -m`; this VM is
+`x86_64`, so `amd64`). `bunzip2` may be absent on a minimal Ubuntu image; install
+`bzip2` first, or decompress with Python.
+
 ```bash
-curl -fsSL -o /tmp/restic.bz2 \
-  https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_arm64.bz2
-bunzip2 -f /tmp/restic.bz2
-sudo install -m 0755 /tmp/restic /usr/local/bin/restic
+case $(uname -m) in
+  aarch64|arm64) restic_arch=arm64 ;;
+  x86_64|amd64)  restic_arch=amd64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+curl -fsSL -o "/tmp/restic-0.19.1-$restic_arch.bz2" \
+  "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_${restic_arch}.bz2"
+if command -v bunzip2 >/dev/null; then
+  bunzip2 -f "/tmp/restic-0.19.1-$restic_arch.bz2"
+else
+  python3 -c "import bz2,shutil; shutil.copyfileobj(bz2.open('/tmp/restic-0.19.1-$restic_arch.bz2','rb'), open('/tmp/restic-0.19.1-$restic_arch','wb'))"
+fi
+sudo install -m 0755 "/tmp/restic-0.19.1-$restic_arch" /usr/local/bin/restic
 restic version
 ```
-Expected: `restic 0.19.1`.
+Expected: `restic 0.19.1`. Run the install as a sudo-capable user; the deploy
+user may deliberately lack sudo.
 
 - [ ] **Step 3: Copy the deploy tree and seed the backup environment**
 
