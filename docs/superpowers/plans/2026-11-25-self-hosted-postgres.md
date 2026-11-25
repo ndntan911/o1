@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - Source database measured 2026-11-25: PostgreSQL **18.7**, `C.UTF-8`/`C.UTF-8`, UTF8, **30 MB**, extensions `citext` + `plpgsql` only; Neon database name is `neondb`.
-- Target image is exactly `postgres:18-alpine`; no `POSTGRES_INITDB_ARGS`; `citext` ships with the image.
+- Target image is exactly `postgres:18-alpine`; `POSTGRES_INITDB_ARGS=--locale=C.UTF-8 --encoding=UTF8`; `citext` ships with the image.
+- The PostgreSQL 18 image's `PGDATA` is `/var/lib/postgresql/18/docker`; the named volume mounts at `/var/lib/postgresql`, never `/var/lib/postgresql/data`.
 - Production Compose project name is `o1-production`; database volume name is exactly `o1-postgres-data`.
 - `5432` is never published; `sslmode=disable` on the private Compose network.
 - `POSTGRES_PASSWORD` is 32 random bytes as hex (`openssl rand -hex 32`) and is baked into the volume at first `initdb`.
@@ -103,9 +104,24 @@ assert "postgres" in c["services"], sorted(c["services"])
 pg = c["services"]["postgres"]
 assert pg["image"] == "postgres:18-alpine", pg["image"]
 assert not pg.get("ports"), pg.get("ports")
-assert pg["volumes"][0]["target"] == "/var/lib/postgresql/data"
+vol = pg["volumes"][0]
+assert vol["type"] == "volume", vol
+assert vol["source"] == "postgres-data", vol
+assert vol["target"] == "/var/lib/postgresql", vol
 assert c["volumes"]["postgres-data"]["name"] == "o1-postgres-data"
-assert "pg_isready" in " ".join(pg["healthcheck"]["test"]), pg["healthcheck"]["test"]
+health = " ".join(pg["healthcheck"]["test"])
+assert "pg_isready" in health and "-h 127.0.0.1" in health, health
+assert pg["environment"]["POSTGRES_INITDB_ARGS"] == "--locale=C.UTF-8 --encoding=UTF8", pg["environment"]
+command = " ".join(pg["command"])
+for flag in ("shared_buffers=1GB", "effective_cache_size=4GB", "work_mem=16MB",
+             "maintenance_work_mem=256MB", "max_connections=100",
+             "wal_compression=on", "checkpoint_completion_target=0.9"):
+    assert flag in command, (flag, command)
+assert pg["mem_limit"] == 3 * 1024**3, pg["mem_limit"]
+assert float(pg["cpus"]) == 2.0, pg["cpus"]
+assert pg["shm_size"] == 256 * 1024**2, pg["shm_size"]
+assert pg["stop_grace_period"] in ("1m0s", "60s", 60000000000), pg["stop_grace_period"]
+assert c["services"]["worker"]["stop_grace_period"] in ("45s", 45000000000), c["services"]["worker"]["stop_grace_period"]
 for name in ("api", "scheduler", "worker"):
     dep = c["services"][name]["depends_on"]["postgres"]
     assert dep["condition"] == "service_healthy", dep
@@ -113,8 +129,8 @@ dsns = {n: c["services"][n]["environment"]["O1_DATABASE_URL"]
         for n in ("api", "scheduler", "worker")}
 assert len(set(dsns.values())) == 1, dsns
 dsn = next(iter(dsns.values()))
-assert dsn.startswith("postgres://o1:"), dsn
-assert "@postgres:5432/o1?sslmode=disable" in dsn, dsn
+pw = pg["environment"]["POSTGRES_PASSWORD"]
+assert dsn == f"postgres://o1:{pw}@postgres:5432/o1?sslmode=disable", dsn
 assert c["services"]["api"]["environment"]["O1_DB_MAX_CONNS"] == "10"
 '
 check "bundled database with a derived DSN, healthy dependency, and no published port"
@@ -128,6 +144,7 @@ tmp_env=$(mktemp)
 trap 'rm -f "$tmp_env"' EXIT
 grep -v '^POSTGRES_PASSWORD=' "$env_file" > "$tmp_env"
 if env -u O1_COMPOSE_PROJECT -u O1_BACKEND_IMAGE -u O1_WEB_IMAGE \
+  -u POSTGRES_PASSWORD \
   docker compose --env-file "$tmp_env" --env-file "$images_file" \
   -f "$compose_file" config --quiet >/dev/null 2>&1; then
   fail "compose rendered without POSTGRES_PASSWORD"
@@ -151,6 +168,8 @@ Update the header comment to say the stack bundles PostgreSQL again on the priva
       POSTGRES_USER: o1
       POSTGRES_DB: o1
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_INITDB_ARGS: "--locale=C.UTF-8 --encoding=UTF8"
+      LANG: C.UTF-8
       TZ: UTC
       PGTZ: UTC
     command:
@@ -170,9 +189,9 @@ Update the header comment to say the stack bundles PostgreSQL again on the priva
       - -c
       - checkpoint_completion_target=0.9
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U o1 -d o1"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U o1 -d o1"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -499,7 +518,9 @@ docker volume create o1-postgres-data
 docker run -d --name o1-cutover-pg \
   -e POSTGRES_USER=o1 -e POSTGRES_DB=o1 \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-  -v o1-postgres-data:/var/lib/postgresql/data \
+  -e POSTGRES_INITDB_ARGS='--locale=C.UTF-8 --encoding=UTF8' \
+  -e LANG=C.UTF-8 \
+  -v o1-postgres-data:/var/lib/postgresql \
   postgres:18-alpine
 for i in $(seq 1 60); do
   docker exec o1-cutover-pg pg_isready -U o1 -d o1 && break

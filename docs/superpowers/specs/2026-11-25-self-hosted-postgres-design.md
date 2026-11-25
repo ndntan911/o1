@@ -134,11 +134,16 @@ that is the cost this change exists to remove.
   - `image: postgres:18-alpine`, tag-pinned (the deploy script's digest
     enforcement covers only the application images). The source is PostgreSQL
     18.7 with `C.UTF-8`/UTF8 (measured 2026-11-25), so Alpine's musl locale
-    support is sufficient and no `POSTGRES_INITDB_ARGS` is needed.
+    support is sufficient; `POSTGRES_INITDB_ARGS=--locale=C.UTF-8
+    --encoding=UTF8` pins the locale to match the source.
   - `environment`: `POSTGRES_USER=o1`, `POSTGRES_DB=o1`,
     `POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}`,
+    `POSTGRES_INITDB_ARGS=--locale=C.UTF-8 --encoding=UTF8`, `LANG=C.UTF-8`,
     `TZ=UTC`, `PGTZ=UTC`.
-  - `volumes: postgres-data:/var/lib/postgresql/data`.
+  - `volumes: postgres-data:/var/lib/postgresql` — the PostgreSQL 18 image's
+    `PGDATA` is `/var/lib/postgresql/18/docker` and its declared volume is
+    `/var/lib/postgresql`. Mounting `/var/lib/postgresql/data` (the pre-18
+    path) would leave the named volume empty.
   - The volume is declared with an explicit name, `o1-postgres-data`, so an
     old `o1-production_postgres-data` volume from before the managed cutover
     can never be picked up accidentally (see §7.5.0). The current host has no
@@ -146,8 +151,9 @@ that is the cost this change exists to remove.
   - `POSTGRES_PASSWORD`, encoding, locale, and image major are baked into the
     volume at first `initdb`; all of them must be final before the container
     starts for the first time.
-  - `healthcheck`: `pg_isready -U o1 -d o1`, 5s interval, 5s timeout, 10
-    retries, `start_period: 30s`.
+  - `healthcheck`: `pg_isready -h 127.0.0.1 -U o1 -d o1`, 5s interval, 5s
+    timeout, 10 retries, `start_period: 30s`. The TCP host avoids the
+    entrypoint's temporary unix-socket server during `initdb`.
   - No `ports:` entry. The container is reachable only on the Compose network.
   - `shm_size: 256mb`; `stop_grace_period: 60s`;
     `restart: unless-stopped`.
