@@ -131,10 +131,10 @@ that is the cost this change exists to remove.
 ### 7.1 `deploy/production/compose.yaml`
 
 - Add a `postgres` service:
-  - `image: postgres:18-alpine`, digest-pinned like the other production
-    images. The source is PostgreSQL 18.7 with `C.UTF-8`/UTF8 (measured
-    2026-11-25), so Alpine's musl locale support is sufficient and no
-    `POSTGRES_INITDB_ARGS` is needed.
+  - `image: postgres:18-alpine`, tag-pinned (the deploy script's digest
+    enforcement covers only the application images). The source is PostgreSQL
+    18.7 with `C.UTF-8`/UTF8 (measured 2026-11-25), so Alpine's musl locale
+    support is sufficient and no `POSTGRES_INITDB_ARGS` is needed.
   - `environment`: `POSTGRES_USER=o1`, `POSTGRES_DB=o1`,
     `POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}`,
     `TZ=UTC`, `PGTZ=UTC`.
@@ -174,9 +174,11 @@ that is the cost this change exists to remove.
 
 - Required: `POSTGRES_PASSWORD` (32-byte hex), `O1_SECRET_KEY`,
   `O1_ENCRYPTION_KEY`, `O1_DOMAIN`, mail settings.
-- Remove the managed `O1_DATABASE_URL` requirement and its TLS notes. Keep an
-  optional commented override for an external DSN, used only during a Neon
-  rollback (§7.6), never as an active Compose default.
+- Remove the managed `O1_DATABASE_URL` requirement and its TLS notes. The DSN
+  is derived inside Compose, so a stray `O1_DATABASE_URL` in `.env` cannot
+  override it. The only way to point at an external database again is to run
+  the retained pre-cutover release bundle, whose Compose file still requires
+  `O1_DATABASE_URL` (§7.6).
 - Keep `O1_DB_MAX_CONNS=10` documented, with the connection budget: three
   processes × 10, plus migration headroom, against `max_connections=100`.
 - `.env` remains untracked; the runbook keeps instructing the operator to store
@@ -352,8 +354,8 @@ the only default, so a stale Neon DSN cannot silently win.
   magnitude.
 - Whether to pin the `postgres` image by digest in the base compose file or via
   `images.env` like the app images.
-- How the runbook documents the explicit `O1_DATABASE_URL` override that is used
-  only during a Neon rollback, without making it a Compose default.
+- How the runbook words the Neon rollback (retained release bundle plus its
+  required `O1_DATABASE_URL`), given the current release derives its DSN.
 - Whether `POSTGRES_PASSWORD` rotation is scripted or documented as a manual
   `ALTER ROLE` + `.env` edit with a restart.
 - Exact Object Storage bucket/prefix layout and whether restic `--limit-upload`
