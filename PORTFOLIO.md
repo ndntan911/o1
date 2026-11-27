@@ -23,7 +23,7 @@ delivering alerts exactly once through providers that fail in different ways.
 | **Backend** | Go 1.26, PostgreSQL 16, River job queue, goose migrations, OTLP/Sentry |
 | **Frontend** | React 19, TanStack Router + Query, Tailwind 4, Radix/shadcn |
 | **Ops** | Docker Compose, Caddy (TLS), GitHub Actions, GHCR, Trivy, Prometheus/Grafana/Loki |
-| **Size** | ~23k lines of Go and ~24k of TypeScript, 538 Go test functions, 390 frontend tests |
+| **Size** | ~23k lines of Go and ~24k of TypeScript, 695 Go test functions, 421 frontend tests |
 
 ![Monitors, dark theme](docs/portfolio/screenshots/monitors-dark.png)
 
@@ -156,8 +156,8 @@ action it was recording.
 
 ## Engineering practice
 
-- **Tests are the gate.** 538 Go test functions (unit plus testcontainers
-  integration against real PostgreSQL) and 390 frontend tests. Playwright
+- **Tests are the gate.** 695 Go test functions (unit plus testcontainers
+  integration against real PostgreSQL) and 421 frontend tests. Playwright
   drives the deployed stack end to end, including 2FA, recovery codes, API key
   authorization, audit attribution, and the accessibility checks.
 - **CI is blocking.** Five required jobs: backend, integration, frontend, e2e,

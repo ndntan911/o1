@@ -108,7 +108,10 @@ export function AppShell() {
 							o1 uptime
 						</Link>
 					) : (
-						<Link to="/workspaces" className="font-heading text-base font-medium">
+						<Link
+							to="/workspaces"
+							className="font-heading text-base font-medium"
+						>
 							o1 uptime
 						</Link>
 					)}

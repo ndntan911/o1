@@ -26,14 +26,10 @@ describe('portfolio landing page', () => {
 			doc.querySelector('link[rel="canonical"]')?.getAttribute('href'),
 		).toBe('https://o1.work.gd/');
 		expect(
-			doc
-				.querySelector('meta[property="og:image"]')
-				?.getAttribute('content'),
+			doc.querySelector('meta[property="og:image"]')?.getAttribute('content'),
 		).toBe('https://o1.work.gd/og.png');
 		expect(
-			doc
-				.querySelector('meta[name="twitter:card"]')
-				?.getAttribute('content'),
+			doc.querySelector('meta[name="twitter:card"]')?.getAttribute('content'),
 		).toBe('summary_large_image');
 		expect(doc.querySelectorAll('h1')).toHaveLength(1);
 

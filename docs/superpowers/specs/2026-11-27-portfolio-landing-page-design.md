@@ -102,7 +102,7 @@ Proposed page outline (top to bottom):
    to the matching source path on GitHub:
    SSRF-safe probing; 90-day partitioned history + safe retention; alert retry
    classification/idempotency; tenant isolation and attributable automation.
-6. **Engineering practice** — test counts (538 Go test functions, 390 frontend
+6. **Engineering practice** — test counts (695 Go test functions, 421 frontend
    tests), blocking CI, digest-pinned releases and rollback, observability,
    threat model/load baseline. Link `PORTFOLIO.md` for the long version.
 7. **Try it** — read-only demo credentials in a `<code>` block, note that seeded

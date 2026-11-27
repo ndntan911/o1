@@ -162,6 +162,49 @@ async function registerThroughApiUnlessPresent(
 	}
 }
 
+test('serves the portfolio landing page at the root', async ({
+	page,
+	request,
+}) => {
+	const response = await request.get('/');
+	expect(response.status()).toBe(200);
+	expect(response.headers()['content-type']).toContain('text/html');
+	const html = await response.text();
+	expect(html).toContain('Uptime and incident monitoring for small teams.');
+	expect(html).not.toContain('id="root"');
+
+	const sitemap = await request.get('/sitemap.xml');
+	expect(sitemap.status()).toBe(200);
+	expect(sitemap.headers()['content-type']).toContain('xml');
+	expect(await sitemap.text()).toContain('<urlset');
+
+	const image = await request.get('/portfolio/monitors-dark.png');
+	expect(image.status()).toBe(200);
+
+	await page.goto('/');
+	await expect(page.getByRole('heading', { level: 1 })).toContainText(
+		'Uptime and incident monitoring for small teams.',
+	);
+	await expectNoSeriousA11yViolations(page);
+	await page.getByRole('link', { name: 'Open the live demo' }).first().click();
+	await expect(page).toHaveURL(/\/login$/);
+	await expect(page.getByLabel('Email')).toBeVisible();
+});
+
+test.describe('landing page without JavaScript', () => {
+	test.use({ javaScriptEnabled: false });
+
+	test('keeps the content and demo link visible', async ({ page }) => {
+		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toContainText(
+			'Uptime and incident monitoring for small teams.',
+		);
+		await expect(
+			page.getByRole('link', { name: 'Open the live demo' }).first(),
+		).toBeVisible();
+	});
+});
+
 test('register, verify, create a monitor, and administer the workspace', async ({
 	page,
 	request,
@@ -1057,7 +1100,7 @@ test('applies the stored theme before the app loads', async ({ page }) => {
 	});
 	await page.route('**/*.js', (route) => route.abort());
 
-	await page.goto('/', { waitUntil: 'domcontentloaded' });
+	await page.goto('/login', { waitUntil: 'domcontentloaded' });
 
 	await expect(page.locator('html')).toHaveClass(/dark/);
 	await expect
@@ -1073,7 +1116,7 @@ test('ignores an invalid stored theme', async ({ page }) => {
 	await page.emulateMedia({ colorScheme: 'dark' });
 	await page.route('**/*.js', (route) => route.abort());
 
-	await page.goto('/', { waitUntil: 'domcontentloaded' });
+	await page.goto('/login', { waitUntil: 'domcontentloaded' });
 
 	await expect
 		.poll(() => page.evaluate(() => localStorage.getItem('o1-theme')))

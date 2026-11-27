@@ -120,8 +120,9 @@
 					>
 				</div>
 				<p class="mt-4 text-sm text-muted-foreground">
-					Read-only demo: <code class="font-mono">demo-viewer@o1.work.gd</code>
-					/ <code class="font-mono">o1-demo-viewer-2026</code>
+					Read-only demo:
+					<code class="font-mono">demo-viewer@o1.work.gd</code> /
+					<code class="font-mono">o1-demo-viewer-2026</code>
 				</p>
 			</section>
 
@@ -168,9 +169,9 @@
 							</h3>
 							<p class="mt-2 text-sm leading-6 text-muted-foreground">
 								HTTP checks with method, headers, body, expected status,
-								interval, timeout, and confirmation/recovery thresholds.
-								Results land in monthly range partitions, and probes never
-								follow redirects into private networks.
+								interval, timeout, and confirmation/recovery thresholds. Results
+								land in monthly range partitions, and probes never follow
+								redirects into private networks.
 							</p>
 						</li>
 						<li class="rounded-xl border border-border bg-background p-5">
@@ -206,9 +207,9 @@
 							</h3>
 							<p class="mt-2 text-sm leading-6 text-muted-foreground">
 								Owner, admin, member, and viewer roles; workspace-scoped
-								resources; TOTP two-factor with recovery codes; hashed API
-								keys for scripts; and an admin audit trail that attributes
-								actions to a user or an API key.
+								resources; TOTP two-factor with recovery codes; hashed API keys
+								for scripts; and an admin audit trail that attributes actions to
+								a user or an API key.
 							</p>
 						</li>
 						<li class="rounded-xl border border-border bg-background p-5">
@@ -217,9 +218,9 @@
 							</h3>
 							<p class="mt-2 text-sm leading-6 text-muted-foreground">
 								On demand, an incident returns up to three ranked hypotheses,
-								each citing a timeline event or field the server verifies
-								before it is shown. The model never sees monitor URLs,
-								headers, channel secrets, or recipients.
+								each citing a timeline event or field the server verifies before
+								it is shown. The model never sees monitor URLs, headers, channel
+								secrets, or recipients.
 							</p>
 						</li>
 					</ul>
@@ -238,11 +239,13 @@
 					Four decisions worth reading
 				</h2>
 				<p class="mt-3 max-w-2xl text-muted-foreground">
-					The interesting part is not the CRUD. It is the parts that are hard
-					to get right.
+					The interesting part is not the CRUD. It is the parts that are hard to
+					get right.
 				</p>
 				<ol class="mt-10 space-y-6">
-					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+					<li
+						class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]"
+					>
 						<span
 							class="font-heading text-2xl font-semibold text-muted-foreground"
 							>01</span
@@ -279,7 +282,9 @@
 							</p>
 						</div>
 					</li>
-					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+					<li
+						class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]"
+					>
 						<span
 							class="font-heading text-2xl font-semibold text-muted-foreground"
 							>02</span
@@ -294,8 +299,8 @@
 								with up, min, max, and p95 latency. A partition drops only when
 								it is wholly past the raw cutoff and hourly rollups cover it
 								with matching counts; a mismatch re-rolls once and otherwise
-								defers. Retention is a dry run by default, logs every
-								candidate, and drops at most one partition per run.
+								defers. Retention is a dry run by default, logs every candidate,
+								and drops at most one partition per run.
 							</p>
 							<p class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
 								<a
@@ -316,7 +321,9 @@
 							</p>
 						</div>
 					</li>
-					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+					<li
+						class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]"
+					>
 						<span
 							class="font-heading text-2xl font-semibold text-muted-foreground"
 							>03</span
@@ -327,13 +334,12 @@
 							</h3>
 							<p class="mt-2 text-sm leading-6 text-muted-foreground">
 								The notifier classifies failures instead of retrying blindly:
-								timeouts, 408, 425, 429, and 5xx are transient and retried up
-								to five times with backoff; other 4xx and any 3xx are permanent
-								and recorded as failed deliveries. Email sends carry an
-								idempotency key so a lost response does not duplicate a
-								message. Channel secrets are write-only, encrypted at rest with
-								AES-GCM, and never appear in delivery history, logs, or error
-								bodies.
+								timeouts, 408, 425, 429, and 5xx are transient and retried up to
+								five times with backoff; other 4xx and any 3xx are permanent and
+								recorded as failed deliveries. Email sends carry an idempotency
+								key so a lost response does not duplicate a message. Channel
+								secrets are write-only, encrypted at rest with AES-GCM, and
+								never appear in delivery history, logs, or error bodies.
 							</p>
 							<p class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
 								<a
@@ -349,7 +355,9 @@
 							</p>
 						</div>
 					</li>
-					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+					<li
+						class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]"
+					>
 						<span
 							class="font-heading text-2xl font-semibold text-muted-foreground"
 							>04</span
@@ -361,14 +369,14 @@
 							</h3>
 							<p class="mt-2 text-sm leading-6 text-muted-foreground">
 								Every query is scoped by workspace, and cross-tenant access
-								returns 404 rather than 403 so a caller cannot probe what
-								exists elsewhere. Roles are enforced at the handler boundary,
-								and suspended workspaces keep reads while losing mutations and
-								probes. API keys are shown once, stored as SHA-256 hashes with
-								a public prefix, scoped to one workspace, rate limited per key,
+								returns 404 rather than 403 so a caller cannot probe what exists
+								elsewhere. Roles are enforced at the handler boundary, and
+								suspended workspaces keep reads while losing mutations and
+								probes. API keys are shown once, stored as SHA-256 hashes with a
+								public prefix, scoped to one workspace, rate limited per key,
 								and never carry global admin rights. Every security-relevant
-								action writes an audit event naming the workspace, the user,
-								and the API key when one was used.
+								action writes an audit event naming the workspace, the user, and
+								the API key when one was used.
 							</p>
 							<p class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
 								<a
@@ -417,7 +425,9 @@
 							<dd class="mt-1 font-heading text-3xl font-semibold">5</dd>
 						</div>
 					</dl>
-					<ul class="mt-8 grid gap-3 text-sm leading-6 text-muted-foreground md:grid-cols-2">
+					<ul
+						class="mt-8 grid gap-3 text-sm leading-6 text-muted-foreground md:grid-cols-2"
+					>
 						<li class="rounded-lg border border-border bg-background p-4">
 							<strong class="font-medium text-foreground"
 								>Tests are the gate.</strong
@@ -428,9 +438,11 @@
 							attribution, and accessibility checks.
 						</li>
 						<li class="rounded-lg border border-border bg-background p-4">
-							<strong class="font-medium text-foreground">CI is blocking.</strong>
-							Five required jobs cover backend, integration, frontend, e2e,
-							and pipeline checks (actionlint, shellcheck, Compose, and deploy
+							<strong class="font-medium text-foreground"
+								>CI is blocking.</strong
+							>
+							Five required jobs cover backend, integration, frontend, e2e, and
+							pipeline checks (actionlint, shellcheck, Compose, and deploy
 							scripts). Trivy scans the filesystem and both images before any
 							push.
 						</li>
@@ -438,8 +450,8 @@
 							<strong class="font-medium text-foreground"
 								>Releases are deliberate.</strong
 							>
-							Tags build <code>linux/amd64</code> images, scan them, and
-							publish by digest. Deploys are dispatched by hand, run from
+							Tags build <code>linux/amd64</code> images, scan them, and publish
+							by digest. Deploys are dispatched by hand, run from
 							<code>main</code> for production, and rollback restores the
 							previous release bundle.
 						</li>
@@ -447,8 +459,8 @@
 							<strong class="font-medium text-foreground"
 								>The system is observable.</strong
 							>
-							Prometheus metrics on private listeners, OTLP tracing, Sentry
-							with request data stripped, and a Grafana Alloy bundle that ships
+							Prometheus metrics on private listeners, OTLP tracing, Sentry with
+							request data stripped, and a Grafana Alloy bundle that ships
 							metrics and logs to Grafana Cloud.
 						</li>
 					</ul>
@@ -531,8 +543,7 @@ o1-demo-viewer-2026</code></pre>
 						<div>
 							<dt class="font-medium">Frontend</dt>
 							<dd class="text-muted-foreground">
-								React 19, TanStack Router and Query, Tailwind 4,
-								Radix/shadcn
+								React 19, TanStack Router and Query, Tailwind 4, Radix/shadcn
 							</dd>
 						</div>
 						<div>
@@ -556,8 +567,7 @@ o1-demo-viewer-2026</code></pre>
 						<div>
 							<dt class="font-medium">Delivery</dt>
 							<dd class="text-muted-foreground">
-								Digest-pinned images, hand-dispatched deploys, release
-								rollback
+								Digest-pinned images, hand-dispatched deploys, release rollback
 							</dd>
 						</div>
 					</dl>
