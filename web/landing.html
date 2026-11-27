@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<title>o1 — uptime and incident monitoring for small teams</title>
+		<meta
+			name="description"
+			content="o1 is a self-hosted uptime monitor for small teams: SSRF-guarded HTTP probes, incidents, email/webhook/Slack/Telegram alerts, and public status pages."
+		/>
+		<link rel="canonical" href="https://o1.work.gd/" />
+		<meta property="og:type" content="website" />
+		<meta property="og:site_name" content="o1 uptime" />
+		<meta
+			property="og:title"
+			content="o1 — uptime and incident monitoring for small teams"
+		/>
+		<meta
+			property="og:description"
+			content="A full product, not a demo: SSRF-guarded probes, 90 days of history, exactly-once alerts, and public status pages. Go + PostgreSQL + React."
+		/>
+		<meta property="og:url" content="https://o1.work.gd/" />
+		<meta property="og:image" content="https://o1.work.gd/og.png" />
+		<meta property="og:image:width" content="1200" />
+		<meta property="og:image:height" content="630" />
+		<meta
+			property="og:image:alt"
+			content="o1 uptime — uptime and incident monitoring for small teams"
+		/>
+		<meta name="twitter:card" content="summary_large_image" />
+		<link rel="stylesheet" href="/src/landing/landing.css" />
+		<script type="application/ld+json">
+			{
+				"@context": "https://schema.org",
+				"@type": "SoftwareApplication",
+				"name": "o1",
+				"description": "Uptime and incident monitoring for small teams: HTTP probes, incidents, multi-channel alerts, and public status pages.",
+				"applicationCategory": "DeveloperApplication",
+				"operatingSystem": "Web",
+				"url": "https://o1.work.gd/",
+				"codeRepository": "https://github.com/ndntan911/o1",
+				"author": {
+					"@type": "Person",
+					"url": "https://github.com/ndntan911"
+				}
+			}
+		</script>
+	</head>
+	<body class="bg-background text-foreground antialiased">
+		<a class="skip-link" href="#main">Skip to content</a>
+
+		<header
+			class="sticky top-0 z-40 border-b border-border/60 bg-background/90 backdrop-blur"
+		>
+			<div
+				class="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-6"
+			>
+				<a href="/" class="font-heading text-lg font-semibold tracking-tight">
+					o1 uptime
+				</a>
+				<nav
+					aria-label="Primary"
+					class="hidden items-center gap-6 text-sm text-muted-foreground md:flex"
+				>
+					<a href="#what" class="hover:text-foreground">What it does</a>
+					<a href="#decisions" class="hover:text-foreground">Hard parts</a>
+					<a href="#engineering" class="hover:text-foreground">Engineering</a>
+					<a href="#demo" class="hover:text-foreground">Try it</a>
+					<a
+						href="https://github.com/ndntan911/o1"
+						class="hover:text-foreground"
+						>GitHub</a
+					>
+				</nav>
+				<a
+					href="/login"
+					class="inline-flex items-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+				>
+					Open the live demo
+				</a>
+			</div>
+		</header>
+
+		<main id="main">
+			<section class="mx-auto max-w-6xl px-6 pt-20 pb-16 md:pt-28">
+				<p
+					class="text-sm font-medium tracking-wide text-muted-foreground uppercase"
+				>
+					Self-hosted uptime monitoring · Go + PostgreSQL + React
+				</p>
+				<h1
+					class="mt-5 max-w-3xl font-heading text-4xl font-semibold tracking-tight text-balance sm:text-5xl md:text-6xl"
+				>
+					Uptime and incident monitoring for small teams.
+				</h1>
+				<p class="mt-6 max-w-2xl text-lg leading-8 text-muted-foreground">
+					o1 watches HTTP endpoints for small teams: it probes on a schedule,
+					opens and resolves incidents, notifies people over email, webhooks,
+					Slack and Telegram, and publishes a public status page. It is a full
+					product, not a demo of one — authentication, workspaces and roles,
+					two-factor login, API keys, an audit trail, and a real deployment
+					pipeline.
+				</p>
+				<div class="mt-8 flex flex-wrap items-center gap-3">
+					<a
+						href="/login"
+						class="inline-flex items-center rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+						>Open the live demo</a
+					>
+					<a
+						href="/status/demo"
+						class="inline-flex items-center rounded-lg border border-border bg-background px-5 py-2.5 text-sm font-medium transition-colors hover:bg-muted"
+						>View the status page</a
+					>
+					<a
+						href="https://github.com/ndntan911/o1"
+						class="inline-flex items-center px-2 py-2.5 text-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+						>Read the source</a
+					>
+				</div>
+				<p class="mt-4 text-sm text-muted-foreground">
+					Read-only demo: <code class="font-mono">demo-viewer@o1.work.gd</code>
+					/ <code class="font-mono">o1-demo-viewer-2026</code>
+				</p>
+			</section>
+
+			<section class="mx-auto max-w-6xl px-6 pb-20">
+				<figure
+					class="overflow-hidden rounded-2xl border border-border bg-card shadow-sm"
+				>
+					<img
+						src="/portfolio/monitors-dark.png"
+						width="1440"
+						height="900"
+						alt="o1 monitors dashboard in dark mode showing HTTP monitors and current status"
+						class="w-full"
+					/>
+					<figcaption
+						class="border-t border-border px-4 py-3 text-sm text-muted-foreground"
+					>
+						Monitors, live status, and response history in the dashboard.
+					</figcaption>
+				</figure>
+			</section>
+
+			<section
+				id="what"
+				aria-labelledby="what-title"
+				class="border-t border-border/60 bg-muted/30"
+			>
+				<div class="mx-auto max-w-6xl px-6 py-20">
+					<h2
+						id="what-title"
+						class="font-heading text-3xl font-semibold tracking-tight"
+					>
+						What it does
+					</h2>
+					<p class="mt-3 max-w-2xl text-muted-foreground">
+						The product surface is deliberately complete: monitoring, incident
+						workflow, delivery, public communication, and the accounts and
+						permissions behind them.
+					</p>
+					<ul class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+						<li class="rounded-xl border border-border bg-background p-5">
+							<h3 class="font-heading text-base font-semibold">
+								Monitors and probes
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								HTTP checks with method, headers, body, expected status,
+								interval, timeout, and confirmation/recovery thresholds.
+								Results land in monthly range partitions, and probes never
+								follow redirects into private networks.
+							</p>
+						</li>
+						<li class="rounded-xl border border-border bg-background p-5">
+							<h3 class="font-heading text-base font-semibold">Incidents</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								A monitor opens an incident after N consecutive failures and
+								resolves it after N successes. Incidents can be acknowledged,
+								stop reminders, and keep a timeline.
+							</p>
+						</li>
+						<li class="rounded-xl border border-border bg-background p-5">
+							<h3 class="font-heading text-base font-semibold">Alerts</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								Email through Resend or authenticated SMTP, webhooks with
+								optional HMAC-SHA256 signing, Slack incoming webhooks, and
+								Telegram. Per-monitor switches, delivery history, and retries
+								for transient errors.
+							</p>
+						</li>
+						<li class="rounded-xl border border-border bg-background p-5">
+							<h3 class="font-heading text-base font-semibold">
+								Public status pages
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								One page per workspace at <code>/status/{slug}</code> with 90
+								daily bars, uptime, and recent incidents. Monitor URLs, errors,
+								and acknowledgement data never leak to it.
+							</p>
+						</li>
+						<li class="rounded-xl border border-border bg-background p-5">
+							<h3 class="font-heading text-base font-semibold">
+								Teams and accounts
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								Owner, admin, member, and viewer roles; workspace-scoped
+								resources; TOTP two-factor with recovery codes; hashed API
+								keys for scripts; and an admin audit trail that attributes
+								actions to a user or an API key.
+							</p>
+						</li>
+						<li class="rounded-xl border border-border bg-background p-5">
+							<h3 class="font-heading text-base font-semibold">
+								Incident insights
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								On demand, an incident returns up to three ranked hypotheses,
+								each citing a timeline event or field the server verifies
+								before it is shown. The model never sees monitor URLs,
+								headers, channel secrets, or recipients.
+							</p>
+						</li>
+					</ul>
+				</div>
+			</section>
+
+			<section
+				id="decisions"
+				aria-labelledby="decisions-title"
+				class="mx-auto max-w-6xl px-6 py-20"
+			>
+				<h2
+					id="decisions-title"
+					class="font-heading text-3xl font-semibold tracking-tight"
+				>
+					Four decisions worth reading
+				</h2>
+				<p class="mt-3 max-w-2xl text-muted-foreground">
+					The interesting part is not the CRUD. It is the parts that are hard
+					to get right.
+				</p>
+				<ol class="mt-10 space-y-6">
+					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+						<span
+							class="font-heading text-2xl font-semibold text-muted-foreground"
+							>01</span
+						>
+						<div>
+							<h3 class="font-heading text-lg font-semibold">
+								Probing untrusted URLs without becoming an SSRF proxy
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								The guard resolves the host, rejects loopback, private,
+								link-local, multicast, and cloud-metadata ranges, checks the
+								scheme, port, userinfo, and fragment, then dials the IP it
+								validated instead of the hostname. Redirects are limited and
+								re-validated, and probes never send credentials to a new host.
+								Alert destinations go through the same policy at save time and
+								again before every send.
+							</p>
+							<p class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/probe/policy.go"
+									>probe/policy.go</a
+								>
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/probe/probe.go"
+									>probe/probe.go</a
+								>
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/alerts/config.go"
+									>alerts/config.go</a
+								>
+							</p>
+						</div>
+					</li>
+					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+						<span
+							class="font-heading text-2xl font-semibold text-muted-foreground"
+							>02</span
+						>
+						<div>
+							<h3 class="font-heading text-lg font-semibold">
+								90 days of history that stays cheap to query and safe to delete
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								Raw probe rows live in UTC monthly range partitions, while
+								hourly aggregates back the status page and the 90-day uptime
+								with up, min, max, and p95 latency. A partition drops only when
+								it is wholly past the raw cutoff and hourly rollups cover it
+								with matching counts; a mismatch re-rolls once and otherwise
+								defers. Retention is a dry run by default, logs every
+								candidate, and drops at most one partition per run.
+							</p>
+							<p class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/rollup/rollup.go"
+									>rollup/rollup.go</a
+								>
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/retention/retention.go"
+									>retention/retention.go</a
+								>
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/retention/prune.go"
+									>retention/prune.go</a
+								>
+							</p>
+						</div>
+					</li>
+					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+						<span
+							class="font-heading text-2xl font-semibold text-muted-foreground"
+							>03</span
+						>
+						<div>
+							<h3 class="font-heading text-lg font-semibold">
+								Alerts that fail the way real providers fail
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								The notifier classifies failures instead of retrying blindly:
+								timeouts, 408, 425, 429, and 5xx are transient and retried up
+								to five times with backoff; other 4xx and any 3xx are permanent
+								and recorded as failed deliveries. Email sends carry an
+								idempotency key so a lost response does not duplicate a
+								message. Channel secrets are write-only, encrypted at rest with
+								AES-GCM, and never appear in delivery history, logs, or error
+								bodies.
+							</p>
+							<p class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/alerts/notifier.go"
+									>alerts/notifier.go</a
+								>
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/email/resend.go"
+									>email/resend.go</a
+								>
+							</p>
+						</div>
+					</li>
+					<li class="grid gap-4 rounded-xl border border-border p-6 md:grid-cols-[3rem_1fr]">
+						<span
+							class="font-heading text-2xl font-semibold text-muted-foreground"
+							>04</span
+						>
+						<div>
+							<h3 class="font-heading text-lg font-semibold">
+								Tenant isolation that is provable, and automation that is
+								attributable
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-muted-foreground">
+								Every query is scoped by workspace, and cross-tenant access
+								returns 404 rather than 403 so a caller cannot probe what
+								exists elsewhere. Roles are enforced at the handler boundary,
+								and suspended workspaces keep reads while losing mutations and
+								probes. API keys are shown once, stored as SHA-256 hashes with
+								a public prefix, scoped to one workspace, rate limited per key,
+								and never carry global admin rights. Every security-relevant
+								action writes an audit event naming the workspace, the user,
+								and the API key when one was used.
+							</p>
+							<p class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/apikeys/service.go"
+									>apikeys/service.go</a
+								>
+								<a
+									class="font-medium underline underline-offset-4"
+									href="https://github.com/ndntan911/o1/blob/main/backend/internal/audit/audit.go"
+									>audit/audit.go</a
+								>
+							</p>
+						</div>
+					</li>
+				</ol>
+			</section>
+
+			<section
+				id="engineering"
+				aria-labelledby="engineering-title"
+				class="border-t border-border/60 bg-muted/30"
+			>
+				<div class="mx-auto max-w-6xl px-6 py-20">
+					<h2
+						id="engineering-title"
+						class="font-heading text-3xl font-semibold tracking-tight"
+					>
+						Engineering practice
+					</h2>
+					<p class="mt-3 max-w-2xl text-muted-foreground">
+						The deployment, the test gates, and the failure modes are part of
+						the product, not an afterthought.
+					</p>
+					<dl class="mt-10 grid gap-4 sm:grid-cols-3">
+						<div class="rounded-xl border border-border bg-background p-5">
+							<dt class="text-sm text-muted-foreground">Go test functions</dt>
+							<dd class="mt-1 font-heading text-3xl font-semibold">695</dd>
+						</div>
+						<div class="rounded-xl border border-border bg-background p-5">
+							<dt class="text-sm text-muted-foreground">Frontend tests</dt>
+							<dd class="mt-1 font-heading text-3xl font-semibold">400+</dd>
+						</div>
+						<div class="rounded-xl border border-border bg-background p-5">
+							<dt class="text-sm text-muted-foreground">Blocking CI jobs</dt>
+							<dd class="mt-1 font-heading text-3xl font-semibold">5</dd>
+						</div>
+					</dl>
+					<ul class="mt-8 grid gap-3 text-sm leading-6 text-muted-foreground md:grid-cols-2">
+						<li class="rounded-lg border border-border bg-background p-4">
+							<strong class="font-medium text-foreground"
+								>Tests are the gate.</strong
+							>
+							Unit and testcontainers integration tests run against real
+							PostgreSQL. Playwright drives the deployed stack end to end,
+							including 2FA, recovery codes, API key authorization, audit
+							attribution, and accessibility checks.
+						</li>
+						<li class="rounded-lg border border-border bg-background p-4">
+							<strong class="font-medium text-foreground">CI is blocking.</strong>
+							Five required jobs cover backend, integration, frontend, e2e,
+							and pipeline checks (actionlint, shellcheck, Compose, and deploy
+							scripts). Trivy scans the filesystem and both images before any
+							push.
+						</li>
+						<li class="rounded-lg border border-border bg-background p-4">
+							<strong class="font-medium text-foreground"
+								>Releases are deliberate.</strong
+							>
+							Tags build <code>linux/amd64</code> images, scan them, and
+							publish by digest. Deploys are dispatched by hand, run from
+							<code>main</code> for production, and rollback restores the
+							previous release bundle.
+						</li>
+						<li class="rounded-lg border border-border bg-background p-4">
+							<strong class="font-medium text-foreground"
+								>The system is observable.</strong
+							>
+							Prometheus metrics on private listeners, OTLP tracing, Sentry
+							with request data stripped, and a Grafana Alloy bundle that ships
+							metrics and logs to Grafana Cloud.
+						</li>
+					</ul>
+				</div>
+			</section>
+
+			<section
+				id="demo"
+				aria-labelledby="demo-title"
+				class="mx-auto max-w-6xl px-6 py-20"
+			>
+				<h2
+					id="demo-title"
+					class="font-heading text-3xl font-semibold tracking-tight"
+				>
+					Try it
+				</h2>
+				<p class="mt-3 max-w-2xl text-muted-foreground">
+					The demo workspace is seeded with synthetic 90-day history and is
+					labelled as demo data. The public status page needs no login.
+				</p>
+				<div class="mt-8 grid gap-4 md:grid-cols-2">
+					<div class="rounded-xl border border-border p-6">
+						<h3 class="font-heading text-lg font-semibold">
+							Read-only dashboard demo
+						</h3>
+						<p class="mt-2 text-sm leading-6 text-muted-foreground">
+							Sign in with the seeded viewer account. The password is
+							intentionally public; the account cannot change data.
+						</p>
+						<pre
+							class="mt-4 overflow-x-auto rounded-lg bg-muted p-4 text-sm"
+						><code>demo-viewer@o1.work.gd
+o1-demo-viewer-2026</code></pre>
+						<a
+							href="/login"
+							class="mt-4 inline-flex items-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+							>Open the live demo</a
+						>
+					</div>
+					<div class="rounded-xl border border-border p-6">
+						<h3 class="font-heading text-lg font-semibold">
+							Public status page
+						</h3>
+						<p class="mt-2 text-sm leading-6 text-muted-foreground">
+							The same 90-day status page a workspace can publish for its
+							customers. It shows uptime and incidents, never monitor URLs or
+							error details.
+						</p>
+						<a
+							href="/status/demo"
+							class="mt-4 inline-flex items-center rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-muted"
+							>View the status page</a
+						>
+					</div>
+				</div>
+			</section>
+
+			<section
+				id="stack"
+				aria-labelledby="stack-title"
+				class="border-t border-border/60 bg-muted/30"
+			>
+				<div class="mx-auto max-w-6xl px-6 py-16">
+					<h2
+						id="stack-title"
+						class="font-heading text-2xl font-semibold tracking-tight"
+					>
+						Stack
+					</h2>
+					<dl
+						class="mt-6 grid gap-x-8 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3"
+					>
+						<div>
+							<dt class="font-medium">Backend</dt>
+							<dd class="text-muted-foreground">
+								Go 1.26, PostgreSQL, River job queue, goose migrations
+							</dd>
+						</div>
+						<div>
+							<dt class="font-medium">Frontend</dt>
+							<dd class="text-muted-foreground">
+								React 19, TanStack Router and Query, Tailwind 4,
+								Radix/shadcn
+							</dd>
+						</div>
+						<div>
+							<dt class="font-medium">Operations</dt>
+							<dd class="text-muted-foreground">
+								Docker Compose, Caddy TLS, GitHub Actions, GHCR, Trivy
+							</dd>
+						</div>
+						<div>
+							<dt class="font-medium">Observability</dt>
+							<dd class="text-muted-foreground">
+								Prometheus, Grafana, Loki, Alloy, OTLP, Sentry
+							</dd>
+						</div>
+						<div>
+							<dt class="font-medium">Data lifecycle</dt>
+							<dd class="text-muted-foreground">
+								Monthly partitions, hourly rollups, 90-day raw retention
+							</dd>
+						</div>
+						<div>
+							<dt class="font-medium">Delivery</dt>
+							<dd class="text-muted-foreground">
+								Digest-pinned images, hand-dispatched deploys, release
+								rollback
+							</dd>
+						</div>
+					</dl>
+				</div>
+			</section>
+		</main>
+
+		<footer class="border-t border-border/60">
+			<div
+				class="mx-auto flex max-w-6xl flex-col gap-3 px-6 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
+			>
+				<p>o1 — a portfolio project by ndntan911. Built in 2026.</p>
+				<nav aria-label="Footer" class="flex flex-wrap gap-x-5 gap-y-2">
+					<a
+						class="hover:text-foreground"
+						href="https://github.com/ndntan911/o1"
+						>Source</a
+					>
+					<a class="hover:text-foreground" href="/status/demo">Status page</a>
+					<a class="hover:text-foreground" href="/login">Demo</a>
+				</nav>
+			</div>
+		</footer>
+	</body>
+</html>
