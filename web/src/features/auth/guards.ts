@@ -10,11 +10,13 @@ function hasControlCharacter(value: string): boolean {
 }
 
 export function safeRedirect(value: string | undefined): string {
-	if (!value) return '/';
-	if (!value.startsWith('/')) return '/';
-	if (value.startsWith('//')) return '/';
-	if (value.includes('\\')) return '/';
-	if (hasControlCharacter(value)) return '/';
+	const fallback = '/app';
+	if (!value) return fallback;
+	if (!value.startsWith('/')) return fallback;
+	if (value.startsWith('//')) return fallback;
+	if (value.includes('\\')) return fallback;
+	if (hasControlCharacter(value)) return fallback;
+	if (value === '/') return fallback;
 	return value;
 }
 

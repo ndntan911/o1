@@ -4,19 +4,19 @@ import type { Me } from '@/lib/api/types';
 import { findWorkspace, isUnauthenticated, safeRedirect } from './guards';
 
 test('safeRedirect rejects external and protocol-relative paths', () => {
-	expect(safeRedirect(undefined)).toBe('/');
-	expect(safeRedirect('')).toBe('/');
-	expect(safeRedirect('https://evil.example')).toBe('/');
-	expect(safeRedirect('//evil.example')).toBe('/');
-	expect(safeRedirect('/\\evil.example')).toBe('/');
-	expect(safeRedirect('javascript:alert(1)')).toBe('/');
+	expect(safeRedirect(undefined)).toBe('/app');
+	expect(safeRedirect('')).toBe('/app');
+	expect(safeRedirect('https://evil.example')).toBe('/app');
+	expect(safeRedirect('//evil.example')).toBe('/app');
+	expect(safeRedirect('/\\evil.example')).toBe('/app');
+	expect(safeRedirect('javascript:alert(1)')).toBe('/app');
 	expect(safeRedirect('/w/acme/monitors')).toBe('/w/acme/monitors');
-	expect(safeRedirect('/')).toBe('/');
+	expect(safeRedirect('/')).toBe('/app');
 });
 
 test('safeRedirect rejects control characters', () => {
-	expect(safeRedirect('/w/acme\nmonitors')).toBe('/');
-	expect(safeRedirect('/w/acme\u0000monitors')).toBe('/');
+	expect(safeRedirect('/w/acme\nmonitors')).toBe('/app');
+	expect(safeRedirect('/w/acme\u0000monitors')).toBe('/app');
 });
 
 test('findWorkspace matches only workspace slugs', () => {

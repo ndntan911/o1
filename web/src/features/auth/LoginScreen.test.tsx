@@ -166,7 +166,7 @@ describe('LoginScreen', () => {
 		);
 		await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/app' }));
 		expect(queryClient.getQueryData(staleMonitorsKey)).toBeUndefined();
 		expect(queryClient.getQueryData(meKey)).toEqual(meData);
 		expect(getWorkspaceSuspended()).toBe(false);
@@ -315,7 +315,7 @@ describe('LoginScreen', () => {
 		);
 		await user.click(screen.getByRole('button', { name: 'Verify' }));
 
-		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/app' }));
 		expect(queryClient.getQueryData(staleMonitorsKey)).toBeUndefined();
 	});
 
@@ -344,7 +344,7 @@ describe('LoginScreen', () => {
 		await user.type(recovery, ' abcde-fghjk ');
 		await user.click(screen.getByRole('button', { name: 'Verify' }));
 
-		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/app' }));
 		expect(bodies).toEqual([
 			{ challenge_token: 'c1', recovery_code: 'ABCDEFGHJK' },
 		]);
@@ -396,7 +396,7 @@ describe('LoginScreen', () => {
 		).toBeDisabled();
 
 		release();
-		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }));
+		await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/app' }));
 	});
 
 	test('returns to the password step from back to sign in', async () => {

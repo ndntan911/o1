@@ -57,9 +57,22 @@ export function AppShell() {
 			</a>
 
 			<aside className="fixed inset-y-0 left-0 hidden w-64 flex-col overflow-y-auto border-r bg-background p-4 md:flex">
-				<Link to="/" className="mb-4 px-2 font-heading text-lg font-medium">
-					o1 uptime
-				</Link>
+				{currentWorkspace ? (
+					<Link
+						to="/w/$workspaceSlug/monitors"
+						params={{ workspaceSlug: currentWorkspace.slug }}
+						className="mb-4 px-2 font-heading text-lg font-medium"
+					>
+						o1 uptime
+					</Link>
+				) : (
+					<Link
+						to="/workspaces"
+						className="mb-4 px-2 font-heading text-lg font-medium"
+					>
+						o1 uptime
+					</Link>
+				)}
 				{sidebar}
 			</aside>
 
@@ -86,9 +99,19 @@ export function AppShell() {
 							{sidebar}
 						</SheetContent>
 					</Sheet>
-					<Link to="/" className="font-heading text-base font-medium">
-						o1 uptime
-					</Link>
+					{currentWorkspace ? (
+						<Link
+							to="/w/$workspaceSlug/monitors"
+							params={{ workspaceSlug: currentWorkspace.slug }}
+							className="font-heading text-base font-medium"
+						>
+							o1 uptime
+						</Link>
+					) : (
+						<Link to="/workspaces" className="font-heading text-base font-medium">
+							o1 uptime
+						</Link>
+					)}
 				</header>
 
 				{suspended ? (

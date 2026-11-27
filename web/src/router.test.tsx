@@ -117,17 +117,17 @@ describe('router guards', () => {
 		setUnauthenticatedHandler(null);
 	});
 
-	test('logged-out / redirects to /login and preserves the destination', async () => {
+	test('logged-out /app redirects to /login and preserves the destination', async () => {
 		server.use(http.get(`${ORIGIN}/api/v1/me`, () => unauthenticatedProblem()));
 
-		const { router } = renderRouter('/');
+		const { router } = renderRouter('/app');
 
 		expect(
 			await screen.findByRole('button', { name: 'Sign in' }),
 		).toBeInTheDocument();
 		expect(router.state.location.pathname).toBe('/login');
-		expect(router.state.location.searchStr).toBe('?redirect=%2F');
-		expect(router.state.location.search).toEqual({ redirect: '/' });
+		expect(router.state.location.searchStr).toBe('?redirect=%2Fapp');
+		expect(router.state.location.search).toEqual({ redirect: '/app' });
 	});
 
 	test('logged-out users can open the login screen', async () => {
@@ -164,7 +164,7 @@ describe('router guards', () => {
 			),
 		);
 
-		const { router, queryClient } = renderRouter('/');
+		const { router, queryClient } = renderRouter('/app');
 		expect(
 			await screen.findByRole('heading', {
 				name: 'Workspaces',
@@ -197,7 +197,7 @@ describe('router guards', () => {
 			http.get(`${ORIGIN}/api/v1/workspaces`, () => unauthenticatedProblem()),
 		);
 
-		const { router } = renderRouter('/');
+		const { router } = renderRouter('/app');
 		expect(
 			await screen.findByRole('heading', {
 				name: 'Workspaces',

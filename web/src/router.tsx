@@ -139,7 +139,7 @@ const publicLayoutRoute = createRoute({
 	beforeLoad: async ({ context }) => {
 		try {
 			await context.queryClient.ensureQueryData(meQueryOptions());
-			throw redirect({ to: '/' });
+			throw redirect({ to: '/app' });
 		} catch (error) {
 			if (isRedirect(error)) throw error;
 			if (!isUnauthenticated(error)) throw error;
@@ -225,9 +225,9 @@ const appLayoutRoute = createRoute({
 	component: AppShell,
 });
 
-const homeRoute = createRoute({
+const appHomeRoute = createRoute({
 	getParentRoute: () => appLayoutRoute,
-	path: '/',
+	path: '/app',
 	beforeLoad: async ({ context }) => {
 		const me = await context.queryClient.ensureQueryData(meQueryOptions());
 		const lastSlug = readLastWorkspaceSlug();
@@ -511,7 +511,7 @@ const adminRoute = createRoute({
 	path: '/admin',
 	beforeLoad: async ({ context }) => {
 		const me = await context.queryClient.ensureQueryData(meQueryOptions());
-		if (!me.user.is_admin) throw redirect({ to: '/' });
+		if (!me.user.is_admin) throw redirect({ to: '/app' });
 	},
 	component: AdminLayoutRoute,
 });
@@ -552,7 +552,7 @@ export const routeTree = rootRoute.addChildren([
 		resetPasswordRoute,
 	]),
 	appLayoutRoute.addChildren([
-		homeRoute,
+		appHomeRoute,
 		workspacesRoute,
 		accountSecurityRoute,
 		workspaceRoute.addChildren([
