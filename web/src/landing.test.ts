@@ -69,3 +69,36 @@ describe('portfolio landing page', () => {
 		}
 	});
 });
+
+describe('crawler files and static routing', () => {
+	test('sitemap lists only the landing page and demo status page', async () => {
+		const xml = await read('../public/sitemap.xml');
+		const urls = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map(
+			(match) => match[1],
+		);
+
+		expect(urls).toEqual([
+			'https://o1.work.gd/',
+			'https://o1.work.gd/status/demo',
+		]);
+	});
+
+	test('robots.txt points at the sitemap and keeps app routes out', async () => {
+		const robots = await read('../public/robots.txt');
+
+		expect(robots).toContain('Sitemap: https://o1.work.gd/sitemap.xml');
+		expect(robots).toContain('Allow: /status/');
+		for (const path of ['/app', '/w/', '/workspaces', '/api/']) {
+			expect(robots).toContain(`Disallow: ${path}`);
+		}
+	});
+
+	test('Caddy serves the landing page and a real sitemap', async () => {
+		const caddy = await read('../Caddyfile');
+
+		expect(caddy).toMatch(/rewrite \* \/landing\.html/);
+		expect(caddy).toMatch(/redir @landing-file \/ 301/);
+		expect(caddy).toMatch(/handle \/sitemap\.xml/);
+		expect(caddy).toContain('X-Robots-Tag "noindex"');
+	});
+});

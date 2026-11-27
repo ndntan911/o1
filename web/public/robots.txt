@@ -1,13 +1,21 @@
 # o1 serves the dashboard as a single-page app, so every unknown path returns
-# the shell. Keep crawlers on the public pages and out of the API and the
-# authenticated app surfaces.
+# the shell. The landing page at / and the public status pages are the only
+# indexable surfaces; keep crawlers out of the API and authenticated app.
 User-agent: *
-Allow: /$
+Allow: /
 Allow: /status/
 Disallow: /api/
 Disallow: /account/
+Disallow: /app
 Disallow: /login
 Disallow: /register
 Disallow: /verify-email
 Disallow: /forgot-password
 Disallow: /reset-password
+Disallow: /workspaces
+Disallow: /w/
+Disallow: /admin
+Disallow: /billing
+Disallow: /onboarding
+
+Sitemap: https://o1.work.gd/sitemap.xml

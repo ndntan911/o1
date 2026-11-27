@@ -51,6 +51,25 @@
 		}
 	}
 
+	# The portfolio landing page is a real static file, not the SPA shell.
+	@landing path /
+	handle @landing {
+		rewrite * /landing.html
+		file_server
+	}
+	@landing-file path /landing.html
+	redir @landing-file / 301
+
+	# A missing sitemap must 404, never fall through to index.html.
+	handle /sitemap.xml {
+		header Content-Type application/xml
+		file_server
+	}
+
+	# Authenticated surfaces must not be indexed even if a crawler finds a link.
+	@app path /login /register /verify-email /forgot-password /reset-password /account/* /app /workspaces* /w/* /admin* /billing* /onboarding*
+	header @app X-Robots-Tag "noindex"
+
 	handle {
 		try_files {path} /index.html
 		file_server
