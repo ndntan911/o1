@@ -189,6 +189,19 @@ test('serves the portfolio landing page at the root', async ({
 	await page.getByRole('link', { name: 'Open the live demo' }).first().click();
 	await expect(page).toHaveURL(/\/login$/);
 	await expect(page.getByLabel('Email')).toBeVisible();
+
+	await page.getByRole('link', { name: 'o1 uptime' }).click();
+	await expect(page).toHaveURL(/\/$/);
+	await expect(page.getByRole('heading', { level: 1 })).toContainText(
+		'Uptime and incident monitoring for small teams.',
+	);
+
+	const login = await request.get('/login');
+	expect(login.headers()['x-robots-tag']).toBe('noindex');
+	expect(response.headers()['x-robots-tag']).toBeUndefined();
+	expect(
+		(await request.get('/status/demo')).headers()['x-robots-tag'],
+	).toBeUndefined();
 });
 
 test.describe('landing page without JavaScript', () => {

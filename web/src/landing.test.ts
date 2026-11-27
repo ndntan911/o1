@@ -96,5 +96,6 @@ describe('crawler files and static routing', () => {
 		expect(caddy).toMatch(/redir @landing-file \/ 301/);
 		expect(caddy).toMatch(/handle \/sitemap\.xml/);
 		expect(caddy).toContain('X-Robots-Tag "noindex"');
+		expect(caddy).not.toMatch(/@app path[^\n]*\/status/);
 	});
 });

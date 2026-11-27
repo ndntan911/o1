@@ -10,6 +10,7 @@ import { HttpResponse, delay, http } from 'msw';
 import { server } from '@/test/msw/server';
 import { createTestQueryClient } from '@/test/render';
 import { apiRequest, setUnauthenticatedHandler } from '@/lib/api/client';
+import { LAST_WORKSPACE_KEY } from '@/lib/last-workspace';
 import { queryKeys } from '@/lib/query/keys';
 import { registerUnauthenticatedHandler } from '@/lib/unauthenticated-handler';
 import type { Me } from '@/lib/api/types';
@@ -128,6 +129,22 @@ describe('router guards', () => {
 		expect(router.state.location.pathname).toBe('/login');
 		expect(router.state.location.searchStr).toBe('?redirect=%2Fapp');
 		expect(router.state.location.search).toEqual({ redirect: '/app' });
+	});
+
+	test('authenticated /app resumes the last workspace', async () => {
+		localStorage.setItem(LAST_WORKSPACE_KEY, 'acme-status');
+		server.use(
+			http.get(`${ORIGIN}/api/v1/me`, () => HttpResponse.json(memberMe)),
+			http.get(`${ORIGIN}/api/v1/workspaces/w1/monitors`, () =>
+				HttpResponse.json({ monitors: [] }),
+			),
+		);
+
+		const { router } = renderRouter('/app');
+
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe('/w/acme-status/monitors'),
+		);
 	});
 
 	test('logged-out users can open the login screen', async () => {
